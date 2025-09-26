@@ -1,0 +1,39 @@
+# === ROS 2 build artifacts ===
+build/
+install/
+log/
+
+# === Python cache and bytecode ===
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# === CMake and colcon metadata ===
+CMakeFiles/
+cmake_install.cmake
+Makefile
+ament_cmake_environment_hooks/
+ament_prefix_path/
+
+# === Editor and IDEs ===
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# === OS ===
+.DS_Store
+Thumbs.db
+
+# === Python package artifacts ===
+*.egg-info/
+*.egg
+dist/
+.eggs/
+pip-wheel-metadata/
+
+# === Misc ===
+.colcon/
+.colcon_install_layout
