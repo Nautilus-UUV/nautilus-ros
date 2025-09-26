@@ -8,7 +8,7 @@ In order to work with this repository, you need to install ROS2 humble following
 In order to run a node do the following:
 1. source the ROS installation
 ```bash
-soure /opt/ros/humble/setup.bash
+source /opt/ros/humble/setup.bash
 ```
 2. build packages
 ```bash
