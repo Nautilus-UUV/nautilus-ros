@@ -24,6 +24,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            'status_publisher = py_pkg.status_publisher:main'
         ],
     },
 )
