@@ -74,3 +74,7 @@ ament_target_dependencies(<YOUR_NODE> rclcpp std_msgs)
 install(TARGETS <YOUR_NODE> DESTINATION lib/${PROJECT_NAME})
 ```
 
+## Continuous Intergration (CI)
+
+Currently there is a CI pipeline that will build the project inside a docker container running `ROS2 Humble` on `Ubuntu:latest`. If the build fails or the smoke test does not pass, your PR or Push will be flagged.
+
