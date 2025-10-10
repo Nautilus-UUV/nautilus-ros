@@ -1,0 +1,93 @@
+name: ROS image test
+on: [push, pull_request, workflow_dispatch]
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  pub-echo:
+    runs-on: ubuntu-latest
+    container:
+      image: ros:humble
+    env:
+      ROS_DISTRO: humble
+      ROS_DOMAIN_ID: 88
+      ROS_LOCALHOST_ONLY: 1
+      
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Install the tools
+      - name: Install build/CLI bits
+        run: |
+          set -eo pipefail
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            python3-colcon-common-extensions ros-$ROS_DISTRO-ros2cli ros-$ROS_DISTRO-std-msgs
+
+      # Build your workspace
+      - name: Build
+        run: |
+          set -eo pipefail
+          source /opt/ros/$ROS_DISTRO/setup.bash
+          colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=RelWithDebInfo
+
+      # Source what was built with colcon
+      - name: Set ROS env
+        run: |
+          set -e
+          echo "BASH_ENV=$GITHUB_WORKSPACE/.bashenv" >> "$GITHUB_ENV"
+
+          {
+            echo "source /opt/ros/$ROS_DISTRO/setup.bash"
+            echo "source \"$GITHUB_WORKSPACE/install/setup.bash\""
+          } > "$GITHUB_WORKSPACE/.bashenv"
+
+      # Rerun the tests with colcon
+      - name: Tests
+        run: |
+          set -eo pipefail
+          colcon test --event-handlers console_direct+ --return-code-on-test-failure
+          colcon test-result --verbose
+
+      # TODO: maybe remove later? 
+      - name: Smoke test publish/subscribe
+        run: |
+          set -eo pipefail
+
+          # Start subscriber with explicit type (no deadlock)
+          ( ros2 topic echo --no-daemon /my_topic std_msgs/msg/String > /tmp/echo.txt ) &
+          ECHO_PID=$!
+
+          # Wait until the subscription exists
+          for i in {1..25}; do
+            if ros2 topic info --no-daemon /my_topic 2>/dev/null | grep -q "Subscription count: 1"; then
+              break
+            fi
+            sleep 0.2
+          done
+
+          # Publish one message 
+          ros2 topic pub --once /my_topic std_msgs/msg/String "data: Hello World"
+
+          # Verify reception
+          for i in {1..20}; do
+            if grep -q "Hello World" /tmp/echo.txt; then
+              echo "✅ Received message on /my_topic"
+              break
+            fi
+            sleep 0.2
+          done
+
+          kill $ECHO_PID || true
+          grep -q "Hello World" /tmp/echo.txt
+
+          {
+            echo "### ✅ Smoke test passed";
+            echo '';
+            echo 'Snippet from `ros2 topic echo /my_topic`:';
+            echo '';
+            echo '```'; head -n 10 /tmp/echo.txt || true; echo '```';
+          } >> "$GITHUB_STEP_SUMMARY"
