@@ -17,21 +17,22 @@ Author:
 Date:
     - 2025-05-07
 """
-from queue import PriorityQueue
-import json
-from datetime import datetime
-from abc import ABC, abstractmethod
-import threading
-import logging
+
 import itertools
+import json
+import logging
+import threading
+from abc import ABC, abstractmethod
+from datetime import datetime
+from queue import PriorityQueue
+
+import paho.mqtt.client as mqtt
 import rclpy
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
-import paho.mqtt.client as mqtt
-from std_srvs.srv import SetBool
-
-from std_msgs.msg import String, Float64, Bool, Float64MultiArray, MultiArrayDimension
 from sensor_msgs.msg import Imu
+from std_msgs.msg import Bool, Float64, Float64MultiArray, MultiArrayDimension
+from std_srvs.srv import SetBool
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -49,12 +50,10 @@ ros_subscr_topics = {
     "/sensor/pressure_ext": Float64,
     "/sensor/leakage_front": Bool,
     "/sensor/leakage_back": Bool,
-
     # /profile subtopics
     "/profile/target_depth": Float64,
     "/profile/actual_depth": Float64,
     "/profile/actual_volume": Float64,
-
     # /state subtopics
     "/state/state_vec": String,
     "/state/motor": String,
@@ -70,12 +69,10 @@ ros_subscr_priorities = {
     "/sensor/pressure_ext": 10,
     "/sensor/leakage_front": 2,
     "/sensor/leakage_back": 2,
-
     # /profile subtopics
     "/profile/target_depth": 10,
     "/profile/actual_depth": 10,
     "/profile/actual_volume": 10,
-
     # /state subtopics
     "/state/state_vec": 8,
     "/state/motor": 8,
@@ -121,7 +118,7 @@ mqtt_topic_translation = {
     "/profile/target_depth": "/sensors/target_depth",
     "/state/state_vec": "/sensors/pose",
     "/sensor/pressure_hull": "/sensors/pressure",
-    "/sensor/pressure_tank": "/sensors/pressure", 
+    "/sensor/pressure_tank": "/sensors/pressure",
     "/sensor/pressure_ext": "/sensors/pressure",
     "/sensor/leakage_front": "/sensors/leakage",
     "/sensor/leakage_back": "/sensors/leakage",
@@ -129,11 +126,13 @@ mqtt_topic_translation = {
     "/sensor/imu2": "/sensors/imu",
 }
 
+
 class ProtocolInterface(ABC):
     """
     This is an abstract class for the MQTT and ROS2 protocols.
     It defines the interface for the protocols.
     """
+
     @abstractmethod
     def send():
         pass
@@ -150,6 +149,7 @@ class MQTTProtocolInterface(ProtocolInterface):
     It also sends messages to the MQTT broker.
     It uses a priority queue to store the messages.
     """
+
     def __init__(self):
         logger.info("[MQTT] Initializing MQTTProtocolInterface…")
         self.inbound_queue = PriorityQueue(maxsize=100)
@@ -186,7 +186,9 @@ class MQTTProtocolInterface(ProtocolInterface):
         if result == mqtt.MQTT_ERR_SUCCESS:
             logger.info("[MQTT] Socket connection successful, awaiting CONNACK…")
         else:
-            logger.error(f"[MQTT] Socket connection failed: {mqtt.error_string(result)}")
+            logger.error(
+                f"[MQTT] Socket connection failed: {mqtt.error_string(result)}"
+            )
 
         logger.info("[MQTT] Starting network loop…")
         self.mqtt_client.loop_start()
@@ -210,25 +212,30 @@ class MQTTProtocolInterface(ProtocolInterface):
         This function is called when the MQTT client connects to the broker.
         """
         if not reason_code:
-            logger.error(f"[MQTT] Connection to the MQTT broker failed: {reason_code.getName()}")
+            logger.error(
+                f"[MQTT] Connection to the MQTT broker failed: {reason_code.getName()}"
+            )
         else:
-            logger.info("[MQTT] Connection to the MQTT broker successful") 
+            logger.info("[MQTT] Connection to the MQTT broker successful")
             logger.info("[MQTT] Subscribing to topics…")
 
             # Subscribing to topics
-            self.mqtt_client.subscribe(
-                [(topic, 1) for topic in mqtt_subscr_topics]
-                )
-         
+            self.mqtt_client.subscribe([(topic, 1) for topic in mqtt_subscr_topics])
+
             logger.info("[MQTT] Subscribed to topics")
 
-    def on_disconnect(self, client, userdata, disconnect_flags, reason_code, properties):
+    def on_disconnect(
+        self, client, userdata, disconnect_flags, reason_code, properties
+    ):
         """
         This function is called when the MQTT client disconnects from the broker.
         """
-        logger.info(f"[MQTT] Disconnected from the MQTT broker: {mqtt.error_string(reason_code)}")
-        self.inbound_queue.put_nowait((0, next(self.counter), ("/profile/alive", False)))
-        
+        logger.info(
+            f"[MQTT] Disconnected from the MQTT broker: {mqtt.error_string(reason_code)}"
+        )
+        self.inbound_queue.put_nowait(
+            (0, next(self.counter), ("/profile/alive", False))
+        )
 
     def on_subscribe(self, client, userdata, mid, reason_code_list, properties):
         """
@@ -244,7 +251,9 @@ class MQTTProtocolInterface(ProtocolInterface):
             - msg (JSON): The message to send.
         """
         if topic not in mqtt_publish_topics:
-            logger.warning(f"[MQTT] Sending message to unknown topic {topic}, dropping message")
+            logger.warning(
+                f"[MQTT] Sending message to unknown topic {topic}, dropping message"
+            )
             return
         self.mqtt_client.publish(topic, msg)
 
@@ -257,25 +266,30 @@ class MQTTProtocolInterface(ProtocolInterface):
             - msg (JSON): The message received.
         """
         if topic not in mqtt_subscr_topics:
-            logger.warning(f"[MQTT] Received message for unknown topic {topic}, dropping message")
+            logger.warning(
+                f"[MQTT] Received message for unknown topic {topic}, dropping message"
+            )
             return
         if self.inbound_queue.full():
-            logger.warning(f"[MQTT] Outbound queue is full, dropping message")
+            logger.warning("[MQTT] Outbound queue is full, dropping message")
         else:
             try:
                 msg_str = msg.decode("utf-8")
-                queue_msg = {
-                    'topic': topic,
-                    'payload': msg_str
-                }
+                queue_msg = {"topic": topic, "payload": msg_str}
                 self.inbound_queue.put_nowait(
-                    (mqtt_subscr_priorities[topic], # priority
-                    next(self.counter), # tie breaker
-                    (topic, msg_str)) # message
+                    (
+                        mqtt_subscr_priorities[topic],  # priority
+                        next(self.counter),  # tie breaker
+                        (topic, msg_str),
+                    )  # message
                 )
-                self.mqtt_client.publish(topic=f"/commands/ack", payload=self.get_msg_id(msg_str))
+                self.mqtt_client.publish(
+                    topic=f"/commands/ack", payload=self.get_msg_id(msg_str)
+                )
             except UnicodeDecodeError:
-                logger.warning(f"[MQTT] Failed to decode message for topic {topic}, dropping message")
+                logger.warning(
+                    f"[MQTT] Failed to decode message for topic {topic}, dropping message"
+                )
                 return
 
     def get_msg_id(self, msg_str):
@@ -286,6 +300,7 @@ class MQTTProtocolInterface(ProtocolInterface):
         response_msg = {"command_id": msg_json["command_id"]}
         return json.dumps(response_msg)
 
+
 class ROSProtocolInterface(Node, ProtocolInterface):
     """
     This class creates a ROS2 node and connects to the ROS2 broker.
@@ -293,6 +308,7 @@ class ROSProtocolInterface(Node, ProtocolInterface):
     It also sends messages to the ROS2 broker.
     It uses a priority queue to store the messages.
     """
+
     def __init__(self):
         logger.info("[ROS] Initializing ROSProtocolInterface…")
         super().__init__("ros2_mqtt_bridge")
@@ -310,12 +326,13 @@ class ROSProtocolInterface(Node, ProtocolInterface):
         for topic, msg_type in ros_subscr_topics.items():
             self.ros_subscribers[topic] = self.create_subscription(
                 msg_type,
-                topic, 
-                lambda msg, t=topic: self.receive(t, msg), 
+                topic,
+                lambda msg, t=topic: self.receive(t, msg),
                 10,
             )
         logger.info("[ROS] Subscribers created")
-        #Create client calling start service to mcn
+        # Create client calling start service to mcn
+
     #     self.cli = self.create_client(SetBool, "start_and_abort")
     #     while not self.cli.wait_for_service(timeout_sec=1.0):
     #         self.get_logger().info('start and stop service not available, waiting again...')
@@ -341,7 +358,9 @@ class ROSProtocolInterface(Node, ProtocolInterface):
             - data (ROS2 message): The message to send.
         """
         if topic not in ros_publish_topics:
-            logger.warning(f"[ROS] Sending message to unknown topic {topic}, dropping message")
+            logger.warning(
+                f"[ROS] Sending message to unknown topic {topic}, dropping message"
+            )
             return
         msg = ros_publish_topics[topic](data=data)
         self.ros_publishers[topic].publish(msg)
@@ -355,19 +374,24 @@ class ROSProtocolInterface(Node, ProtocolInterface):
             - msg (ROS2 message): The message received.
         """
         if topic not in ros_subscr_topics:
-            logger.warning(f"[ROS] Received message for unknown topic {topic}, dropping message")
+            logger.warning(
+                f"[ROS] Received message for unknown topic {topic}, dropping message"
+            )
             return
         if self.inbound_queue.full():
-            logger.warning(f"[ROS] Outbound queue is full, dropping message")
+            logger.warning("[ROS] Outbound queue is full, dropping message")
         else:
             try:
                 self.inbound_queue.put_nowait(
-                    (ros_subscr_priorities[topic], # priority
-                    next(self.counter), # tie breaker
-                    (topic, msg)) # message
+                    (
+                        ros_subscr_priorities[topic],  # priority
+                        next(self.counter),  # tie breaker
+                        (topic, msg),
+                    )  # message
                 )
             except Exception as e:
                 logger.error(f"[ROS] Error putting message in queue: {e}")
+
 
 class MQTT_ROS_Bridge:
     """
@@ -375,6 +399,7 @@ class MQTT_ROS_Bridge:
     It also implements the translation between MQTT and ROS2 messages.
     It also runs the ROS2 executor, the MQTT to ROS2 translation, and the ROS2 to MQTT translation in separate threads.
     """
+
     def __init__(self):
         self.mqtt_protocol = MQTTProtocolInterface()
         self.ros_protocol = ROSProtocolInterface()
@@ -390,12 +415,12 @@ class MQTT_ROS_Bridge:
         self.mqtt_protocol.connect()
         # Run the ROS2 executor in a separate thread to avoid blocking the main thread
         spin_thread = threading.Thread(
-            target=spin_executor, 
+            target=spin_executor,
             args=(self.ros_executor,),
             daemon=True,
-            )
+        )
         spin_thread.start()
-        try:    
+        try:
             # Run the MQTT to ROS2 translation in a separate thread to avoid blocking the main thread while waiting for messages
             mqtt2ros_thread = threading.Thread(
                 target=self.mqtt_to_ros,
@@ -428,7 +453,7 @@ class MQTT_ROS_Bridge:
         while self.mqtt_protocol.running:
             _, _, (topic, msg) = queue.get()
             ros_msg = self.json_to_msg(topic, msg)
-            if ros_msg:                
+            if ros_msg:
                 self.ros_protocol.send(ros_msg[0], ros_msg[1])
 
     def json_to_msg(self, topic, json_data):
@@ -493,7 +518,11 @@ class MQTT_ROS_Bridge:
             - topic (Str): The topic to send the message to.
             - data (JSON): The message to send.
         """
-        pressure_locations = ["/sensor/pressure_hull", "/sensor/pressure_tank", "/sensor/pressure_ext"]
+        pressure_locations = [
+            "/sensor/pressure_hull",
+            "/sensor/pressure_tank",
+            "/sensor/pressure_ext",
+        ]
         leakage_locations = ["/sensor/leakage_front", "/sensor/leakage_back"]
         imu_locations = ["/sensor/imu1", "/sensor/imu2"]
 
@@ -511,7 +540,7 @@ class MQTT_ROS_Bridge:
                 "qw": 6,
                 "qx": 7,
                 "qy": 8,
-                "qz":  9,
+                "qz": 9,
             }
             for key in state_vec_idxs:
                 dict_msg[key] = msg.x[state_vec_idxs[key]]
@@ -524,14 +553,15 @@ class MQTT_ROS_Bridge:
         elif topic in imu_locations:
             dict_msg["imu_num"] = int(topic[-1])
             dict_msg["angular_velocity"] = msg.angular_velocity
-            dict_msg["linear_acceleration"] = msg.linear_acceleration  
+            dict_msg["linear_acceleration"] = msg.linear_acceleration
         if dict_msg:
             return (mqtt_topic_translation[topic], json.dumps(dict_msg))
         return None
 
     def stop(self):
         """
-        This function stops the bridge. It stops the MQTT client, the ROS2 node, and the ROS2 executor.
+        This function stops the bridge. It stops the MQTT client,
+        the ROS2 node, and the ROS2 executor.
         """
         logger.info("[MQTT_ROS_Bridge] Stopping…")
         self.mqtt_protocol.stop()
@@ -539,11 +569,13 @@ class MQTT_ROS_Bridge:
         rclpy.shutdown()
         logger.info("[MQTT_ROS_Bridge] Stopped")
 
+
 def spin_executor(executor):
     """
     This function spins the ROS2 executor.
     """
     executor.spin()
+
 
 def main(args=None):
     """
@@ -553,5 +585,6 @@ def main(args=None):
     bridge = MQTT_ROS_Bridge()
     bridge.run()
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()
