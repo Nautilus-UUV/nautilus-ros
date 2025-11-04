@@ -3,13 +3,13 @@
 <package format="3">
   <name>py_pkg</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
+  <description>Python ROS2 package for POLARIS UUV navigation and control</description>
   <maintainer email="simon@todo.todo">simon</maintainer>
   <license>TODO: License declaration</license>
 
   <depend>rclpy</depend>
   <depend>std_msgs</depend>
-  <depend>geomety_msgs</depend>
+  <depend>geometry_msgs</depend>
   <depend>sensor_msgs</depend>
 
   <test_depend>ament_copyright</test_depend>

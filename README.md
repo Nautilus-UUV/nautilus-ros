@@ -1,19 +1,36 @@
-# uuv-ROS
+# POLARIS UUV - ROS2 Stack
 
-This repository is the basis for the HS25 ROS stack setup, which should run on the RaspberryPi.
+ROS2 navigation and control system for the POLARIS autonomous underwater vehicle, designed to run on RaspberryPi as part of the distributed software architecture.
 
-## [Getting Started](docs/getting-started.md)
-- Commands for setup and ROS tips
+## System Architecture
+
+The POLARIS UUV uses a multi-component software system:
+- **Mission Laptop**: Vue.js frontend + FastAPI backend for mission planning
+- **RaspberryPi**: ROS2-based high-level navigation and control (this repository)
+- **Main PCB**: FreeRTOS + microROS for CAN bus communication
+- **Sensor PCB**: Low-level sensor data collection
+
+## Getting Started
+
+Choose your development environment:
+
+### 🐍 [Python Development](docs/getting-started-python.md)
+For ROS2 nodes, sensor processing, and control algorithms using `rclpy`.
+
+### ⚡ [C++ Development](docs/getting-started-cpp.md)
+For performance-critical components and real-time processing using `rclcpp`.
+
+## Packages
+
+### `py_pkg` - Python ROS2 Package
+Contains Python-based ROS2 nodes and ausiliary libraries:
+- **[polarisutils](src/py_pkg/py_pkg/polarisutils/)** - Centralized topic definitions, QoS profiles, and node utilities
+- Path planning, EKF filtering, PID control, MQTT communication
+
+### `cpp_pkg` - C++ ROS2 Package
+Prepared for C++ ROS2 nodes.
 
 ## [Contributing](docs/CONTRIBUTING.md)
-- Follow our contribution guide for conventions to follow
 
-## Content:
-
-### Nodes
-- 
-
-### Others
-- **[polarisutils](src/py_pkg/py_pkg/polarisutils/)** - Single source of truth for UUV's topics, QoS profiles, message types and node creation helper functions
-- **[CI](.github/workflows/ci.yml)** - Continuos integration check running a docker container with `ROS2 Humble` on `Ubuntu:latest`
+Follow our contribution guidelines for development standards and workflows.
 
