@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Basic usage example for polarisutils.
+Basic usage example for uuv_ros_utils.
 
 Shows different ways to use the package - from simple constants
 to optional convenience functions.
@@ -11,8 +11,8 @@ from rclpy.node import Node
 from std_msgs.msg import Float32, Int32
 
 # Import the essentials
-from polarisutils import PolarisTopics, PolarisQoS, TOPIC_MESSAGE_MAP
-from polarisutils import create_publisher_for_topic
+from uuv_ros_utils import PolarisTopics, PolarisQoS, TOPIC_MESSAGE_MAP
+from uuv_ros_utils import create_publisher_for_topic
 
 
 class ExampleNode(Node):

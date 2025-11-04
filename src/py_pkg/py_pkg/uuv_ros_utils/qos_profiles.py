@@ -3,7 +3,7 @@ QoS profiles optimized for underwater vehicle operations.
 
 Example:
 -------
-    from polarisutils.qos_profiles import PolarisQoS
+    from uuv_ros_utils.qos_profiles import PolarisQoS
 
     publisher = self.create_publisher(
         Float32, topic, PolarisQoS.SAFETY_CRITICAL

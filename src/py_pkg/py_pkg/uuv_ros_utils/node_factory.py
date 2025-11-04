@@ -6,8 +6,8 @@ message types, and QoS profiles. You can still use regular ROS2 methods.
 
 Example:
 -------
-    from polarisutils.node_factory import create_publisher_for_topic
-    from polarisutils.topics import PolarisTopics
+    from uuv_ros_utils.node_factory import create_publisher_for_topic
+    from uuv_ros_utils.topics import PolarisTopics
 
     # Convenience function
     pub = create_publisher_for_topic(self, PolarisTopics.BCU_FLOW_RATE)

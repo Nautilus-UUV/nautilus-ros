@@ -1,10 +1,10 @@
-# POLARIS UUV - ROS2 Stack
+# UUV - ROS2 Stack
 
-ROS2 navigation and control system for the POLARIS autonomous underwater vehicle, designed to run on RaspberryPi as part of the distributed software architecture.
+ROS2 navigation and control system for Nautilus's autonomous underwater vehicle, designed to run on RaspberryPi as part of the distributed software architecture.
 
 ## System Architecture
 
-The POLARIS UUV uses a multi-component software system:
+The UUV uses a multi-component software system:
 - **Mission Laptop**: Vue.js frontend + FastAPI backend for mission planning
 - **RaspberryPi**: ROS2-based high-level navigation and control (this repository)
 - **Main PCB**: FreeRTOS + microROS for CAN bus communication
@@ -18,7 +18,7 @@ All about prerequisites, setup, development, package's architecture, testing and
 
 ### `py_pkg` - Python ROS2 Package
 Contains Python-based ROS2 nodes and auxiliary libraries:
-- **[polarisutils](src/py_pkg/py_pkg/polarisutils/)** - Centralized topic definitions, QoS profiles, and node utilities
+- **[uuv_ros_utils](src/py_pkg/py_pkg/uuv_ros_utils/)** - Centralized topic definitions, QoS profiles, and node utilities
 - Path planning, EKF filtering, PID control, MQTT communication
 
 ### `cpp_pkg` - C++ ROS2 Package

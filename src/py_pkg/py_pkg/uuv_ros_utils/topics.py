@@ -5,7 +5,7 @@ Single source of truth for all topic names.
 
 Example:
 -------
-    from polarisutils.topics import PolarisTopics
+    from uuv_ros_utils.topics import PolarisTopics
 
     self.publisher = self.create_publisher(
         Float32, PolarisTopics.BCU_FLOW_RATE, 10

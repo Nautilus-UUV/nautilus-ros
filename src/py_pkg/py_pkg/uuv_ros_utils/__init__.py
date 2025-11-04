@@ -9,7 +9,7 @@ This package provides:
 
 Example:
 -------
-    from polarisutils import PolarisTopics, PolarisQoS
+    from uuv_ros_utils import PolarisTopics, PolarisQoS
 
     self.publisher = self.create_publisher(
         Float32, PolarisTopics.BCU_FLOW_RATE, PolarisQoS.CONTROL
