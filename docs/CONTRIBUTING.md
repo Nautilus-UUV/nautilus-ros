@@ -15,6 +15,6 @@ Using [conventional commits](https://www.conventionalcommits.org/en/v1.0.0/) all
 ## Linting
 Install [ms-python.black-formatter](https://marketplace.visualstudio.com/items?itemName=ms-python.black-formatter) on vscode, which will format your code automatically on save due to [settings.json](../.vscode/settings.json)
 
-## Continuous Intergration
+## Continuous Integration
 
 Currently there is a CI pipeline that will build the project inside a docker container running `ROS2 Humble` on `Ubuntu:latest`. If the build fails or the smoke test does not pass, your PR or Push will be flagged.
