@@ -1,12 +1,12 @@
 """
-Message type mappings for Polaris UUV topics.
+Message type mappings for UUV topics.
 
 Example:
 -------
     from uuv_ros_utils.message_types import TOPIC_MESSAGE_MAP
-    from uuv_ros_utils.topics import PolarisTopics
+    from uuv_ros_utils.topics import UUVTopics
 
-    msg_type = TOPIC_MESSAGE_MAP[PolarisTopics.BCU_FLOW_RATE]
+    msg_type = TOPIC_MESSAGE_MAP[UUVTopics.BCU_FLOW_RATE]
 
 """
 
@@ -14,32 +14,32 @@ from sensor_msgs.msg import Temperature, Imu
 from std_msgs.msg import Int32, Float32, String, UInt8MultiArray, Float32MultiArray
 from geometry_msgs.msg import Point
 from can_msgs.msg import Frame
-from .topics import PolarisTopics
+from .topics import UUVTopics
 
 
 TOPIC_MESSAGE_MAP = {
-    PolarisTopics.INTERNAL_TEMPERATURE: Temperature,
-    PolarisTopics.INTERNAL_PRESSURE: Int32,
-    PolarisTopics.INTERNAL_LEAK: UInt8MultiArray,
-    PolarisTopics.INTERNAL_HUMIDITY: Float32,
-    PolarisTopics.EXTERNAL_TEMPERATURE: Temperature,
-    PolarisTopics.EXTERNAL_PRESSURE: Int32,
-    PolarisTopics.BCU_PRESSURE: Int32,
-    PolarisTopics.BCU_FLOW_RATE: Float32,
-    PolarisTopics.BCU_RPM: Int32,
-    PolarisTopics.ACU_TILT: Float32,
-    PolarisTopics.ACU_ROLL: Float32,
-    PolarisTopics.ACU_TILT_STEPS: Int32,
-    PolarisTopics.ACU_ROLL_STEPS: Int32,
-    PolarisTopics.ACU_FEEDBACK_OFFSET: Float32,
-    PolarisTopics.ACU_FEEDBACK_ANGLE: Float32,
-    PolarisTopics.IMU_LEFT: Imu,
-    PolarisTopics.IMU_RIGHT: Imu,
-    PolarisTopics.IMU_FILTERED_LEFT: Imu,
-    PolarisTopics.IMU_FILTERED_RIGHT: Imu,
-    PolarisTopics.POSITION_TARGET: Point,
-    PolarisTopics.POSITION_ESTIMATION: Point,
-    PolarisTopics.PATH: Float32MultiArray,
-    PolarisTopics.COMMAND: String,
-    PolarisTopics.CAN_OUT: Frame,
+    UUVTopics.INTERNAL_TEMPERATURE: Temperature,
+    UUVTopics.INTERNAL_PRESSURE: Int32,
+    UUVTopics.INTERNAL_LEAK: UInt8MultiArray,
+    UUVTopics.INTERNAL_HUMIDITY: Float32,
+    UUVTopics.EXTERNAL_TEMPERATURE: Temperature,
+    UUVTopics.EXTERNAL_PRESSURE: Int32,
+    UUVTopics.BCU_PRESSURE: Int32,
+    UUVTopics.BCU_FLOW_RATE: Float32,
+    UUVTopics.BCU_RPM: Int32,
+    UUVTopics.ACU_TILT: Float32,
+    UUVTopics.ACU_ROLL: Float32,
+    UUVTopics.ACU_TILT_STEPS: Int32,
+    UUVTopics.ACU_ROLL_STEPS: Int32,
+    UUVTopics.ACU_FEEDBACK_OFFSET: Float32,
+    UUVTopics.ACU_FEEDBACK_ANGLE: Float32,
+    UUVTopics.IMU_LEFT: Imu,
+    UUVTopics.IMU_RIGHT: Imu,
+    UUVTopics.IMU_FILTERED_LEFT: Imu,
+    UUVTopics.IMU_FILTERED_RIGHT: Imu,
+    UUVTopics.POSITION_TARGET: Point,
+    UUVTopics.POSITION_ESTIMATION: Point,
+    UUVTopics.PATH: Float32MultiArray,
+    UUVTopics.COMMAND: String,
+    UUVTopics.CAN_OUT: Frame,
 }

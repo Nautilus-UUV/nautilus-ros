@@ -1,12 +1,12 @@
 """
-Simple namespace utilities for Polaris UUV system.
+Simple namespace utilities for UUV system.
 
 Example:
 -------
     from uuv_ros_utils.namespaces import add_namespace
-    from uuv_ros_utils.topics import PolarisTopics
+    from uuv_ros_utils.topics import UUVTopics
 
-    topic = add_namespace(PolarisTopics.BCU_FLOW_RATE, "polaris")
+    topic = add_namespace(UUVTopics.BCU_FLOW_RATE, "polaris")
     # Result: "/polaris/bcu/flow_rate"
 
 """

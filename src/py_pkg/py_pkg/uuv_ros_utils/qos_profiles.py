@@ -3,19 +3,19 @@ QoS profiles optimized for underwater vehicle operations.
 
 Example:
 -------
-    from uuv_ros_utils.qos_profiles import PolarisQoS
+    from uuv_ros_utils.qos_profiles import UUVQoS
 
     publisher = self.create_publisher(
-        Float32, topic, PolarisQoS.SAFETY_CRITICAL
+        Float32, topic, UUVQoS.SAFETY_CRITICAL
     )
 
 """
 
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
-from .topics import PolarisTopics
+from .topics import UUVTopics
 
 
-class PolarisQoS:
+class UUVQoS:
     """QoS profiles for underwater operations."""
 
     # Critical safety systems
@@ -42,31 +42,31 @@ class PolarisQoS:
 # Topic QoS mapping
 TOPIC_QOS_MAP = {
     # Safety critical
-    PolarisTopics.INTERNAL_LEAK: PolarisQoS.SAFETY_CRITICAL,
-    PolarisTopics.INTERNAL_PRESSURE: PolarisQoS.SAFETY_CRITICAL,
-    PolarisTopics.EXTERNAL_PRESSURE: PolarisQoS.SAFETY_CRITICAL,
+    UUVTopics.INTERNAL_LEAK: UUVQoS.SAFETY_CRITICAL,
+    UUVTopics.INTERNAL_PRESSURE: UUVQoS.SAFETY_CRITICAL,
+    UUVTopics.EXTERNAL_PRESSURE: UUVQoS.SAFETY_CRITICAL,
     # High-frequency sensors
-    PolarisTopics.IMU_LEFT: PolarisQoS.SENSOR_STREAM,
-    PolarisTopics.IMU_RIGHT: PolarisQoS.SENSOR_STREAM,
+    UUVTopics.IMU_LEFT: UUVQoS.SENSOR_STREAM,
+    UUVTopics.IMU_RIGHT: UUVQoS.SENSOR_STREAM,
     # Commands
-    PolarisTopics.COMMAND: PolarisQoS.COMMAND,
-    PolarisTopics.PATH: PolarisQoS.COMMAND,
+    UUVTopics.COMMAND: UUVQoS.COMMAND,
+    UUVTopics.PATH: UUVQoS.COMMAND,
     # Everything else: control
-    PolarisTopics.INTERNAL_TEMPERATURE: PolarisQoS.CONTROL,
-    PolarisTopics.INTERNAL_HUMIDITY: PolarisQoS.CONTROL,
-    PolarisTopics.EXTERNAL_TEMPERATURE: PolarisQoS.CONTROL,
-    PolarisTopics.BCU_PRESSURE: PolarisQoS.CONTROL,
-    PolarisTopics.BCU_FLOW_RATE: PolarisQoS.CONTROL,
-    PolarisTopics.BCU_RPM: PolarisQoS.CONTROL,
-    PolarisTopics.ACU_TILT: PolarisQoS.CONTROL,
-    PolarisTopics.ACU_ROLL: PolarisQoS.CONTROL,
-    PolarisTopics.ACU_TILT_STEPS: PolarisQoS.CONTROL,
-    PolarisTopics.ACU_ROLL_STEPS: PolarisQoS.CONTROL,
-    PolarisTopics.ACU_FEEDBACK_OFFSET: PolarisQoS.CONTROL,
-    PolarisTopics.ACU_FEEDBACK_ANGLE: PolarisQoS.CONTROL,
-    PolarisTopics.IMU_FILTERED_LEFT: PolarisQoS.CONTROL,
-    PolarisTopics.IMU_FILTERED_RIGHT: PolarisQoS.CONTROL,
-    PolarisTopics.POSITION_TARGET: PolarisQoS.CONTROL,
-    PolarisTopics.POSITION_ESTIMATION: PolarisQoS.CONTROL,
-    PolarisTopics.CAN_OUT: PolarisQoS.CONTROL,
+    UUVTopics.INTERNAL_TEMPERATURE: UUVQoS.CONTROL,
+    UUVTopics.INTERNAL_HUMIDITY: UUVQoS.CONTROL,
+    UUVTopics.EXTERNAL_TEMPERATURE: UUVQoS.CONTROL,
+    UUVTopics.BCU_PRESSURE: UUVQoS.CONTROL,
+    UUVTopics.BCU_FLOW_RATE: UUVQoS.CONTROL,
+    UUVTopics.BCU_RPM: UUVQoS.CONTROL,
+    UUVTopics.ACU_TILT: UUVQoS.CONTROL,
+    UUVTopics.ACU_ROLL: UUVQoS.CONTROL,
+    UUVTopics.ACU_TILT_STEPS: UUVQoS.CONTROL,
+    UUVTopics.ACU_ROLL_STEPS: UUVQoS.CONTROL,
+    UUVTopics.ACU_FEEDBACK_OFFSET: UUVQoS.CONTROL,
+    UUVTopics.ACU_FEEDBACK_ANGLE: UUVQoS.CONTROL,
+    UUVTopics.IMU_FILTERED_LEFT: UUVQoS.CONTROL,
+    UUVTopics.IMU_FILTERED_RIGHT: UUVQoS.CONTROL,
+    UUVTopics.POSITION_TARGET: UUVQoS.CONTROL,
+    UUVTopics.POSITION_ESTIMATION: UUVQoS.CONTROL,
+    UUVTopics.CAN_OUT: UUVQoS.CONTROL,
 }

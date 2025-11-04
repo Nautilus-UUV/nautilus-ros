@@ -12,14 +12,14 @@ self.flow_pub = self.create_publisher(Float32, "/bcu/flow_rate", 10)
 self.leak_sub = self.create_subscription(UInt8MultiArray, "/internal/leak", self.callback, 10)
 
 # ✅ GOOD: Constants + QoS profiles
-from uuv_ros_utils import PolarisTopics, PolarisQoS
-self.flow_pub = self.create_publisher(Float32, PolarisTopics.BCU_FLOW_RATE, PolarisQoS.CONTROL)
-self.leak_sub = self.create_subscription(UInt8MultiArray, PolarisTopics.INTERNAL_LEAK, self.callback, PolarisQoS.SAFETY_CRITICAL)
+from uuv_ros_utils import UUVTopics, UUVQoS
+self.flow_pub = self.create_publisher(Float32, UUVTopics.BCU_FLOW_RATE, UUVQoS.CONTROL)
+self.leak_sub = self.create_subscription(UInt8MultiArray, UUVTopics.INTERNAL_LEAK, self.callback, UUVQoS.SAFETY_CRITICAL)
 
 # ⭐ BEST: Automatic everything
 from uuv_ros_utils import create_publisher_for_topic, create_subscription_for_topic
-self.flow_pub = create_publisher_for_topic(self, PolarisTopics.BCU_FLOW_RATE)
-self.leak_sub = create_subscription_for_topic(self, PolarisTopics.INTERNAL_LEAK, self.callback)
+self.flow_pub = create_publisher_for_topic(self, UUVTopics.BCU_FLOW_RATE)
+self.leak_sub = create_subscription_for_topic(self, UUVTopics.INTERNAL_LEAK, self.callback)
 ```
 
 ### Complete Example
@@ -27,7 +27,7 @@ self.leak_sub = create_subscription_for_topic(self, PolarisTopics.INTERNAL_LEAK,
 ```python
 import rclpy
 from rclpy.node import Node
-from uuv_ros_utils import PolarisTopics, PolarisQoS, create_publisher_for_topic, create_subscription_for_topic
+from uuv_ros_utils import UUVTopics, UUVQoS, create_publisher_for_topic, create_subscription_for_topic
 
 class BCUNode(Node):
     def __init__(self):
@@ -39,9 +39,9 @@ class BCUNode(Node):
         # self.leak_sub = self.create_subscription(UInt8MultiArray, "/internal/leak", self.leak_cb, 10)
 
         # New way: 3 lines, typo-proof, consistent QoS
-        self.flow_pub = create_publisher_for_topic(self, PolarisTopics.BCU_FLOW_RATE)
-        self.pressure_sub = create_subscription_for_topic(self, PolarisTopics.BCU_PRESSURE, self.pressure_cb)
-        self.leak_sub = create_subscription_for_topic(self, PolarisTopics.INTERNAL_LEAK, self.leak_cb)
+        self.flow_pub = create_publisher_for_topic(self, UUVTopics.BCU_FLOW_RATE)
+        self.pressure_sub = create_subscription_for_topic(self, UUVTopics.BCU_PRESSURE, self.pressure_cb)
+        self.leak_sub = create_subscription_for_topic(self, UUVTopics.INTERNAL_LEAK, self.leak_cb)
 
     def pressure_cb(self, msg): pass
     def leak_cb(self, msg): pass
