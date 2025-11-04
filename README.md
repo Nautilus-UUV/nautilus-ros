@@ -10,15 +10,9 @@ The POLARIS UUV uses a multi-component software system:
 - **Main PCB**: FreeRTOS + microROS for CAN bus communication
 - **Sensor PCB**: Low-level sensor data collection
 
-## Getting Started
+## [Getting Started](docs/getting-started.md)
 
-Choose your development environment:
-
-### 🐍 [Python Development](docs/getting-started-python.md)
-For ROS2 nodes, sensor processing, and control algorithms using `rclpy`.
-
-### ⚡ [C++ Development](docs/getting-started-cpp.md)
-For performance-critical components and real-time processing using `rclcpp`.
+Setup guide for Python and C++ development with ROS2 Humble.
 
 ## Packages
 
