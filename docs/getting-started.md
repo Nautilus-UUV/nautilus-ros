@@ -130,78 +130,86 @@ See [polarisutils documentation](../src/py_pkg/py_pkg/polarisutils/README.md) fo
 
 ## Adding Nodes/Packages
 
-### Python Packages
-When adding new Python packages or modules:
+### Example: Adding a "Sensor Monitor" Feature
 
+### Python Package
 1. **Package Structure**: Add your package following this structure:
    ```
-   src/py_pkg/py_pkg/
-   ├── __init__.py
-   ├── your_package_name/
-   │   ├── __init__.py          # Expose main classes/functions
-   │   ├── README.md            # Package documentation
-   │   ├── examples/            # Usage examples
-   │   │   └── basic_usage.py
-   │   ├── module1.py           # Your implementation files
-   │   └── module2.py
-   └── README.md                # Package documentation
+   uuv-ros/
+   ├── README.md
+   └── src/py_pkg/py_pkg/
+       ├── __init__.py
+       └── sensor_monitor/              # Package name
+           ├── __init__.py              # Makes it a Python package
+           ├── README.md                # Package documentation
+           ├── monitor_node.py          # Main ROS2 node
+           ├── alert_system.py          # Helper module
+           └── examples/
+               └── basic_usage.py
    ```
 
 2. **Main Package Integration**: Update `src/py_pkg/py_pkg/__init__.py` to import your package:
    ```python
-   from . import your_package_name
+   from . import sensor_monitor
    ```
 
 3. **Node integration**: Add an entry to `console_scripts` in `src/py_pkg/setup.py`:
    ```python
    entry_points={
        'console_scripts': [
-           ...,
-           '<YOUR_NODE> = py_pkg.<YOUR_NODE>:main',
-           ...
+           'sensor_monitor_node = py_pkg.sensor_monitor.monitor_node:main',
        ],
    },
    ```
 
-### C++ Packages
-When adding new C++ packages or modules:
+4. **Run the node**:
+   ```bash
+   ros2 run py_pkg sensor_monitor_node
+   ```
 
+### C++ Package
 1. **Package Structure**: Add your package following this structure:
    ```
-   src/cpp_pkg/
-   ├── src/
-   │   └── your_package_name/
-   │       ├── your_node.cpp        # Your ROS2 node implementation
-   │       ├── your_library.cpp     # Additional implementation files
-   │       └── examples/            # Usage examples
-   │           └── basic_usage.cpp
-   ├── include/cpp_pkg/
-   │   └── your_package_name/
-   │       ├── your_node.hpp        # Header files
-   │       └── your_library.hpp
-   └── README.md                    # Package documentation
+   uuv-ros/
+   ├── README.md
+   └── src/cpp_pkg/
+       ├── src/
+       │   └── sensor_monitor/          # Package name
+       │       ├── monitor_node.cpp     # Main ROS2 node
+       │       ├── alert_system.cpp     # Helper implementation
+       │       └── examples/
+       │           └── basic_usage.cpp
+       ├── include/cpp_pkg/
+       │   └── sensor_monitor/
+       │       ├── monitor_node.hpp     # Node header
+       │       └── alert_system.hpp     # Helper headers
+       └── README.md                    # Package documentation
    ```
 
 2. **CMakeLists.txt Integration**: Register your executable in `src/cpp_pkg/CMakeLists.txt`:
    ```cmake
    # Add executable
-   add_executable(<YOUR_NODE> src/your_package_name/<YOUR_NODE>.cpp)
+   add_executable(sensor_monitor_node src/sensor_monitor/monitor_node.cpp src/sensor_monitor/alert_system.cpp)
 
    # Link dependencies
-   ament_target_dependencies(<YOUR_NODE> rclcpp std_msgs geometry_msgs sensor_msgs)
+   ament_target_dependencies(sensor_monitor_node rclcpp std_msgs geometry_msgs sensor_msgs)
 
    # Install executable
-   install(TARGETS <YOUR_NODE> DESTINATION lib/${PROJECT_NAME})
+   install(TARGETS sensor_monitor_node DESTINATION lib/${PROJECT_NAME})
 
    # Add include directories
-   target_include_directories(<YOUR_NODE> PUBLIC
+   target_include_directories(sensor_monitor_node PUBLIC
      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
      $<INSTALL_INTERFACE:include>)
    ```
 
-3. **Dependencies**: If you need additional ROS2 packages, add them to both:
-   - `find_package()` in CMakeLists.txt
-   - `<depend>` tags in package.xml
+3. **Run the node**:
+   ```bash
+   ros2 run cpp_pkg sensor_monitor_node
+   ```
+
+### Adding Dependencies
+If you need additional ROS2 packages, add them to `package.xml` and (for C++) `CMakeLists.txt`.
 
 ## Testing
 
