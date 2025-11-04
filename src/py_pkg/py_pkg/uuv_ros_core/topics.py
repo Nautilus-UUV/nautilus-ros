@@ -1,21 +1,21 @@
 """
-Centralized topic definitions for Polaris UUV system.
+Centralized topic definitions for UUV system.
 
 Single source of truth for all topic names.
 
 Example:
 -------
-    from polarisutils.topics import PolarisTopics
+    from uuv_ros_core.topics import UUVTopics
 
     self.publisher = self.create_publisher(
-        Float32, PolarisTopics.BCU_FLOW_RATE, 10
+        Float32, UUVTopics.BCU_FLOW_RATE, 10
     )
 
 """
 
 
-class PolarisTopics:
-    """Topic constants for Polaris UUV system."""
+class UUVTopics:
+    """Topic constants for UUV system."""
 
     # Internal sensors
     INTERNAL_TEMPERATURE = "/internal/temperature"

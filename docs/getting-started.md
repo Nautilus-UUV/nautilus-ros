@@ -47,24 +47,24 @@ ros2 run cpp_pkg YOUR_NODE_NAME
 
 ## Python Development
 
-### Using polarisutils
+### Using uuv_ros_core
 
-The `polarisutils` library provides centralized topic definitions and utilities:
+The `uuv_ros_core` library provides centralized topic definitions and utilities:
 
 ```python
 import rclpy
 from rclpy.node import Node
-from polarisutils import PolarisTopics, create_publisher_for_topic
+from uuv_ros_core import UUVTopics, create_publisher_for_topic
 
 class MyNode(Node):
     def __init__(self):
         super().__init__("my_node")
 
         # Create publishers with automatic message types and QoS
-        self.flow_pub = create_publisher_for_topic(self, PolarisTopics.BCU_FLOW_RATE)
+        self.flow_pub = create_publisher_for_topic(self, UUVTopics.BCU_FLOW_RATE)
 ```
 
-See [polarisutils documentation](../src/py_pkg/py_pkg/polarisutils/README.md) for complete usage examples.
+See [uuv_ros_core documentation](../src/py_pkg/py_pkg/uuv_ros_core/README.md) for complete usage examples.
 
 ### Creating Python Nodes
 
