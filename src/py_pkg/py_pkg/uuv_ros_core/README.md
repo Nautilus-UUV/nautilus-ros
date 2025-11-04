@@ -1,4 +1,4 @@
-# uuv_ros_utils
+# uuv_ros_core
 
 ROS2 interface management system - providing centralized topic definitions, QoS profiles, and non-intrusive utilities.
 
@@ -12,12 +12,12 @@ self.flow_pub = self.create_publisher(Float32, "/bcu/flow_rate", 10)
 self.leak_sub = self.create_subscription(UInt8MultiArray, "/internal/leak", self.callback, 10)
 
 # ✅ GOOD: Constants + QoS profiles
-from uuv_ros_utils import UUVTopics, UUVQoS
+from uuv_ros_core import UUVTopics, UUVQoS
 self.flow_pub = self.create_publisher(Float32, UUVTopics.BCU_FLOW_RATE, UUVQoS.CONTROL)
 self.leak_sub = self.create_subscription(UInt8MultiArray, UUVTopics.INTERNAL_LEAK, self.callback, UUVQoS.SAFETY_CRITICAL)
 
 # ⭐ BEST: Automatic everything
-from uuv_ros_utils import create_publisher_for_topic, create_subscription_for_topic
+from uuv_ros_core import create_publisher_for_topic, create_subscription_for_topic
 self.flow_pub = create_publisher_for_topic(self, UUVTopics.BCU_FLOW_RATE)
 self.leak_sub = create_subscription_for_topic(self, UUVTopics.INTERNAL_LEAK, self.callback)
 ```
@@ -27,7 +27,7 @@ self.leak_sub = create_subscription_for_topic(self, UUVTopics.INTERNAL_LEAK, sel
 ```python
 import rclpy
 from rclpy.node import Node
-from uuv_ros_utils import UUVTopics, UUVQoS, create_publisher_for_topic, create_subscription_for_topic
+from uuv_ros_core import UUVTopics, UUVQoS, create_publisher_for_topic, create_subscription_for_topic
 
 class BCUNode(Node):
     def __init__(self):

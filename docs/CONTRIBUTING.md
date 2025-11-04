@@ -2,7 +2,7 @@
 
 ## Branching
 For collaborative development create a branch named <github_username>/<feature_name>, e.g.
-> massarin/uuv_ros_utils
+> massarin/uuv_ros_core
 
 ## Pull requests
 Always PR into `dev`, this way we can test interactions between merged features before pushing to `main`. From here the moderator of the repository will PR into `main`.

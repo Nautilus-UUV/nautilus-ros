@@ -3,8 +3,8 @@ Simple namespace utilities for UUV system.
 
 Example:
 -------
-    from uuv_ros_utils.namespaces import add_namespace
-    from uuv_ros_utils.topics import UUVTopics
+    from uuv_ros_core.namespaces import add_namespace
+    from uuv_ros_core.topics import UUVTopics
 
     topic = add_namespace(UUVTopics.BCU_FLOW_RATE, "uuv")
     # Result: "/uuv/bcu/flow_rate"

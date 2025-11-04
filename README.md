@@ -18,7 +18,7 @@ All about prerequisites, setup, development, package's architecture, testing and
 
 ### `py_pkg` - Python ROS2 Package
 Contains Python-based ROS2 nodes and auxiliary libraries:
-- **[uuv_ros_utils](src/py_pkg/py_pkg/uuv_ros_utils/)** - Centralized topic definitions, QoS profiles, and node utilities
+- **[uuv_ros_core](src/py_pkg/py_pkg/uuv_ros_core/)** - Centralized topic definitions, QoS profiles, and node utilities
 - Path planning, EKF filtering, PID control, MQTT communication
 
 ### `cpp_pkg` - C++ ROS2 Package

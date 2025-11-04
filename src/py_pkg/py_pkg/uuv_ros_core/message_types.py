@@ -3,8 +3,8 @@ Message type mappings for UUV topics.
 
 Example:
 -------
-    from uuv_ros_utils.message_types import TOPIC_MESSAGE_MAP
-    from uuv_ros_utils.topics import UUVTopics
+    from uuv_ros_core.message_types import TOPIC_MESSAGE_MAP
+    from uuv_ros_core.topics import UUVTopics
 
     msg_type = TOPIC_MESSAGE_MAP[UUVTopics.BCU_FLOW_RATE]
 

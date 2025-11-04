@@ -9,7 +9,7 @@ This package provides:
 
 Example:
 -------
-    from uuv_ros_utils import UUVTopics, UUVQoS
+    from uuv_ros_core import UUVTopics, UUVQoS
 
     self.publisher = self.create_publisher(
         Float32, UUVTopics.BCU_FLOW_RATE, UUVQoS.CONTROL

@@ -3,7 +3,7 @@ QoS profiles optimized for underwater vehicle operations.
 
 Example:
 -------
-    from uuv_ros_utils.qos_profiles import UUVQoS
+    from uuv_ros_core.qos_profiles import UUVQoS
 
     publisher = self.create_publisher(
         Float32, topic, UUVQoS.SAFETY_CRITICAL

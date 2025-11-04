@@ -6,8 +6,8 @@ message types, and QoS profiles. You can still use regular ROS2 methods.
 
 Example:
 -------
-    from uuv_ros_utils.node_factory import create_publisher_for_topic
-    from uuv_ros_utils.topics import UUVTopics
+    from uuv_ros_core.node_factory import create_publisher_for_topic
+    from uuv_ros_core.topics import UUVTopics
 
     # Convenience function
     pub = create_publisher_for_topic(self, UUVTopics.BCU_FLOW_RATE)

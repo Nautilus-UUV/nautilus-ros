@@ -5,7 +5,7 @@ Single source of truth for all topic names.
 
 Example:
 -------
-    from uuv_ros_utils.topics import UUVTopics
+    from uuv_ros_core.topics import UUVTopics
 
     self.publisher = self.create_publisher(
         Float32, UUVTopics.BCU_FLOW_RATE, 10

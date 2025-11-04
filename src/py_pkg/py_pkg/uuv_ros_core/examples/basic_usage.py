@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Basic usage example for uuv_ros_utils.
+Basic usage example for uuv_ros_core.
 
 Shows different ways to use the package - from simple constants
 to optional convenience functions.
@@ -11,8 +11,8 @@ from rclpy.node import Node
 from std_msgs.msg import Float32, Int32
 
 # Import the essentials
-from uuv_ros_utils import UUVTopics, UUVQoS, TOPIC_MESSAGE_MAP
-from uuv_ros_utils import create_publisher_for_topic
+from uuv_ros_core import UUVTopics, UUVQoS, TOPIC_MESSAGE_MAP
+from uuv_ros_core import create_publisher_for_topic
 
 
 class ExampleNode(Node):
