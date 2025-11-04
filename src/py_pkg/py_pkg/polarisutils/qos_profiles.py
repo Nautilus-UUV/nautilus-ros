@@ -22,26 +22,20 @@ class PolarisQoS:
     SAFETY_CRITICAL = QoSProfile(
         reliability=ReliabilityPolicy.RELIABLE,
         durability=DurabilityPolicy.TRANSIENT_LOCAL,
-        depth=50
+        depth=50,
     )
 
     # Control systems
-    CONTROL = QoSProfile(
-        reliability=ReliabilityPolicy.RELIABLE,
-        depth=10
-    )
+    CONTROL = QoSProfile(reliability=ReliabilityPolicy.RELIABLE, depth=10)
 
     # High-frequency sensors
-    SENSOR_STREAM = QoSProfile(
-        reliability=ReliabilityPolicy.BEST_EFFORT,
-        depth=5
-    )
+    SENSOR_STREAM = QoSProfile(reliability=ReliabilityPolicy.BEST_EFFORT, depth=5)
 
     # Commands and missions
     COMMAND = QoSProfile(
         reliability=ReliabilityPolicy.RELIABLE,
         durability=DurabilityPolicy.TRANSIENT_LOCAL,
-        depth=20
+        depth=20,
     )
 
 
@@ -51,15 +45,12 @@ TOPIC_QOS_MAP = {
     PolarisTopics.INTERNAL_LEAK: PolarisQoS.SAFETY_CRITICAL,
     PolarisTopics.INTERNAL_PRESSURE: PolarisQoS.SAFETY_CRITICAL,
     PolarisTopics.EXTERNAL_PRESSURE: PolarisQoS.SAFETY_CRITICAL,
-
     # High-frequency sensors
     PolarisTopics.IMU_LEFT: PolarisQoS.SENSOR_STREAM,
     PolarisTopics.IMU_RIGHT: PolarisQoS.SENSOR_STREAM,
-
     # Commands
     PolarisTopics.COMMAND: PolarisQoS.COMMAND,
     PolarisTopics.PATH: PolarisQoS.COMMAND,
-
     # Everything else: control
     PolarisTopics.INTERNAL_TEMPERATURE: PolarisQoS.CONTROL,
     PolarisTopics.INTERNAL_HUMIDITY: PolarisQoS.CONTROL,

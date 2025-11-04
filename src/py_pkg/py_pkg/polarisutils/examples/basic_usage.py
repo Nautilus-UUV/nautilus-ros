@@ -24,14 +24,12 @@ class ExampleNode(Node):
             TOPIC_MESSAGE_MAP[PolarisTopics.INTERNAL_LEAK],
             PolarisTopics.INTERNAL_LEAK,
             self.leak_callback,
-            PolarisQoS.SAFETY_CRITICAL
+            PolarisQoS.SAFETY_CRITICAL,
         )
 
         # Method 2: Mix constants and manual types/QoS (flexible)
         self.flow_pub = self.create_publisher(
-            Float32,
-            PolarisTopics.BCU_FLOW_RATE,
-            PolarisQoS.CONTROL
+            Float32, PolarisTopics.BCU_FLOW_RATE, PolarisQoS.CONTROL
         )
 
         # Method 3: Use convenience function (simplest)
@@ -40,9 +38,7 @@ class ExampleNode(Node):
         )
 
         # Method 4: Still works - pure standard ROS2
-        self.custom_pub = self.create_publisher(
-            Int32, "/my/custom/topic", 10
-        )
+        self.custom_pub = self.create_publisher(Int32, "/my/custom/topic", 10)
 
         self.get_logger().info("Example node started with multiple approaches")
 

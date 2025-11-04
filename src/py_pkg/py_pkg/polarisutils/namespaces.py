@@ -19,7 +19,7 @@ def add_namespace(topic: str, namespace: str = "polaris") -> str:
 
 def remove_namespace(topic: str) -> str:
     """Remove namespace from a topic (get base topic)."""
-    if topic.count('/') >= 2:
-        parts = topic.split('/', 2)
-        return '/' + parts[2]
+    if topic.count("/") >= 2:
+        parts = topic.split("/", 2)
+        return "/" + parts[2]
     return topic
