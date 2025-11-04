@@ -34,7 +34,6 @@ __all__ = [
     "PolarisQoS",
     "TOPIC_QOS_MAP",
     "TOPIC_MESSAGE_MAP",
-
     # Optional utilities
     "add_namespace",
     "remove_namespace",
