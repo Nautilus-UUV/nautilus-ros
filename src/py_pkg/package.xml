@@ -3,7 +3,7 @@
 <package format="3">
   <name>py_pkg</name>
   <version>0.0.0</version>
-  <description>Python ROS2 package for POLARIS UUV navigation and control</description>
+  <description>Python ROS2 package for Nautilus's UUV navigation and control</description>
   <maintainer email="simon@todo.todo">simon</maintainer>
   <license>TODO: License declaration</license>
 

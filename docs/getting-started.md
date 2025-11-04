@@ -54,14 +54,14 @@ The `uuv_ros_utils` library provides centralized topic definitions and utilities
 ```python
 import rclpy
 from rclpy.node import Node
-from uuv_ros_utils import PolarisTopics, create_publisher_for_topic
+from uuv_ros_utils import UUVTopics, create_publisher_for_topic
 
 class MyNode(Node):
     def __init__(self):
         super().__init__("my_node")
 
         # Create publishers with automatic message types and QoS
-        self.flow_pub = create_publisher_for_topic(self, PolarisTopics.BCU_FLOW_RATE)
+        self.flow_pub = create_publisher_for_topic(self, UUVTopics.BCU_FLOW_RATE)
 ```
 
 See [uuv_ros_utils documentation](../src/py_pkg/py_pkg/uuv_ros_utils/README.md) for complete usage examples.

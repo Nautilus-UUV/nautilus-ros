@@ -6,13 +6,13 @@ Example:
     from uuv_ros_utils.namespaces import add_namespace
     from uuv_ros_utils.topics import UUVTopics
 
-    topic = add_namespace(UUVTopics.BCU_FLOW_RATE, "polaris")
-    # Result: "/polaris/bcu/flow_rate"
+    topic = add_namespace(UUVTopics.BCU_FLOW_RATE, "uuv")
+    # Result: "/uuv/bcu/flow_rate"
 
 """
 
 
-def add_namespace(topic: str, namespace: str = "polaris") -> str:
+def add_namespace(topic: str, namespace: str = "uuv") -> str:
     """Add namespace to a topic."""
     return f"/{namespace}{topic}"
 

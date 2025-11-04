@@ -3,7 +3,7 @@
 <package format="3">
   <name>cpp_pkg</name>
   <version>0.0.0</version>
-  <description>C++ ROS2 package for POLARIS UUV real-time components</description>
+  <description>C++ ROS2 package for Nautilus's UUV real-time components</description>
   <maintainer email="simon@todo.todo">simon</maintainer>
   <license>TODO: License declaration</license>
 
