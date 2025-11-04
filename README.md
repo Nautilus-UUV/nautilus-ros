@@ -2,6 +2,10 @@
 
 This repository is the basis for the HS25 ROS stack setup, which should run on the RaspberryPi. When working with this repository, do not commit your changes to the main branch directly, instead create your own branch and open a pull request when needed.
 
+## Current packages:
+
+- **[polarisutils](src/py_pkg/py_pkg/polarisutils/)** - Single source of truth for UUV's topics, QoS profiles, message types and node creation helper functions
+
 ## Setup
 
 In order to work with this repository, you need to install ROS2 humble following [this](https://docs.ros.org/en/humble/Installation/Ubuntu-Install-Debs.html) instruction.
