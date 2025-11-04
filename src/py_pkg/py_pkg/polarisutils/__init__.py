@@ -8,11 +8,13 @@ This package provides:
 - Simple helper functions (optional)
 
 Example:
+-------
     from polarisutils import PolarisTopics, PolarisQoS
 
     self.publisher = self.create_publisher(
         Float32, PolarisTopics.BCU_FLOW_RATE, PolarisQoS.CONTROL
     )
+
 """
 
 # Core constants

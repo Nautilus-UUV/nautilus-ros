@@ -4,11 +4,13 @@ Centralized topic definitions for Polaris UUV system.
 Single source of truth for all topic names.
 
 Example:
+-------
     from polarisutils.topics import PolarisTopics
 
     self.publisher = self.create_publisher(
         Float32, PolarisTopics.BCU_FLOW_RATE, 10
     )
+
 """
 
 

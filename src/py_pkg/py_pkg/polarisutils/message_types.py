@@ -2,10 +2,12 @@
 Message type mappings for Polaris UUV topics.
 
 Example:
+-------
     from polarisutils.message_types import TOPIC_MESSAGE_MAP
     from polarisutils.topics import PolarisTopics
 
     msg_type = TOPIC_MESSAGE_MAP[PolarisTopics.BCU_FLOW_RATE]
+
 """
 
 from sensor_msgs.msg import Temperature, Imu

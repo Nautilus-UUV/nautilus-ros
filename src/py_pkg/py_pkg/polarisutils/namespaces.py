@@ -2,11 +2,13 @@
 Simple namespace utilities for Polaris UUV system.
 
 Example:
+-------
     from polarisutils.namespaces import add_namespace
     from polarisutils.topics import PolarisTopics
 
     topic = add_namespace(PolarisTopics.BCU_FLOW_RATE, "polaris")
     # Result: "/polaris/bcu/flow_rate"
+
 """
 
 

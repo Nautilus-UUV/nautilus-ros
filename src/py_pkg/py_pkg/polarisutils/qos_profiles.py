@@ -2,15 +2,16 @@
 QoS profiles optimized for underwater vehicle operations.
 
 Example:
+-------
     from polarisutils.qos_profiles import PolarisQoS
 
     publisher = self.create_publisher(
         Float32, topic, PolarisQoS.SAFETY_CRITICAL
     )
+
 """
 
-from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy, HistoryPolicy
-from rclpy.duration import Duration
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from .topics import PolarisTopics
 
 
