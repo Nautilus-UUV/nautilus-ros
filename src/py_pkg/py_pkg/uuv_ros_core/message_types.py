@@ -12,7 +12,7 @@ Example:
 
 from sensor_msgs.msg import Temperature, Imu
 from std_msgs.msg import Int32, Float32, String, UInt8MultiArray, Float32MultiArray
-from geometry_msgs.msg import Point
+from geometry_msgs.msg import Pose
 from can_msgs.msg import Frame
 from .topics import UUVTopics
 
@@ -37,8 +37,8 @@ TOPIC_MESSAGE_MAP = {
     UUVTopics.IMU_RIGHT: Imu,
     UUVTopics.IMU_FILTERED_LEFT: Imu,
     UUVTopics.IMU_FILTERED_RIGHT: Imu,
-    UUVTopics.POSITION_TARGET: Point,
-    UUVTopics.POSITION_ESTIMATION: Point,
+    UUVTopics.POSITION_TARGET: Pose,
+    UUVTopics.POSITION_ESTIMATION: Pose,
     UUVTopics.PATH: Float32MultiArray,
     UUVTopics.COMMAND: String,
     UUVTopics.CAN_OUT: Frame,
