@@ -33,3 +33,6 @@ Always PR into `dev`, this way we can test interactions between merged features 
 Using [conventional commits](https://www.conventionalcommits.org/en/v1.0.0/) allows for automated release and changelog generation, see
 - [https://github.com/marketplace/actions/conventional-changelog-action](https://github.com/marketplace/actions/conventional-changelog-action), or
 - [release-please](https://github.com/marketplace/actions/release-please-action) by google
+
+## Linting
+Install [ms-python.black-formatter](https://marketplace.visualstudio.com/items?itemName=ms-python.black-formatter) on vscode, which will format your code automatically on save due to [settings.json](../.vscode/settings.json)
