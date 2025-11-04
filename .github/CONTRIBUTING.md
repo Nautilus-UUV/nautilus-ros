@@ -20,6 +20,7 @@ When contributing new packages or modules to the project:
    ```python
    from . import your_package_name
    ```
+3. **Add to [README](../README.md)**: One line description and link to your package in the **Current packages** section
 
 ## Branching
 For collaborative development create a branch named <github_username>/<feature_name>, e.g.
