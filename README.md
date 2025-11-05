@@ -2,14 +2,6 @@
 
 ROS2 navigation and control system for Nautilus's autonomous underwater vehicle, designed to run on RaspberryPi as part of the distributed software architecture.
 
-## System Architecture
-
-The UUV uses a multi-component software system:
-- **Mission Laptop**: Vue.js frontend + FastAPI backend for mission planning
-- **RaspberryPi**: ROS2-based high-level navigation and control (this repository)
-- **Main PCB**: FreeRTOS + microROS for CAN bus communication
-- **Sensor PCB**: Low-level sensor data collection
-
 ## [Getting Started](docs/getting-started.md)
 
 All about prerequisites, setup, development, package's architecture, testing and debugging.
