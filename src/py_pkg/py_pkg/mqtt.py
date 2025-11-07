@@ -1,5 +1,6 @@
 """
 This node is a bridge between ROS2 and MQTT.
+
 It subscribes to ROS2 topics and publishes to MQTT topics.
 It also subscribes to MQTT topics and publishes to ROS2 topics.
 
