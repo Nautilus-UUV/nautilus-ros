@@ -31,7 +31,7 @@ import rclpy
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from sensor_msgs.msg import Imu
-from std_msgs.msg import Bool, Float64, Float64MultiArray, MultiArrayDimension
+from std_msgs.msg import Bool, Float64, Float64MultiArray, MultiArrayDimension, String
 from std_srvs.srv import SetBool
 
 logging.basicConfig(level=logging.INFO)
