@@ -17,7 +17,8 @@ ament_cmake_environment_hooks/
 ament_prefix_path/
 
 # === Editor and IDEs ===
-.vscode/
+.vscode/*
+!.vscode/settings.json
 .idea/
 *.swp
 *.swo
