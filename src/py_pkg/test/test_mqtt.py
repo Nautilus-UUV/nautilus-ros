@@ -1,7 +1,5 @@
-import rclpy
 import unittest
-from std_msgs.msg import String
-from py_pkg.mqtt import ROSProtocolInterface, MQTTProtocolInterface, MQTT_ROS_Bridge
+
 
 class TestMQTTNode(unittest.TestCase):
 
@@ -13,6 +11,7 @@ class TestMQTTNode(unittest.TestCase):
 
     def test_example_2(self):
         self.assertEqual(True, True)
+
 
 if __name__ == '__main__':
     unittest.main()
