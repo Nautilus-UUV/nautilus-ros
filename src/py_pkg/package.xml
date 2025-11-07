@@ -9,9 +9,9 @@
 
   <depend>rclpy</depend>
   <depend>std_msgs</depend>
-  <depend>geomety_msgs</depend>
+  <depend>geometry_msgs</depend>
   <depend>sensor_msgs</depend>
-  <depend>paho-mqtt</depend>
+  <depend>python3-paho-mqtt</depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
