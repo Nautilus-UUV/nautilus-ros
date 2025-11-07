@@ -25,7 +25,15 @@ jobs:
           set -eo pipefail
           apt-get update
           apt-get install -y --no-install-recommends \
-            python3-colcon-common-extensions ros-$ROS_DISTRO-ros2cli ros-$ROS_DISTRO-std-msgs
+            python3-colcon-common-extensions ros-$ROS_DISTRO-ros2cli ros-$ROS_DISTRO-std-msgs python3-rosdep
+
+      # Install dependencies
+      - name: Install dependencies
+        run: |
+          set -eo pipefail
+          rosdep init || true
+          rosdep update
+          rosdep install --from-paths src --ignore-src -r -y
 
       # Build your workspace
       - name: Build
