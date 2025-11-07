@@ -1,14 +1,15 @@
 """
 This node is a bridge between ROS2 and MQTT.
+
 It subscribes to ROS2 topics and publishes to MQTT topics.
 It also subscribes to MQTT topics and publishes to ROS2 topics.
 
 Architecture:
-    +----------------+     +----------------+     +----------------+     +----------------+     +----------------+
-    |                |     |                |     |                |     |                |     |                |
-    |  MQTT Broker   |<--->| MQTT Interface |<--->|MQTT/ROS  Bridge|<--->| ROS  Interface |<--->|      UUV      |
-    |                |     |                |     |                |     |                |     |                |
-    +----------------+     +----------------+     +----------------+     +----------------+     +----------------+
+    +-----------+     +-----------+     +-----------+     +-----------+     +-----------+
+    |           |     |           |     |           |     |           |     |           |
+    |MQTT Broker|<--->|MQTT Iface |<--->|MQTT/ROS   |<--->|ROS Iface  |<--->|    UUV    |
+    |           |     |           |     |Bridge     |     |           |     |           |
+    +-----------+     +-----------+     +-----------+     +-----------+     +-----------+
 
 
 Author:
@@ -31,8 +32,7 @@ import rclpy
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from sensor_msgs.msg import Imu
-from std_msgs.msg import Bool, Float64, Float64MultiArray, MultiArrayDimension
-from std_srvs.srv import SetBool
+from std_msgs.msg import Bool, Float64, Float64MultiArray, String
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -275,7 +275,6 @@ class MQTTProtocolInterface(ProtocolInterface):
         else:
             try:
                 msg_str = msg.decode("utf-8")
-                queue_msg = {"topic": topic, "payload": msg_str}
                 self.inbound_queue.put_nowait(
                     (
                         mqtt_subscr_priorities[topic],  # priority
@@ -284,7 +283,7 @@ class MQTTProtocolInterface(ProtocolInterface):
                     )  # message
                 )
                 self.mqtt_client.publish(
-                    topic=f"/commands/ack", payload=self.get_msg_id(msg_str)
+                    topic="/commands/ack", payload=self.get_msg_id(msg_str)
                 )
             except UnicodeDecodeError:
                 logger.warning(
@@ -397,7 +396,8 @@ class MQTT_ROS_Bridge:
     """
     This class creates a bridge between MQTT and ROS2. It instantiates the MQTT and ROS2 nodes.
     It also implements the translation between MQTT and ROS2 messages.
-    It also runs the ROS2 executor, the MQTT to ROS2 translation, and the ROS2 to MQTT translation in separate threads.
+    It also runs the ROS2 executor, the MQTT to ROS2 translation, and the ROS2 to MQTT
+    translation in separate threads.
     """
 
     def __init__(self):
@@ -421,12 +421,14 @@ class MQTT_ROS_Bridge:
         )
         spin_thread.start()
         try:
-            # Run the MQTT to ROS2 translation in a separate thread to avoid blocking the main thread while waiting for messages
+            # Run the MQTT to ROS2 translation in a separate thread to avoid blocking
+            # the main thread while waiting for messages
             mqtt2ros_thread = threading.Thread(
                 target=self.mqtt_to_ros,
                 daemon=True,
             )
-            # Run the ROS2 to MQTT translation in a separate thread to avoid blocking the main thread while waiting for messages
+            # Run the ROS2 to MQTT translation in a separate thread to avoid blocking
+            # the main thread while waiting for messages
             ros2mqtt_thread = threading.Thread(
                 target=self.ros_to_mqtt,
                 daemon=True,
@@ -445,7 +447,8 @@ class MQTT_ROS_Bridge:
 
     def mqtt_to_ros(self):
         """
-        This function extracts messages from the MQTT priority queue and translates them to ROS2 messages.
+        This function extracts messages from the MQTT priority queue and translates them
+        to ROS2 messages.
         It then sends the ROS2 messages to the ROS2 broker.
         Run in a separate thread.
         """
@@ -496,7 +499,8 @@ class MQTT_ROS_Bridge:
 
     def ros_to_mqtt(self):
         """
-        This function extracts messages from the ROS2 priority queue and translates them to MQTT messages.
+        This function extracts messages from the ROS2 priority queue and translates them
+        to MQTT messages.
         It then sends the MQTT messages to the MQTT broker.
         Run in a separate thread.
         """
@@ -579,7 +583,8 @@ def spin_executor(executor):
 
 def main(args=None):
     """
-    This function initializes the ROS2 node, creates the bridge, and runs it. It is the entry point of the node.
+    This function initializes the ROS2 node, creates the bridge, and runs it.
+    It is the entry point of the node.
     """
     rclpy.init(args=args)
     bridge = MQTT_ROS_Bridge()
