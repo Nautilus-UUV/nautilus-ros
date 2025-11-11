@@ -24,7 +24,8 @@ setup(
     },
     entry_points={
         'console_scripts': [
-		'ekf_prefilter = py_pkg.ekf_prefilter:main',
+            'ekf_prefilter = py_pkg.ekf_prefilter:main',
+            'ekf_node = py_pkg.ekf_node:main',
         ],
     },
 )
