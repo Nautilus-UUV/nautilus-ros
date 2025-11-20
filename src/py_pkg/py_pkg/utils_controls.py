@@ -1,5 +1,5 @@
 class PIDController:
-    """PID controller with derivative-on-measurement, integral windup protection, and output limits."""
+    """PID controller with derivative-on-measurement and integral windup protection."""
 
     def __init__(
         self,
@@ -10,7 +10,8 @@ class PIDController:
         output_limits: tuple[float, float] = (-1000, 1000),
         derivative_filter: float = 0.0,
     ) -> None:
-        """Initialize PID controller.
+        """
+        Initialize PID controller.
 
         Parameters
         ----------
@@ -26,6 +27,7 @@ class PIDController:
             (min, max) output limits.
         derivative_filter : float, optional
             Low-pass filter coefficient (0=no filter, 0.1=light, 0.5=heavy).
+
         """
         self.kp = kp
         self.ki = ki
@@ -41,7 +43,8 @@ class PIDController:
         self.filtered_derivative = 0.0
 
     def update(self, target: float, input: float, time: float) -> float:
-        """Update PID controller.
+        """
+        Update PID controller.
 
         Parameters
         ----------
@@ -56,6 +59,7 @@ class PIDController:
         -------
         float
             Control output.
+
         """
         error = target - input
 
