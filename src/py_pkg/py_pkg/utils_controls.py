@@ -1,7 +1,5 @@
 class PIDController:
-    """
-    PID controller with derivative-on-measurement, integral windup protection, and output limits.
-    """
+    """PID controller with derivative-on-measurement, integral windup protection, and output limits."""
 
     def __init__(
         self,
@@ -12,14 +10,22 @@ class PIDController:
         output_limits: tuple[float, float] = (-1000, 1000),
         derivative_filter: float = 0.0,
     ) -> None:
-        """
-        Args:
-            kp: Proportional gain
-            ki: Integral gain
-            kd: Derivative gain
-            integral_limits: (min, max) integral term limits
-            output_limits: (min, max) output limits
-            derivative_filter: Low-pass filter coefficient (0=no filter, 0.1=light, 0.5=heavy)
+        """Initialize PID controller.
+
+        Parameters
+        ----------
+        kp : float, optional
+            Proportional gain.
+        ki : float, optional
+            Integral gain.
+        kd : float, optional
+            Derivative gain.
+        integral_limits : tuple[float, float], optional
+            (min, max) integral term limits.
+        output_limits : tuple[float, float], optional
+            (min, max) output limits.
+        derivative_filter : float, optional
+            Low-pass filter coefficient (0=no filter, 0.1=light, 0.5=heavy).
         """
         self.kp = kp
         self.ki = ki
@@ -35,16 +41,21 @@ class PIDController:
         self.filtered_derivative = 0.0
 
     def update(self, target: float, input: float, time: float) -> float:
-        """
-        Updates PID controller.
+        """Update PID controller.
 
-        Args:
-            target: Desired setpoint
-            input: Current measured value
-            time: Current timestamp (seconds)
+        Parameters
+        ----------
+        target : float
+            Desired setpoint.
+        input : float
+            Current measured value.
+        time : float
+            Current timestamp (seconds).
 
-        Returns:
-            Control output
+        Returns
+        -------
+        float
+            Control output.
         """
         error = target - input
 
@@ -98,7 +109,7 @@ class PIDController:
         return output
 
     def reset(self):
-        """Reset controller state"""
+        """Reset controller state."""
         self.integral = 0.0
         self.filtered_derivative = 0.0
         self.prev_error = 0.0
