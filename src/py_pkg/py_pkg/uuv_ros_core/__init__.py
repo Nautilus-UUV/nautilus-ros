@@ -21,6 +21,7 @@ Example:
 from .topics import UUVTopics
 from .qos_profiles import UUVQoS, TOPIC_QOS_MAP
 from .message_types import TOPIC_MESSAGE_MAP
+from .commands import UUVCommands
 
 # Optional utilities
 from .namespaces import add_namespace, remove_namespace
@@ -34,6 +35,7 @@ __all__ = [
     "UUVQoS",
     "TOPIC_QOS_MAP",
     "TOPIC_MESSAGE_MAP",
+    "UUVCommands",
     # Optional utilities
     "add_namespace",
     "remove_namespace",
