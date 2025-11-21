@@ -17,6 +17,7 @@ from py_pkg.uuv_ros_core.node_factory import create_publisher_for_topic, create_
 from py_pkg.acu_node_ControlSystem import ACUController as ControlSystem
 from py_pkg.SimMath import euler_to_direction
 from py_pkg.acu_roll_control_node_config import init_acu_control, init_pos as init_pos_roll, init_vel as init_vel_roll, init_acc as init_acc_roll, init_motor as init_motor_roll
+from py_pkg.uuv_ros_core.topics import UUVTopics
 
 
 class ACUControlNode(Node):
@@ -40,10 +41,15 @@ class ACUControlNode(Node):
         )
 
         # Subscriber for the current depth
-        self.current_pose = create_subscription_for_topic("/position/estimation", self.current_pose_callback, 10, callback_group=self.callback_group
+        self.current_pose = create_subscription_for_topic(UUVTopics.POSITION_ESTIMATION, self.current_pose_callback, 10, callback_group=self.callback_group
         )
-        self.target_pose = create_subscription_for_topic("/path", self.target_pose_callback, 10, callback_group=self.callback_group
+        self.target_pose = create_subscription_for_topic(UUVTopics.PATH, self.target_pose_callback, 10, callback_group=self.callback_group
         )
+
+        # Subscriber for SIMULATION 
+        self.imu_simulated = create_subscription_for_topic(UUVTopics.IMU, self.imu_callback, 10, callback_group=self.callback_group
+        )
+        
 
         # Timer to periodically run the control loop
         self.control_timer = self.create_timer(

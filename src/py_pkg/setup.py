@@ -23,7 +23,11 @@ setup(
         ],
     },
     entry_points={
-        'console_scripts': [
-        ],
+        'console_scripts': [ 
+            'dive_test = py_pkg.simulation.sim_dive_test:main',
+            'depth_control_node = py_pkg.depth_control_node:main',
+            'sim_dive_acu = py_pkg.simulation.sim_dive_test_acu:main',
+            'bcu_controller = py_pkg.bcu_controller_node:main',
+        ], #copied from simulations setup.py that was used in polaris-dave-simulation
     },
 )
