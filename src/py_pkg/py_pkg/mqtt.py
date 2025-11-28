@@ -33,6 +33,7 @@ from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from sensor_msgs.msg import Imu
 from std_msgs.msg import Bool, Float64, Float64MultiArray, String
+from .uuv_ros_core import UUVTopics, TOPIC_QOS_MAP, TOPIC_MESSAGE_MAP, UUVCommands
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -41,42 +42,25 @@ logger = logging.getLogger(__name__)
 
 MQTT_HOST = "192.168.2.1"
 
+ros_subscr_topic_names = {
+    # sensor topics
+    UUVTopics.IMU_LEFT,
+    UUVTopics.IMU_RIGHT,
+    UUVTopics.BCU_PRESSURE,
+    UUVTopics.EXTERNAL_PRESSURE,
+    UUVTopics.INTERNAL_LEAK,  # TODO: probably requires more refinded topics
+    # profile topics
+    UUVTopics.POSITION_TARGET,
+    UUVTopics.POSITION_ESTIMATION,
+    # system state topics
+}
+
 ros_subscr_topics = {
-    # /sensor subtopics
-    "/sensor/imu1": Imu,
-    "/sensor/imu2": Imu,
-    "/sensor/pressure_hull": Float64,
-    "/sensor/pressure_tank": Float64,
-    "/sensor/pressure_ext": Float64,
-    "/sensor/leakage_front": Bool,
-    "/sensor/leakage_back": Bool,
-    # /profile subtopics
-    "/profile/target_depth": Float64,
-    "/profile/actual_depth": Float64,
-    "/profile/actual_volume": Float64,
-    # /state subtopics
-    "/state/state_vec": String,
-    "/state/motor": String,
-    "/state/node_outage": String,
+    topic: TOPIC_MESSAGE_MAP[topic] for topic in ros_subscr_topic_names
 }
 
 ros_subscr_priorities = {
-    # /sensor subtopics
-    "/sensor/imu1": 10,
-    "/sensor/imu2": 10,
-    "/sensor/pressure_hull": 6,
-    "/sensor/pressure_tank": 8,
-    "/sensor/pressure_ext": 10,
-    "/sensor/leakage_front": 2,
-    "/sensor/leakage_back": 2,
-    # /profile subtopics
-    "/profile/target_depth": 10,
-    "/profile/actual_depth": 10,
-    "/profile/actual_volume": 10,
-    # /state subtopics
-    "/state/state_vec": 8,
-    "/state/motor": 8,
-    "/state/node_outage": 2,
+    topic: TOPIC_QOS_MAP[topic] for topic in ros_subscr_topic_names
 }
 
 mqtt_subscr_topics = [
@@ -87,9 +71,8 @@ mqtt_subscr_topics = [
 ]
 
 mqtt_publish_topics = [
-    "/sensors/depth",
-    "/sensors/target_depth",
     "/sensors/pose",
+    "/sensors/target_pose",
     "/sensors/pressure",
     "/sensors/leakage",
     "/sensors/alive",
@@ -102,28 +85,25 @@ mqtt_subscr_priorities = {
     "/profile/stop": 1,
 }
 
+ros_publish_topic_names = {UUVTopics.PATH, UUVTopics.COMMAND}
+
 ros_publish_topics = {
-    "/profile/dive_profile": Float64MultiArray,
-    "/profile/alive": Bool,
-    "/profile/start_stop": Bool,
+    topic: TOPIC_MESSAGE_MAP[topic] for topic in ros_publish_topic_names
 }
 
 ros_publish_priorities = {
-    "/profile/dive_profile": 8,
-    "/profile/alive": 0,
-    "/profile/stop": 2,
+    topic: TOPIC_QOS_MAP[topic] for topic in ros_publish_topic_names
 }
+
 mqtt_topic_translation = {
-    "/profile/actual_depth": "/sensors/depth",
-    "/profile/target_depth": "/sensors/target_depth",
-    "/state/state_vec": "/sensors/pose",
-    "/sensor/pressure_hull": "/sensors/pressure",
-    "/sensor/pressure_tank": "/sensors/pressure",
-    "/sensor/pressure_ext": "/sensors/pressure",
-    "/sensor/leakage_front": "/sensors/leakage",
-    "/sensor/leakage_back": "/sensors/leakage",
-    "/sensor/imu1": "/sensors/imu",
-    "/sensor/imu2": "/sensors/imu",
+    UUVTopics.POSITION_ESTIMATION: "/sensors/pose",
+    UUVTopics.POSITION_TARGET: "sensors/target_pose",
+    UUVTopics.BCU_PRESSURE: "/sensors/pressure",
+    UUVTopics.EXTERNAL_PRESSURE: "/sensors/pressure",
+    UUVTopics.INTERNAL_PRESSURE: "/sensors/pressure",
+    UUVTopics.INTERNAL_LEAK: "/sensors/leakage",
+    UUVTopics.IMU_LEFT: "/sensors/imu",
+    UUVTopics.IMU_RIGHT: "/sensors/imu",
 }
 
 
@@ -473,28 +453,21 @@ class MQTT_ROS_Bridge:
         """
         if topic == "/profile/abort":
             logger.info("[MQTT_ROS_Bridge] Received abort message")
-            return ("/profile/alive", False)
+            return (UUVTopics.COMMAND, UUVCommands.ABORT)
         if topic == "/profile/dive_profile":
             json_msg = json.loads(json_data)
             waypoints = []
             for waypoint in json_msg["data"]["waypoints"]:
+                # TODO: update waypoint calculation here
+                # in 3D we do not append depth and pause_duration
+                # but lattitude, longitude and depth
                 waypoints.append(waypoint["depth"])
                 waypoints.append(waypoint["pause_duration"])
-            return ("/profile/dive_profile", waypoints)
+            return (UUVTopics.PATH, waypoints)
         if topic == "/profile/start":
-            # future = self.ros_protocol.send_start_stop_call(True)
-            # rclpy.spin_until_future_complete(self,future)
-            # response = future.result()
-            # self.get_logger().info(f"sending start command success:{response}")
-            return ("/profile/alive", True)
-            pass
+            return (UUVTopics.COMMAND, UUVCommands.START)
         if topic == "/profile/stop":
-            # future = self.ros_protocol.send_start_stop_call(False)
-            # rclpy.spin_until_future_complete(self,future)
-            # response = future.result()
-            # self.get_logger().info(f"sending stop command success:{response}")
-            return ("/profile/stop", True)
-            pass
+            return (UUVTopics.COMMAND, UUVCommands.STOP)
         return None
 
     def ros_to_mqtt(self):
@@ -522,21 +495,29 @@ class MQTT_ROS_Bridge:
             - topic (Str): The topic to send the message to.
             - data (JSON): The message to send.
         """
-        pressure_locations = [
-            "/sensor/pressure_hull",
-            "/sensor/pressure_tank",
-            "/sensor/pressure_ext",
+        """"""
+        pressure_topics = [
+            UUVTopics.EXTERNAL_PRESSURE,
+            UUVTopics.INTERNAL_PRESSURE,
+            UUVTopics.BCU_PRESSURE,
         ]
-        leakage_locations = ["/sensor/leakage_front", "/sensor/leakage_back"]
-        imu_locations = ["/sensor/imu1", "/sensor/imu2"]
+        pressure_topics_to_locations = {
+            UUVTopics.BCU_PRESSURE: "tank",
+            UUVTopics.INTERNAL_PRESSURE: "hull",
+            UUVTopics.EXTERNAL_PRESSURE: "ext",
+        }
+        leakage_topics = [UUVTopics.INTERNAL_LEAK]
+        leakage_topics_to_locations = {
+            # TODO: this should be updated to non-hardcoded location
+            UUVTopics.INTERNAL_LEAK: "front"
+        }  # alternative is 'back'
+        imu_topics = [UUVTopics.IMU_LEFT, UUVTopics.IMU_RIGHT]
+        imu_topics_to_number = {UUVTopics.IMU_LEFT: 1, UUVTopics.IMU_RIGHT: 2}
+        pose_topics = [UUVTopics.POSITION_ESTIMATION, UUVTopics.POSITION_TARGET]
 
         timestamp = datetime.now().isoformat()
         dict_msg = {"record_datetime": timestamp}
-        if topic == "/profile/actual_depth":
-            dict_msg["depth"] = msg.data
-        elif topic == "/profile/target_depth":
-            dict_msg["depth"] = msg.data
-        elif topic == "/state/state_vec":
+        if topic in pose_topics:
             state_vec_idxs = {
                 "x": 0,
                 "y": 2,
@@ -548,14 +529,14 @@ class MQTT_ROS_Bridge:
             }
             for key in state_vec_idxs:
                 dict_msg[key] = msg.x[state_vec_idxs[key]]
-        elif topic in pressure_locations:
+        elif topic in pressure_topics:
             dict_msg["pressure"] = msg.data
-            _, _, dict_msg["location"] = topic.partition("_")
-        elif topic in leakage_locations:
-            dict_msg["has_leak"] = msg.data
-            _, _, dict_msg["location"] = topic.partition("_")
-        elif topic in imu_locations:
-            dict_msg["imu_num"] = int(topic[-1])
+            dict_msg["location"] = pressure_topics_to_locations[topic]
+        elif topic in leakage_topics:
+            dict_msg["has_leak"] = any(leakage for leakage in msg.data)
+            dict_msg["location"] = leakage_topics_to_locations[topic]
+        elif topic in imu_topics:
+            dict_msg["imu_num"] = imu_topics_to_number[topic]
             dict_msg["angular_velocity"] = msg.angular_velocity
             dict_msg["linear_acceleration"] = msg.linear_acceleration
         if dict_msg:
