@@ -7,20 +7,23 @@ import numpy as np
 from geometry_msgs.msg import Pose
 from std_msgs.msg import Float32MultiArray, String
 from uuv_ros_core import UUVTopics, UUVQoS, TOPIC_MESSAGE_MAP
-from uuv_ros_core import create_publisher_for_topic
 
 
 class PathfindingNode(Node):
     """
-    Pathfinding / trajectory planning node for Nautilus.
+    Pathfinding / trajectory following node for Nautilus.
 
     SUBSCRIBES:
       - /position/estimation   (UUVTopics.POSITION_ESTIMATION, Pose)
-      - /command               (UUVTopics.COMMAND, String)     # final desired position
+          Current estimated pose from EKF.
+      - /command               (UUVTopics.COMMAND, String)
+          High-level commands: "start", "stop", "abort".
+      - /path                  (UUVTopics.PATH, Float32MultiArray)
+          Flattened list of keypoints: [x1, y1, z1, x2, y2, z2, ...]
 
     PUBLISHES:
-      - /path                  (UUVTopics.PATH, Float32MultiArray)  # full trajectory (flattened Poses)
-      - /position/target       (UUVTopics.POSITION_TARGET, Pose)    # next waypoint Pose only
+      - /position/target       (UUVTopics.POSITION_TARGET, Pose)
+          Current target pose for the controller.
     """
 
     def __init__(self):
@@ -40,8 +43,7 @@ class PathfindingNode(Node):
             UUVQoS.SENSOR_STREAM,
         )
 
-        # Final desired position (mission command)
-        # For now we assume message.data = "x y z" (three floats as text)
+        # High-level commands: "start", "stop", "abort"
         self.command_sub = self.create_subscription(
             TOPIC_MESSAGE_MAP[UUVTopics.COMMAND],  # String
             UUVTopics.COMMAND,
@@ -50,9 +52,12 @@ class PathfindingNode(Node):
         )
 
         # Full path (flattened list of Poses)
-        self.path_pub = create_publisher_for_topic(
-            self, UUVTopics.PATH
-        )  # Float32MultiArray
+        self.path_sub = self.create_subscription(
+            TOPIC_MESSAGE_MAP[UUVTopics.PATH],  # Float32MultiArray
+            UUVTopics.PATH,
+            self._path_callback,
+            UUVQoS.CONTROL,
+        )
 
         # Next waypoint Pose (what control should aim at)
         self.position_target_pub = self.create_publisher(
@@ -61,10 +66,10 @@ class PathfindingNode(Node):
             UUVQoS.CONTROL,
         )
 
-        self.current_pose: Pose = None
+        self.keypoints: list[tuple[float, float, float]] = []
+        self.current_keypoint_idx: int | None = None
 
-        # Goal position (x, y, z) from /command
-        self.goal_position = None  # (x, y, z) tuple
+        self.current_pose: Pose = None
 
         # List of Pose waypoints along our trajectory
         self.trajectory_poses: list[Pose] = []
@@ -73,6 +78,8 @@ class PathfindingNode(Node):
         # Timing / monitoring for each segment
         self.last_waypoint_time = None
         self.last_segment_length = None
+
+        self.mode = "IDLE"
 
         # Timer to periodically check progress towards current waypoint
         self.timer = self.create_timer(self.timer_dt, self._timer_callback)
@@ -83,46 +90,119 @@ class PathfindingNode(Node):
         """Receive the latest EKF pose estimate."""
         self.current_pose = msg
 
+    def _path_callback(self, msg: Float32MultiArray):
+        """
+        Receive the path of keypoints from /path.
+
+        msg.data = [x1, y1, z1, x2, y2, z2, ...]
+        """
+        data = list(msg.data)
+        if len(data) % 3 != 0:
+            self.get_logger().error(
+                f"Received /path with length {len(data)}, not a multiple of 3."
+            )
+            return
+
+        keypoints = []
+        for i in range(0, len(data), 3):
+            x = float(data[i])
+            y = float(data[i + 1])
+            z = float(data[i + 2])
+            keypoints.append((x, y, z))
+
+        self.keypoints = keypoints
+        self.current_keypoint_idx = 0 if keypoints else None
+
+        # When a new path arrives, clear existing local trajectory.
+        self.trajectory_poses = []
+        self.current_index = 0
+        self.last_waypoint_time = None
+        self.last_segment_length = None
+
+        self.get_logger().info(
+            f"Received new path with {len(self.keypoints)} keypoints from /path."
+        )
+
     def _command_callback(self, msg: String):
         """
-        Handle new mission command from /command.
-
-        For now we assume the format is:
-            "x y z"
-        Example: "100.0 50.0 -20.0"
+        Handle high-level commands: "start", "stop", "abort".
         """
-        try:
-            parts = msg.data.strip().split()
-            if len(parts) != 3:
-                raise ValueError("Expected three numbers: x y z")
-            x, y, z = map(float, parts)
-        except Exception as e:
-            self.get_logger().error(f"Failed to parse /command: '{msg.data}' ({e})")
-            return
+        command = msg.data.strip().lower()
+        self.get_logger().info(f"Received /command: '{command}'")
 
-        self.goal_position = (x, y, z)
-        self.get_logger().info(f"New goal from /command: ({x:.2f}, {y:.2f}, {z:.2f})")
+        if command == "start":
+            self._handle_start()
+        elif command == "stop":
+            self._handle_stop()
+        elif command == "abort":
+            self._handle_abort()
+        else:
+            self.get_logger().warn(
+                f"Unknown command '{command}'. Expected 'start', 'stop', or 'abort'."
+            )
 
+    def _handle_start(self):
+        """
+        Start or resume following the keypoints.
+        """
         if self.current_pose is None:
-            self.get_logger().warn("Cannot plan trajectory yet: no current pose.")
+            self.get_logger().warn("Cannot start: no current pose from EKF yet.")
             return
 
-        self._plan_trajectory_from_current_pose()
+        if not self.keypoints:
+            self.get_logger().warn("Cannot start: no keypoints received on /path.")
+            return
+
+        if self.current_keypoint_idx is None:
+            self.current_keypoint_idx = 0
+
+        self.mode = "RUNNING"
+        self.get_logger().info("Mode set to RUNNING.")
+
+        # If we don't have a local trajectory, plan one to the current keypoint.
+        if not self.trajectory_poses:
+            self._plan_trajectory_to_current_keypoint()
+
+    def _handle_stop(self):
+        """
+        Stop advancing to new waypoints, but keep the current target pose.
+        """
+        self.mode = "STOPPED"
+        self.get_logger().info("Mode set to STOPPED. Holding current target pose.")
+
+    def _handle_abort(self):
+        """
+        Abort the current mission: clear trajectory and keypoints.
+        """
+        self.mode = "ABORTED"
+        self.trajectory_poses = []
+        self.current_index = 0
+        self.last_waypoint_time = None
+        self.last_segment_length = None
+        # clear keypoints as well:
+        self.keypoints = []
+        self.current_keypoint_idx = None
+        self.get_logger().info("Mode set to ABORTED. Trajectory cleared.")
+
+    def _plan_trajectory_to_current_keypoint(self):
+        """
+        Plan a local trajectory from current_pose to the current keypoint in self.keypoints.
+        """
+        if self.current_pose is None:
+            self.get_logger().warn("Cannot plan: no current pose.")
+            return
+        if self.current_keypoint_idx is None or self.current_keypoint_idx >= len(
+            self.keypoints
+        ):
+            self.get_logger().warn("Cannot plan: invalid current_keypoint_idx.")
+            return
+
+        gx, gy, gz = self.keypoints[self.current_keypoint_idx]
+        self._plan_trajectory_from_current_pose((gx, gy, gz))
 
     def _build_turn_straight_xy_path(self, x0, y0, yaw0, gx, gy, R, ds):
         """
-        Build a simple XY path:
-
-        1) Constant-radius turn (left or right) from yaw0 until
-            the heading points directly at the goal.
-        2) Straight line from end of arc to goal.
-
-        Arguments:
-        x0, y0:   start position
-        yaw0:     start heading (rad)
-        gx, gy:   goal position
-        R:        turn radius
-        ds:       step length along the path (m)
+        Build a turn straight path to the destination
 
         Returns:
         list of (x, y, yaw) along the path
@@ -220,23 +300,12 @@ class PathfindingNode(Node):
         cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
         return math.atan2(siny_cosp, cosy_cosp)
 
-    def _plan_trajectory_from_current_pose(self):
+    def _plan_trajectory_from_current_pose(self, goal_position):
         """
         Compute a trajectory from current_pose to goal_position using
         a turn–then–straight path in the XY plane and constant pitch in Z.
-
-        Steps:
-        1) Get start (x,y,z) and start yaw from current_pose.
-        2) Get goal (gx, gy, gz) from self.goal_position.
-        3) Build an XY polyline with heading using a constant-radius turn
-            until facing the goal, then straight line.
-        4) Interpolate z along the path from start.z to gz.
-        5) Use a constant pitch = atan2(Δz, horizontal_distance).
-        6) For each path sample, build a Pose with (x,y,z) and orientation
-            from roll=0, constant pitch, yaw_i.
-        7) Store as self.trajectory_poses, publish full path, send first waypoint.
         """
-        if self.current_pose is None or self.goal_position is None:
+        if self.current_pose is None or goal_position is None:
             self.get_logger().warn("Missing current pose or goal; cannot plan.")
             return
 
@@ -249,7 +318,7 @@ class PathfindingNode(Node):
         start_yaw = self._quaternion_to_yaw(q.x, q.y, q.z, q.w)
 
         # 2) Goal position
-        gx, gy, gz = self.goal_position
+        gx, gy, gz = goal_position
 
         # If start and goal are basically identical
         dx0 = gx - start_x
@@ -271,7 +340,6 @@ class PathfindingNode(Node):
 
             self.trajectory_poses = [pose]
             self.current_index = 0
-            self._publish_full_path()
             self._send_current_waypoint()
             return
 
@@ -341,34 +409,7 @@ class PathfindingNode(Node):
         )
 
         # 7) Publish full path once & send first waypoint
-        self._publish_full_path()
         self._send_current_waypoint()
-
-    def _publish_full_path(self):
-        """
-        Publish the full trajectory on /path as a Float32MultiArray.
-
-        Format per Pose:
-          [x, y, z, qx, qy, qz, qw]
-        So the full data is:
-          [x0,y0,z0,qx0,qy0,qz0,qw0, x1,y1,z1,qx1, ...]
-        """
-        if not self.trajectory_poses:
-            return
-
-        arr = []
-        for pose in self.trajectory_poses:
-            arr.append(float(pose.position.x))
-            arr.append(float(pose.position.y))
-            arr.append(float(pose.position.z))
-            arr.append(float(pose.orientation.x))
-            arr.append(float(pose.orientation.y))
-            arr.append(float(pose.orientation.z))
-            arr.append(float(pose.orientation.w))
-
-        msg = Float32MultiArray()
-        msg.data = arr
-        self.path_pub.publish(msg)
 
     def _send_current_waypoint(self):
         """
@@ -384,7 +425,15 @@ class PathfindingNode(Node):
         # Update timing and segment length tracking
         self.last_waypoint_time = self.get_clock().now()
         if self.current_index == 0:
-            self.last_segment_length = None
+            # Approximate length from current EKF pose to first waypoint
+            if self.current_pose is not None:
+                prev = self.current_pose.position
+                dx = pose.position.x - prev.x
+                dy = pose.position.y - prev.y
+                dz = pose.position.z - prev.z
+                self.last_segment_length = math.sqrt(dx * dx + dy * dy + dz * dz)
+            else:
+                self.last_segment_length = None
         else:
             prev_pose = self.trajectory_poses[self.current_index - 1]
             dx = pose.position.x - prev_pose.position.x
@@ -393,20 +442,43 @@ class PathfindingNode(Node):
             self.last_segment_length = math.sqrt(dx * dx + dy * dy + dz * dz)
 
         self.get_logger().info(
-            f"Sent waypoint {self.current_index + 1}/{len(self.trajectory_poses)}: "
+            f"Sent waypoint {self.current_index + 1}/{len(self.trajectory_poses)} "
+            f"for keypoint {self.current_keypoint_idx}: "
             f"({pose.position.x:.2f}, {pose.position.y:.2f}, {pose.position.z:.2f})"
         )
 
     def _advance_to_next_waypoint(self):
-        """Move to next waypoint and send it; or finish if we are at the end."""
+        """
+        Move to next waypoint and send it;
+        or if at the end of local trajectory, go to next keypoint (if any).
+        """
         if not self.trajectory_poses:
             return
 
+        # Still have more fine-grained waypoints for this keypoint
         if self.current_index < len(self.trajectory_poses) - 1:
             self.current_index += 1
             self._send_current_waypoint()
+            return
+
+        # Finished local trajectory to this keypoint
+        self.get_logger().info("Local trajectory to current keypoint completed.")
+
+        # Move to next keypoint, if available and in RUNNING mode
+        if (
+            self.keypoints
+            and self.current_keypoint_idx is not None
+            and self.current_keypoint_idx < len(self.keypoints) - 1
+            and self.mode == "RUNNING"
+        ):
+            self.current_keypoint_idx += 1
+            self.trajectory_poses = []
+            self.current_index = 0
+            self._plan_trajectory_to_current_keypoint()
         else:
-            self.get_logger().info("Final waypoint reached. Trajectory complete.")
+            self.get_logger().info(
+                "All keypoints completed or not running. Mission complete."
+            )
             self.trajectory_poses = []
             self.current_index = 0
             self.last_waypoint_time = None
@@ -415,10 +487,14 @@ class PathfindingNode(Node):
     def _timer_callback(self):
         """
         Every timer_dt seconds:
+          - If mode != RUNNING: do nothing.
           - Check distance from EKF pose to current waypoint.
           - If within tolerance -> send next waypoint.
-          - If too long without progress -> replan.
+          - If too long without progress -> replan local trajectory.
         """
+        if self.mode != "RUNNING":
+            return
+
         if self.current_pose is None:
             return
         if not self.trajectory_poses:
@@ -448,7 +524,7 @@ class PathfindingNode(Node):
                 now.nanoseconds - self.last_waypoint_time.nanoseconds
             ) * 1e-9  # sec
 
-            if self.last_segment_length is not None:
+            if self.last_segment_length is not None and self.last_segment_length > 1e-3:
                 expected_time = self.last_segment_length / self.speed
             else:
                 expected_time = self.timer_dt
@@ -458,9 +534,9 @@ class PathfindingNode(Node):
             if elapsed > timeout:
                 self.get_logger().warn(
                     f"Timeout on waypoint (elapsed={elapsed:.1f}s > {timeout:.1f}s). "
-                    f"Replanning from current pose."
+                    f"Replanning from current pose to current keypoint."
                 )
-                self._plan_trajectory_from_current_pose()
+                self._plan_trajectory_to_current_keypoint()
 
     def _rpy_to_quaternion(self, roll: float, pitch: float, yaw: float):
         """
