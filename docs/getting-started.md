@@ -16,8 +16,11 @@
 
 2. **Install colcon build tools** (if not available)
    ```bash
-   sudo apt update
-   sudo apt install python3-colcon-common-extensions
+   # Default ros distro: humble
+   bash scripts/install-deps.sh
+
+   # Or, use your own (humble and jazzy tested)
+   ROS_DISTRO=jazzy bash scripts/install-deps.sh
    ```
 
 3. **Build the workspace**
