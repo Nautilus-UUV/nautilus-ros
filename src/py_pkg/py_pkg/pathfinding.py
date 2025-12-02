@@ -124,9 +124,7 @@ class PathfindingNode(Node):
         )
 
     def _command_callback(self, msg: String):
-        """
-        Handle high-level commands: "start", "stop", "abort".
-        """
+        """Handle high-level commands: "start", "stop", "abort"."""
         command = msg.data.strip().lower()
         self.get_logger().info(f"Received /command: '{command}'")
 
@@ -142,9 +140,7 @@ class PathfindingNode(Node):
             )
 
     def _handle_start(self):
-        """
-        Start or resume following the keypoints.
-        """
+        """Start or resume following the keypoints."""
         if self.current_pose is None:
             self.get_logger().warn("Cannot start: no current pose from EKF yet.")
             return
@@ -164,16 +160,12 @@ class PathfindingNode(Node):
             self._plan_trajectory_to_current_keypoint()
 
     def _handle_stop(self):
-        """
-        Stop advancing to new waypoints, but keep the current target pose.
-        """
+        """Stop advancing to new waypoints, but keep the current target pose."""
         self.mode = "STOPPED"
         self.get_logger().info("Mode set to STOPPED. Holding current target pose.")
 
     def _handle_abort(self):
-        """
-        Abort the current mission: clear trajectory and keypoints.
-        """
+        """Abort the current mission: clear trajectory and keypoints."""
         self.mode = "ABORTED"
         self.trajectory_poses = []
         self.current_index = 0
@@ -185,9 +177,7 @@ class PathfindingNode(Node):
         self.get_logger().info("Mode set to ABORTED. Trajectory cleared.")
 
     def _plan_trajectory_to_current_keypoint(self):
-        """
-        Plan a local trajectory from current_pose to the current keypoint in self.keypoints.
-        """
+        """Plan a local trajectory from current_pose to the current keypoint in self.keypoints."""
         if self.current_pose is None:
             self.get_logger().warn("Cannot plan: no current pose.")
             return
@@ -201,12 +191,7 @@ class PathfindingNode(Node):
         self._plan_trajectory_from_current_pose((gx, gy, gz))
 
     def _build_turn_straight_xy_path(self, x0, y0, yaw0, gx, gy, R, ds):
-        """
-        Build a turn straight path to the destination
-
-        Returns:
-        list of (x, y, yaw) along the path
-        """
+        """Build a turn straight path to the destination. Returns: list of (x, y, yaw) along the path."""
         points = []
 
         # Vector to goal in XY
@@ -292,19 +277,14 @@ class PathfindingNode(Node):
         return points
 
     def _quaternion_to_yaw(self, x: float, y: float, z: float, w: float) -> float:
-        """
-        Extract yaw (rotation around Z) from a quaternion assuming ZYX convention.
-        """
+        """Extract yaw (rotation around Z) from a quaternion assuming ZYX convention."""
         # yaw (z-axis rotation)
         siny_cosp = 2.0 * (w * z + x * y)
         cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
         return math.atan2(siny_cosp, cosy_cosp)
 
     def _plan_trajectory_from_current_pose(self, goal_position):
-        """
-        Compute a trajectory from current_pose to goal_position using
-        a turn–then–straight path in the XY plane and constant pitch in Z.
-        """
+        """Compute a trajectory from current_pose to goal_position usinga turn–then–straight path in the XY plane and constant pitch in Z."""
         if self.current_pose is None or goal_position is None:
             self.get_logger().warn("Missing current pose or goal; cannot plan.")
             return
@@ -412,9 +392,7 @@ class PathfindingNode(Node):
         self._send_current_waypoint()
 
     def _send_current_waypoint(self):
-        """
-        Publish the current waypoint Pose on /position/target.
-        """
+        """Publish the current waypoint Pose on /position/target."""
         if not self.trajectory_poses:
             self.get_logger().warn("No trajectory poses to send.")
             return
@@ -448,10 +426,7 @@ class PathfindingNode(Node):
         )
 
     def _advance_to_next_waypoint(self):
-        """
-        Move to next waypoint and send it;
-        or if at the end of local trajectory, go to next keypoint (if any).
-        """
+        """Move to next waypoint and send it; or if at the end of local trajectory, go to next keypoint (if any)."""
         if not self.trajectory_poses:
             return
 
@@ -485,13 +460,7 @@ class PathfindingNode(Node):
             self.last_segment_length = None
 
     def _timer_callback(self):
-        """
-        Every timer_dt seconds:
-          - If mode != RUNNING: do nothing.
-          - Check distance from EKF pose to current waypoint.
-          - If within tolerance -> send next waypoint.
-          - If too long without progress -> replan local trajectory.
-        """
+        """Every timer_dt seconds: If mode != RUNNING: do nothing. Check distance from EKF pose to current waypoint. If within tolerance -> send next waypoint. If too long without progress -> replan local trajectory."""
         if self.mode != "RUNNING":
             return
 
@@ -539,9 +508,7 @@ class PathfindingNode(Node):
                 self._plan_trajectory_to_current_keypoint()
 
     def _rpy_to_quaternion(self, roll: float, pitch: float, yaw: float):
-        """
-        Convert roll, pitch, yaw (in radians) to a quaternion (x, y, z, w).
-        """
+        """Convert roll, pitch, yaw (in radians) to a quaternion (x, y, z, w)."""
         cy = math.cos(yaw * 0.5)
         sy = math.sin(yaw * 0.5)
         cp = math.cos(pitch * 0.5)
