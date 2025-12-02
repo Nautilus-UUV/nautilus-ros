@@ -31,8 +31,6 @@ import paho.mqtt.client as mqtt
 import rclpy
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
-from sensor_msgs.msg import Imu
-from std_msgs.msg import Bool, Float64, Float64MultiArray, String
 from .uuv_ros_core import UUVTopics, TOPIC_QOS_MAP, TOPIC_MESSAGE_MAP, UUVCommands
 
 logging.basicConfig(level=logging.INFO)
