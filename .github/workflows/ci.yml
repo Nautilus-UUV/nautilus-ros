@@ -21,12 +21,7 @@ jobs:
 
       # Install the tools
       - name: Install build/CLI bits
-        run: |
-          set -eo pipefail
-          apt-get update
-          apt-get install -y --no-install-recommends \
-            python3-colcon-common-extensions ros-$ROS_DISTRO-ros2cli ros-$ROS_DISTRO-std-msgs \
-            ros-$ROS_DISTRO-sensor-msgs ros-$ROS_DISTRO-geometry-msgs ros-$ROS_DISTRO-can-msgs
+        run: bash scripts/install-deps.sh
 
       # Build your workspace
       - name: Build
