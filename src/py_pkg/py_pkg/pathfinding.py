@@ -192,6 +192,7 @@ class PathfindingNode(Node):
 
     def _build_turn_straight_xy_path(self, x0, y0, yaw0, gx, gy, R, ds):
         """
+
         Build a turn straight path to the destination.
         Returns: list of (x, y, yaw) along the path.
         """
@@ -288,8 +289,9 @@ class PathfindingNode(Node):
 
     def _plan_trajectory_from_current_pose(self, goal_position):
         """
-        Compute a trajectory from current_pose to goal_position using a
-        turn–then–straight path in the XY plane and constant pitch in Z.
+
+        Compute a trajectory from current_pose to goal_position.
+        Uses a turn–then–straight path in the XY plane and constant pitch in Z.
         """
         if self.current_pose is None or goal_position is None:
             self.get_logger().warn("Missing current pose or goal; cannot plan.")
@@ -433,8 +435,9 @@ class PathfindingNode(Node):
 
     def _advance_to_next_waypoint(self):
         """
-        Move to next waypoint and send it;
-        or if at the end of local trajectory, go to next keypoint (if any).
+
+        Move to next waypoint and send it.
+        Or, if at the end of local trajectory, go to next keypoint (if any).
         """
         if not self.trajectory_poses:
             return
@@ -470,6 +473,7 @@ class PathfindingNode(Node):
 
     def _timer_callback(self):
         """
+
         Every timer_dt seconds: If mode != RUNNING: do nothing.
         Check distance from EKF pose to current waypoint.
         If within tolerance -> send next waypoint.
