@@ -6,7 +6,7 @@ from rclpy.node import Node
 import numpy as np
 from geometry_msgs.msg import Pose
 from std_msgs.msg import Float32MultiArray, String
-from uuv_ros_core import UUVTopics, UUVQoS, TOPIC_MESSAGE_MAP
+from .uuv_ros_core import UUVTopics, UUVQoS, TOPIC_MESSAGE_MAP
 
 
 class PathfindingNode(Node):
