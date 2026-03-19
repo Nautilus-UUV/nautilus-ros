@@ -44,11 +44,11 @@ class BCUOscillator(Node):
             self, UUVTopics.BCU_PRESSURE, self._vol_callback
         )
         self.depth_sub = create_subscription_for_topic(
-            self, UUVTopics.EXTERNAL_PRESSURE, self._depth_callback
+            self, UUVTopics.TEST_EXTERNAL_DEPTH, self._depth_callback
         )
 
-        # Control loop (5Hz)
-        self.timer = self.create_timer(0.2, self._control_loop)
+        # Control loop (10Hz)
+        self.timer = self.create_timer(0.1, self._control_loop)
 
         self.get_logger().info(
             f"BCU Safety Oscillator: Safe Range [{self.min_vol}, {self.max_vol}] mL. Surface: < {self.surface_limit} cm"

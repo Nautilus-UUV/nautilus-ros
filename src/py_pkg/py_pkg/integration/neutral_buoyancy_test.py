@@ -52,7 +52,7 @@ class NeutralBuoyancyTest(Node):
         self.rpm_pub = create_publisher_for_topic(self, UUVTopics.BCU_RPM)
 
         self.depth_sub = create_subscription_for_topic(
-            self, UUVTopics.EXTERNAL_PRESSURE, self._depth_callback
+            self, UUVTopics.TEST_EXTERNAL_DEPTH, self._depth_callback
         )
         self.imu_sub = create_subscription_for_topic(
             self, UUVTopics.IMU_LEFT, self._imu_callback
