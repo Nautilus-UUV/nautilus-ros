@@ -24,7 +24,9 @@ class NeutralBuoyancyTest(Node):
 
         # Control Parameters
         self.declare_parameter("k_p", 1200.0)  # Gain: RPM per cm/s of error
-        self.declare_parameter("max_rpm", 1500)
+        self.declare_parameter(
+            "max_rpm", 4100
+        )  # taken max from: https://aris-space.atlassian.net/wiki/spaces/Nautilus/pages/306839555/ACU+and+BCU+Motors
         self.declare_parameter("velocity_tolerance", 0.15)  # cm/s
         self.declare_parameter("gyro_tolerance", 0.02)  # rad/s
         self.declare_parameter("accel_tolerance", 0.05)  # m/s^2 (deviation from mean)

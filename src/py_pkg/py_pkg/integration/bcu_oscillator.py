@@ -19,7 +19,9 @@ class BCUOscillator(Node):
         super().__init__("bcu_oscillator")
 
         # Configuration
-        self.declare_parameter("target_rpm", 1500)
+        self.declare_parameter(
+            "target_rpm", 4100
+        )  # taken max from: https://aris-space.atlassian.net/wiki/spaces/Nautilus/pages/306839555/ACU+and+BCU+Motors
         self.declare_parameter("min_vol_ml", 300)
         self.declare_parameter("max_vol_ml", 2400)
         self.declare_parameter("dive_depth_cm", 200)
