@@ -10,12 +10,12 @@ Example:
 
 """
 
-from sensor_msgs.msg import Temperature, Imu
-from std_msgs.msg import Int32, Float32, String, UInt8MultiArray, Float32MultiArray
-from geometry_msgs.msg import Pose
 from can_msgs.msg import Frame
-from .topics import UUVTopics
+from geometry_msgs.msg import Pose
+from sensor_msgs.msg import Imu, Temperature
+from std_msgs.msg import Float32, Float32MultiArray, Int32, String, UInt8MultiArray
 
+from .topics import UUVTopics
 
 TOPIC_MESSAGE_MAP = {
     UUVTopics.INTERNAL_TEMPERATURE: Temperature,
@@ -42,4 +42,6 @@ TOPIC_MESSAGE_MAP = {
     UUVTopics.PATH: Float32MultiArray,
     UUVTopics.COMMAND: String,
     UUVTopics.CAN_OUT: Frame,
+    # !!! Topics defined for only testing (do not use in control)
+    UUVTopics.TEST_EXTERNAL_DEPTH: Int32,
 }

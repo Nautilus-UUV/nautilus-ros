@@ -54,3 +54,6 @@ class UUVTopics:
 
     # CAN communication
     CAN_OUT = "/can/out"
+
+    # !!! Topics defined for only testing (do not use in control)
+    TEST_EXTERNAL_DEPTH = "/test/external/depth"

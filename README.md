@@ -16,6 +16,13 @@ Contains Python-based ROS2 nodes and auxiliary libraries:
 ### `cpp_pkg` - C++ ROS2 Package
 Prepared for C++ ROS2 nodes.
 
+
+## Digital Twin Integration Testing
+
+To run integration testing of the whole system, follow the [nautilus-dave](https://github.com/Nautilus-UUV/nautilus-dave/tree/dev) repository Installation instructions.
+
+Then, the nodes in `src/py_pkg/py_pkg/integration` represent differnet test scenarios.
+
 ## [Contributing](docs/CONTRIBUTING.md)
 
 Follow our contribution guidelines for development standards and workflows.
