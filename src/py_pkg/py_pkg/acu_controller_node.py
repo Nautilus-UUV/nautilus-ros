@@ -1,7 +1,9 @@
 """
 Author: Lisa Lustenberger
 Date: November 2025
-Description: Node that controls ACU motors.
+Description:    Node that controls ACU motors.
+                Input: UUVTopics.ACU_ROLL, UUVTopics.ACU_TILT -> target motor positions for roll (angle) and tilt (mm) for the ACU motors.
+                Output: MotorController position commands. 
 Background: Copied from bcu_controller_node.py and modified for ACU control.
 """
 

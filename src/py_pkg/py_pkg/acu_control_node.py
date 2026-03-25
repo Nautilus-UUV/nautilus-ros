@@ -1,8 +1,11 @@
 """
 Author: Lisa Lustenberger
 Date: November 2025
-Description: Node that controls roll and tilt. Part of Control Node -> possibly combine with BCU control node
-Background: Based on depth_control_node from Divetest 2025, modified for tilt and roll control."""
+Description:    Node that controls roll and tilt. Part of Control Node -> possibly combine with BCU control node
+                Input: UUVTopics.POSITION_ESTIMATION, UUVTopics.POSITION_TARGET -> current and target pose of the UUV.
+                Output: UUVTopics.ACU_ROLL, UUVTopics.ACU_TILT -> target motor positions for roll (angle) and tilt (mm) for the ACU motors.
+Background:     Based on depth_control_node from Divetest 2025, modified for tilt and roll control.
+"""
 
 #!/usr/bin/env python3
 
@@ -43,7 +46,7 @@ class ACUControlNode(Node):
         # Subscriber for the current depth
         self.current_pose = create_subscription_for_topic(UUVTopics.POSITION_ESTIMATION, self.current_pose_callback, 10, callback_group=self.callback_group
         )
-        self.target_pose = create_subscription_for_topic(UUVTopics.PATH, self.target_pose_callback, 10, callback_group=self.callback_group
+        self.target_pose = create_subscription_for_topic(UUVTopics.POSITION_TARGET, self.target_pose_callback, 10, callback_group=self.callback_group
         )
 
         # Subscriber for SIMULATION 
