@@ -66,10 +66,10 @@ class BCUOscillator(Node):
         rpm_cmd = 0
 
         # Log every 2 seconds
-        if self.get_clock().now().nanoseconds % 2000000000 < 200000000:
-            self.get_logger().info(
-                f"STATUS: State={self.state}, Depth={self.current_depth_cm}cm, Vol={self.current_vol_ml}mL"
-            )
+        self.get_logger().info(
+            f"STATUS: State={self.state}, Depth={self.current_depth_cm}cm, Vol={self.current_vol_ml}mL",
+            throttle_duration_sec=2.0,
+        )
 
         if self.state == "ASCENDING":
             if self.current_depth_cm <= self.surface_limit:
