@@ -18,9 +18,9 @@ class ACUOscillator(Node):
     Sequence:
     1. Start at center (0)
     2. Move to front (max tilt)
-    3. Hold 30s
+    3. Hold 3s
     4. Move to back (min tilt)
-    5. Hold 60s
+    5. Hold 30s
     6. Return to center
     7. Repeat
     """
@@ -77,7 +77,7 @@ class ACUOscillator(Node):
 
         elif self.state == "HOLD_FRONT":
             self._publish_tilt(self.front_tilt)
-            if self._elapsed() >= 30.0:
+            if self._elapsed() >= 3.0:
                 self._set_state("MOVE_BACK")
 
         elif self.state == "MOVE_BACK":
@@ -86,7 +86,7 @@ class ACUOscillator(Node):
 
         elif self.state == "HOLD_BACK":
             self._publish_tilt(self.back_tilt)
-            if self._elapsed() >= 60.0:
+            if self._elapsed() >= 30.0:
                 self._set_state("RETURN_CENTER")
 
         elif self.state == "RETURN_CENTER":
