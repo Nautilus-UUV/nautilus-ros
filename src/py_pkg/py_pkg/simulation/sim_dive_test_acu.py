@@ -64,8 +64,8 @@ class DivetestMonitor(Node):
             10
         )
 
-        gz_roll_topic = f"/model/{glider}/joint/acu_roll_joint/0/cmd_pos"
-        gz_tilt_topic = f"/model/{glider}/joint/battery_joint/0/cmd_pos"
+        gz_roll_topic = f"/model/{glider}/joint/acu_roll_joint/cmd_pos"
+        gz_tilt_topic = f"/model/{glider}/joint/acu_tilt_joint/cmd_pos"
 
         # Timer to control processing frequency
         self.timer = self.create_timer(self.callback_frequency, self.process_depth)
@@ -100,7 +100,7 @@ class DivetestMonitor(Node):
     
     def send_tilt_command(self, tilt_value):
         """Send tilt command to Gazebo."""
-        tilt_command = f"gz topic -t /model/glider_nautilus/joint/battery_joint/0/cmd_pos -m gz.msgs.Double -p 'data: {tilt_value}'"
+        tilt_command = f"gz topic -t /model/glider_nautilus/joint/acu_tilt_joint/0/cmd_pos -m gz.msgs.Double -p 'data: {tilt_value}'"
         subprocess.run(tilt_command, shell=True)
         self.get_logger().info(f"Tilt set to {tilt_value}.")
 
