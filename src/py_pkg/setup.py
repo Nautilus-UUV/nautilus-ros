@@ -10,6 +10,7 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        ('share/' + package_name + '/launch', ['launch/ekf_test.launch.py']),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -26,6 +27,9 @@ setup(
         'console_scripts': [
             'ekf_prefilter = py_pkg.ekf_prefilter:main',
             'ekf_node = py_pkg.ekf_node:main',
+            'ekf_predict_node = py_pkg.ekf_predict_node:main',
+            'ekf_evaluation_node = py_pkg.ekf_evaluation_node:main',
+            'prefilter_evaluation_node = py_pkg.prefilter_evaluation_node:main',
         ],
     },
 )

@@ -53,9 +53,9 @@ def quaternion_to_rotation_matrix(q):
     wx, wy, wz = w*x, w*y, w*z
 
     R = np.array([
-        [1 - 2*(y2 + z2),     2*(xy - wz),     2*(xz + wy)],
-        [2*(xy + wz), 1 - 2*(x2 + z2),     2*(yz - wx)],
-        [2*(xz - wy),     2*(yz + wx), 1 - 2*(x2 + y2)]
+        [1 - 2*(y2 + z2), 2*(xy - wz), 2*(xz + wy)],
+        [2*(xy + wz), 1 - 2*(x2 + z2), 2*(yz - wx)],
+        [2*(xz - wy), 2*(yz + wx), 1 - 2*(x2 + y2)]
     ])
     return R
 
@@ -150,14 +150,16 @@ class EKF_Filter:
         # Gravity (world frame)
         self.g = np.array([0.0, 0.0, -9.81])
 
-    def predict(self, accel_body, gyro_body):
+    def predict(self, accel_body, gyro_body, dt=None):
         """EKF Prediction step.
 
         Args:
             accel_body (np.ndarray): Measured acceleration in body frame [ax, ay, az].
             gyro_body (np.ndarray): Measured angular velocity in body frame [wx, wy, wz].
+            dt (float, optional): Time step in seconds. Uses self.dt if not provided.
         """
-        dt = self.dt
+        if dt is None:
+            dt = self.dt
 
         # Unpack state
         pos = self.x[0:3]
@@ -167,7 +169,7 @@ class EKF_Filter:
         # Transform acceleration from body to world
         accel_world = rotate_vector(q, accel_body)
 
-        # Compensate gravity (accelerometer measures gravity + linear acc)
+        # Compensate gravity (accelerometer measures specific force a - g so we must add g to get the actual linear acceleration)
         accel_world = accel_world + self.g
 
         # Kinematic updates
@@ -205,7 +207,7 @@ class EKF_Filter:
         """EKF Update step using accelerometer only (attitude correction).
 
         We treat the accelerometer as a measurement of the gravity vector
-        expressed in the body frame underthe assumption that translational accelerations are small during the
+        expressed in the body frame under the assumption that translational accelerations are small during the
         update window. This corrects roll/pitch robustly for low-dynamics.
         """
         # Current orientation (quaternion)
@@ -220,7 +222,7 @@ class EKF_Filter:
 
         # Measurement Jacobian H (3 x state_dim)
         H = np.zeros((3, self.P.shape[0]))
-        H[0:3, 6:9] = skew(R_mat.T @ self.g)
+        H[0:3, 6:9] = -skew(R_mat.T @ self.g)
 
         # Innovation
         y = z - expected_accel_body

@@ -1,36 +1,33 @@
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Imu
-# Message type for position output (x, y, z)
 from geometry_msgs.msg import Point, Quaternion
 import numpy as np
 
-# Import EKF from the same package; relative import avoids module resolution issues
 from .ekf_filter import EKF_Filter
 
 
-class Ekf_Node(Node):
+class EkfPredictNode(Node):
     """
-    ROS2 Node that runs an Extended Kalman Filter (EKF) for state estimation using IMU data.
+    Predict-only EKF node for testing purposes.
+    Identical to ekf_node but the update (measurement correction) step is disabled.
+    This gives a baseline of pure dead-reckoning to compare against the full EKF.
+
     Subscribes to: /filtered_imu_data (sensor_msgs/Imu)
-    Publishes to:
+    Publishes to:  /ekf_predict_position    (geometry_msgs/Point)
+                   /ekf_predict_orientation (geometry_msgs/Quaternion)
     """
 
     def __init__(self):
-        super().__init__('ekf_node')
+        super().__init__('ekf_predict_node')
 
-        # Declare parameters
         self.declare_parameter('dt', 0.01)
-
-        # Get parameters
         dt = self.get_parameter('dt').get_parameter_value().double_value
 
-        # EKF filter instance
         self.ekf = EKF_Filter(dt)
-        self._last_stamp = None    # tracks previous message timestamp
-        self._initialized = False  # whether initial orientation has been set
+        self._last_stamp = None
+        self._initialized = False
 
-        # Subscriber to filtered IMU data
         self.sub = self.create_subscription(
             Imu,
             '/filtered_imu_data',
@@ -38,27 +35,25 @@ class Ekf_Node(Node):
             10
         )
 
-        # Publisher for estimated position
-        self.pub = self.create_publisher(
+        self.pub_position = self.create_publisher(
             Point,
-            '/ekf_position',
+            '/ekf_predict_position',
             10
         )
 
-        # Publisher for estimated orientation
         self.pub_orientation = self.create_publisher(
             Quaternion,
-            '/ekf_orientation',
+            '/ekf_predict_orientation',
             10
         )
 
         self.get_logger().info(
-            'EKF Node started, subscribed to /filtered_imu_data and publishing to /ekf_position and /ekf_orientation')
+            'EKF Predict Node started (no update step), publishing to '
+            '/ekf_predict_position and /ekf_predict_orientation')
 
     def imu_callback(self, msg_in: Imu):
-        """Callback for incoming IMU data to perform EKF prediction and update."""
+        """Callback for incoming IMU data — prediction step only, no update."""
 
-        # Extract linear acceleration and angular velocity from the IMU message
         measured_accel = np.array([
             msg_in.linear_acceleration.x,
             msg_in.linear_acceleration.y,
@@ -83,28 +78,24 @@ class Ekf_Node(Node):
         stamp = msg_in.header.stamp
         current_time = stamp.sec + stamp.nanosec * 1e-9
         if self._last_stamp is None:
-            dt = None  # use self.ekf.dt (the parameter default)
+            dt = None
         else:
             dt = current_time - self._last_stamp
             if dt <= 0.0:
-                dt = None  # bad timestamp — fall back to default
+                dt = None
         self._last_stamp = current_time
 
-        # EKF Prediction step
+        # Prediction step only — no update
         self.ekf.predict(measured_accel, measured_gyro, dt)
-        # EKF Update step
-        # Use accelerometer as attitude measurement; gyro is used as input in predict()
-        self.ekf.update(measured_accel)
 
-        # Publish position as geometry_msgs/Point
         est_state = self.ekf.x
+
         position_msg = Point()
         position_msg.x = est_state[0]
         position_msg.y = est_state[1]
         position_msg.z = est_state[2]
-        self.pub.publish(position_msg)
+        self.pub_position.publish(position_msg)
 
-        # Publish orientation as geometry_msgs/Quaternion [x, y, z, w]
         orientation_msg = Quaternion()
         orientation_msg.x = est_state[6]
         orientation_msg.y = est_state[7]
@@ -112,15 +103,12 @@ class Ekf_Node(Node):
         orientation_msg.w = est_state[9]
         self.pub_orientation.publish(orientation_msg)
 
-        self.get_logger().info(
-            f'Current position [x,y,z]: [{est_state[0]:.3f}, {est_state[1]:.3f}, {est_state[2]:.3f}] m')
-
 
 def main(args=None):
     rclpy.init(args=args)
-    ekf_node = Ekf_Node()
-    rclpy.spin(ekf_node)
-    ekf_node.destroy_node()
+    node = EkfPredictNode()
+    rclpy.spin(node)
+    node.destroy_node()
     rclpy.shutdown()
 
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Imu
 
 
@@ -30,11 +31,13 @@ class EkfPrefilter(Node):
         self.prev_wz = None
 
         # Subscriber and publisher
+        # best_effort QoS matches the standard reliability of IMU sensor publishers
+        imu_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
         self.sub = self.create_subscription(
             Imu,
             '/imu1',
             self.imu_callback,
-            10
+            imu_qos
         )
 
         self.pub = self.create_publisher(
@@ -71,8 +74,9 @@ class EkfPrefilter(Node):
         msg_out = Imu()
         msg_out.header = msg_in.header
 
-        # Orientation not computed here → mark as invalid
-        msg_out.orientation_covariance[0] = -1.0
+        # Pass orientation through from the raw IMU (not filtered — already computed by sensor)
+        msg_out.orientation = msg_in.orientation
+        msg_out.orientation_covariance = msg_in.orientation_covariance
 
         # Copy covariance and fill filtered data
         msg_out.angular_velocity.x = fwx
