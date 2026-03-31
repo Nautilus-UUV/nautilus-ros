@@ -28,6 +28,7 @@ setup(
             "acu_oscillator = py_pkg.integration.acu_oscillator:main",
             "neutral_buoyancy_test = py_pkg.integration.neutral_buoyancy_test:main",
             "trim_and_buoyancy_test = py_pkg.integration.trim_and_buoyancy_test:main",
+            "dive_test_for_ekf = py_pkg.integration.dive_test_for_ekf:main",
         ],
     },
 )
