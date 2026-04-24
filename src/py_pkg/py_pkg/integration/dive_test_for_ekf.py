@@ -1,6 +1,6 @@
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Int32
+from std_msgs.msg import Int32, Float32
 
 from ..uuv_ros_core import (
     UUVTopics,
@@ -9,14 +9,15 @@ from ..uuv_ros_core import (
 )
 
 
-class BCUOscillator(Node):
+class Oscillator(Node):
     """
-    Robust oscillator with better feedback and logging to ensure the glider
-    reaches the surface and reverses.
+    Robust oscillator with BCU (buoyancy) and ACU (tilt) control.
+    - BCU: better feedback and logging to ensure the glider reaches the surface and reverses
+    - ACU: tilts front when descending, back when ascending
     """
 
     def __init__(self):
-        super().__init__("bcu_oscillator")
+        super().__init__("oscillator")
 
         # Configuration
         self.declare_parameter(
@@ -25,13 +26,17 @@ class BCUOscillator(Node):
         self.declare_parameter("min_vol_ml", 300)
         self.declare_parameter("max_vol_ml", 2400)
         self.declare_parameter("dive_depth_cm", 200)
-        self.declare_parameter("surface_depth_cm", 30)
+        self.declare_parameter("surface_depth_cm", 15)
+        self.declare_parameter("acu_front_tilt", 150.0) #need to change
+        self.declare_parameter("acu_back_tilt", -150.0) #need to change to real vals
 
         self.target_rpm = self.get_parameter("target_rpm").value
         self.min_vol = self.get_parameter("min_vol_ml").value
         self.max_vol = self.get_parameter("max_vol_ml").value
         self.depth_limit = self.get_parameter("dive_depth_cm").value
         self.surface_limit = self.get_parameter("surface_depth_cm").value
+        self.acu_front_tilt = self.get_parameter("acu_front_tilt").value
+        self.acu_back_tilt = self.get_parameter("acu_back_tilt").value
 
         # State machine
         self.state = "ASCENDING"
@@ -40,6 +45,7 @@ class BCUOscillator(Node):
 
         # Publishers
         self.rpm_pub = create_publisher_for_topic(self, UUVTopics.BCU_RPM)
+        self.tilt_pub = create_publisher_for_topic(self, UUVTopics.ACU_TILT)
 
         # Subscriptions
         self.vol_sub = create_subscription_for_topic(
@@ -54,6 +60,9 @@ class BCUOscillator(Node):
 
         self.get_logger().info(
             f"BCU Safety Oscillator: Safe Range [{self.min_vol}, {self.max_vol}] mL. Surface: < {self.surface_limit} cm"
+        )
+        self.get_logger().info(
+            f"ACU Depth-based Oscillator: Front tilt={self.acu_front_tilt}, Back tilt={self.acu_back_tilt}"
         )
 
     def _vol_callback(self, msg):
@@ -103,7 +112,7 @@ class BCUOscillator(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    node = BCUOscillator()
+    node = Oscillator()
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
