@@ -25,7 +25,7 @@ class BCUOscillator(Node):
         self.declare_parameter("min_vol_ml", 300)
         self.declare_parameter("max_vol_ml", 2400)
         self.declare_parameter("dive_depth_cm", 200)
-        self.declare_parameter("surface_depth_cm", 15)
+        self.declare_parameter("surface_depth_cm", 30)
 
         self.target_rpm = self.get_parameter("target_rpm").value
         self.min_vol = self.get_parameter("min_vol_ml").value
