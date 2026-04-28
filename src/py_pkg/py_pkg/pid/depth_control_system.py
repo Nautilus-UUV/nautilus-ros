@@ -1,18 +1,15 @@
-#Copied from divetest files: depth_control_node_ControlSystem.py
+# Copied from divetest files: depth_control_node_ControlSystem.py
 
 import typing
 
 import py_pkg.SimMath as SimMath
 from py_pkg.SimMath import Vector
 
-
-
 """
 This is the Glider's control system module.
 
 It provides a PID controller class, a state machine class, and logging.
 """
-
 
 
 class Logger:
@@ -27,9 +24,6 @@ class Logger:
 
         self.glider_log: list = []
         self.control_log: list = []
-
-
-
 
 
 class PIDController:
@@ -53,9 +47,15 @@ class PIDController:
         update(target: float, input: float, time: float) -> float:
             Updates the PID controller with the given target, input, and time values.
     """
-    
-    def __init__(self, kp: float = 1, ki: float = 0, kd: float = 0,
-                 integral_limit: float = 1_000, output_limit: float = 1_000) -> None:
+
+    def __init__(
+        self,
+        kp: float = 1,
+        ki: float = 0,
+        kd: float = 0,
+        integral_limit: float = 1_000,
+        output_limit: float = 1_000,
+    ) -> None:
         """
         Initializes a PIDController object.
 
@@ -89,8 +89,6 @@ class PIDController:
         # Integral term
         self.integral: float = 0.0
 
-
-
     def update(self, target: float, input: float, time: float) -> float:
         """
         Updates the PID controller with the given target, input, and time values.
@@ -114,12 +112,12 @@ class PIDController:
             self.prev_input = input
             return 0
 
-
         time_delta = time - self.prev_time
-        
 
         # Integral windup prevention
-        self.integral = SimMath.clamp_mag(self.integral + (error * time_delta), self.integral_limit)
+        self.integral = SimMath.clamp_mag(
+            self.integral + (error * time_delta), self.integral_limit
+        )
 
         # Derivative kickback prevention
         derivative = (error - self.prev_error) / time_delta
@@ -134,9 +132,6 @@ class PIDController:
         return SimMath.clamp_mag(output, self.output_limit)
 
 
-
-
-
 """
 Typedef for the StateMachine class
 
@@ -146,8 +141,6 @@ State = int
 StateGraph = typing.Dict[State, typing.List[State]]
 diving = State(0)
 surfacing = State(1)
-
-
 
 
 class StateMachine:
@@ -173,8 +166,6 @@ class StateMachine:
 
         self.state: State = initial_state
         self.state_graph: StateGraph = state_graph
-    
-
 
     def next(self) -> None:
         """
@@ -215,10 +206,7 @@ class DepthControlSystem:
         """
 
         # Initialize state machine
-        state_graph: StateGraph = {
-            diving : [surfacing],
-            surfacing : [diving]
-        }
+        state_graph: StateGraph = {diving: [surfacing], surfacing: [diving]}
         self.state_machine: StateMachine = StateMachine(state_graph, diving)
 
         self.frequency: int = config["frequency"]
@@ -229,9 +217,9 @@ class DepthControlSystem:
         self.prev_command: float = 0.0
 
         # Create cascading PID controllers
-        self.pid_depth = PIDController(**config['pid_depth'])
-        self.pid_v_vel = PIDController(**config['pid_v_vel'])
-        self.pid_v_acc = PIDController(**config['pid_v_acc'])
+        self.pid_depth = PIDController(**config["pid_depth"])
+        self.pid_v_vel = PIDController(**config["pid_v_vel"])
+        self.pid_v_acc = PIDController(**config["pid_v_acc"])
 
         # Glide path parameters
         self.min_depth: float = config["high_depth"]
@@ -243,12 +231,12 @@ class DepthControlSystem:
 
         # Store past positions.  We need at least 3 for central difference acceleration.
         self.previous_positions: list[Vector] = []
-        self.num_past_positions: int = 3 # Number of past positions to store
+        self.num_past_positions: int = 3  # Number of past positions to store
         self.previous_times: list[float] = []
 
-
-
-    def estimate_velocity(self, positions: list[Vector], times: list[float]) -> float | None:
+    def estimate_velocity(
+        self, positions: list[Vector], times: list[float]
+    ) -> float | None:
         """
         Estimates the vertical velocity using the central difference method.
 
@@ -269,8 +257,9 @@ class DepthControlSystem:
         t0 = times[-2]
         return (z1 - z0) / (t1 - t0)
 
-
-    def estimate_acceleration(self, positions: list[Vector], times: list[float]) -> float | None:
+    def estimate_acceleration(
+        self, positions: list[Vector], times: list[float]
+    ) -> float | None:
         """
         Estimates the vertical acceleration using the central difference method.
 
@@ -291,12 +280,17 @@ class DepthControlSystem:
         t2 = times[-1]
         t1 = times[-2]
         t0 = times[-3]
-        return (z2 - 2*z1 + z0) / ((t2 - t1) * (t1 - t0))
+        return (z2 - 2 * z1 + z0) / ((t2 - t1) * (t1 - t0))
 
-
-
-    def calc_acc(self, position: Vector, velocity: Vector, acceleration: Vector, tank: float, time: float,
-                 other_to_log: list = []) -> float:
+    def calc_acc(
+        self,
+        position: Vector,
+        velocity: Vector,
+        acceleration: Vector,
+        tank: float,
+        time: float,
+        other_to_log: list = [],
+    ) -> float:
         """
         Calculates the acceleration command for the glider.
 
@@ -312,14 +306,22 @@ class DepthControlSystem:
         """
 
         self.time = time
-        self.logger.glider_log.append([time,
-                                       position.x(), position.y(), position.z(),
-                                       velocity, acceleration,
-                                       tank * 10] + other_to_log)
+        self.logger.glider_log.append(
+            [
+                time,
+                position.x(),
+                position.y(),
+                position.z(),
+                velocity,
+                acceleration,
+                tank * 10,
+            ]
+            + other_to_log
+        )
 
         if time < self.prev_update_time + self.period:
             return self.prev_command
-        
+
         self.prev_update_time = time
 
         # Store the current position and time
@@ -332,14 +334,19 @@ class DepthControlSystem:
             self.previous_times.pop(0)
 
         # Estimate velocity and acceleration
-        velocity_estimate = self.estimate_velocity(self.previous_positions, self.previous_times)
-        acceleration_estimate = self.estimate_acceleration(self.previous_positions, self.previous_times)
+        velocity_estimate = self.estimate_velocity(
+            self.previous_positions, self.previous_times
+        )
+        acceleration_estimate = self.estimate_acceleration(
+            self.previous_positions, self.previous_times
+        )
 
         # If velocity or acceleration cannot be estimated, use the given velocity and acceleration.
         #  This will happen in the first few time steps.  We check for None
-        velocity_for_pid = velocity_estimate if velocity_estimate is not None else 0.
-        acceleration_for_pid = acceleration_estimate if acceleration_estimate is not None else 0.
-        
+        velocity_for_pid = velocity_estimate if velocity_estimate is not None else 0.0
+        acceleration_for_pid = (
+            acceleration_estimate if acceleration_estimate is not None else 0.0
+        )
 
         # REMOVED logic since we are manually setting target_depth
         # if self.state_machine.state == diving:
@@ -353,14 +360,24 @@ class DepthControlSystem:
 
         # depth -> v_vel -> v_acc
         pid_depth_output = self.pid_depth.update(self.target_depth, position.z(), time)
-        pid_v_vel_output = self.pid_v_vel.update(pid_depth_output, velocity_for_pid, time)
-        pid_v_acc_output = self.pid_v_acc.update(pid_v_vel_output, acceleration_for_pid, time)
-        
+        pid_v_vel_output = self.pid_v_vel.update(
+            pid_depth_output, velocity_for_pid, time
+        )
+        pid_v_acc_output = self.pid_v_acc.update(
+            pid_v_vel_output, acceleration_for_pid, time
+        )
 
-        self.logger.control_log.append([time, self.target_depth, pid_depth_output, pid_v_vel_output, pid_v_acc_output])
+        self.logger.control_log.append(
+            [
+                time,
+                self.target_depth,
+                pid_depth_output,
+                pid_v_vel_output,
+                pid_v_acc_output,
+            ]
+        )
 
         command = -pid_v_acc_output
         self.prev_command = command
 
         return command
-

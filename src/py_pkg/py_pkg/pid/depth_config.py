@@ -1,6 +1,6 @@
-#Copied from divetest files: depth_control_node_config.py
+# Copied from divetest files: depth_control_node_config.py
 
-init_control = {}        
+init_control = {}
 init_control["high_depth"] = -20.0
 init_control["low_depth"] = -70.0
 init_control["frequency"] = 10
@@ -15,7 +15,7 @@ init_control["pid_v_vel"]["kp"] = 1
 init_control["pid_v_vel"]["ki"] = 0
 init_control["pid_v_vel"]["kd"] = 0.1
 init_control["pid_v_vel"]["integral_limit"] = 100.0
-init_control["pid_v_vel"]["output_limit"] = 10.0        
+init_control["pid_v_vel"]["output_limit"] = 10.0
 init_control["pid_v_acc"] = {}
 init_control["pid_v_acc"]["kp"] = 0.02
 init_control["pid_v_acc"]["ki"] = 0.00005
@@ -39,7 +39,7 @@ init_buoyancy_engine["tank_volume"] = 0.002275
 init_buoyancy_engine["initial_proportion_full"] = 1.0
 # init_buoyancy_engine["initial_pump_rate"] = 0.0
 # init_buoyancy_engine["max_pump_rate"] = rpm_to_q(self.max_rpm, init_buoyancy_engine["tank_volume"])
-# init_buoyancy_engine["position"] = {}       
+# init_buoyancy_engine["position"] = {}
 # init_buoyancy_engine["position"]["x"] = 0.5
 # init_buoyancy_engine["position"]["y"] = 0.0
 # init_buoyancy_engine["position"]["z"] = 0.05

@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 
 import math
-import rclpy
-from rclpy.node import Node
+
 import numpy as np
+import rclpy
 from geometry_msgs.msg import Pose
+from rclpy.node import Node
 from std_msgs.msg import Float32MultiArray, String
-from .uuv_ros_core import UUVTopics, UUVQoS, TOPIC_MESSAGE_MAP
+
+from ..uuv_ros_core import TOPIC_MESSAGE_MAP, UUVQoS, UUVTopics
 
 
 class PathfindingNode(Node):

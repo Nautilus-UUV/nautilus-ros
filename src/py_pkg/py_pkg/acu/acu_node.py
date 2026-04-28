@@ -14,8 +14,8 @@ from sensor_msgs.msg import Imu
 from geometry_msgs.msg import Pose
 # from simple_pid import PID
 from py_pkg.motor import MotorController
-from uuv_ros_core.node_factory import create_publisher_for_topic, create_subscription_for_topic
-from uuv_ros_core.topics import UUVTopics
+from py_pkg.uuv_ros_core.node_factory import create_publisher_for_topic, create_subscription_for_topic
+from py_pkg.uuv_ros_core.topics import UUVTopics
 import time
 
 class ACUControllerNode(Node):

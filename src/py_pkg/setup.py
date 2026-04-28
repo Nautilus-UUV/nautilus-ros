@@ -23,7 +23,7 @@ setup(
     },
     entry_points={
         "console_scripts": [
-            "pathfinding_node = py_pkg.pathfinding:main",
+            "pathfinding_node = py_pkg.path.pathfinding:main",
             "bcu_oscillator = py_pkg.integration.bcu_oscillator:main",
             "acu_oscillator = py_pkg.integration.acu_oscillator:main",
             "neutral_buoyancy_test = py_pkg.integration.neutral_buoyancy_test:main",

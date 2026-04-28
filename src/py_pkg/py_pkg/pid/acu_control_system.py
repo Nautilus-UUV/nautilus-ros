@@ -12,6 +12,7 @@ class AxisController:
     Generic P-controller + state machine for a single axis (roll or tilt).
     The entire class is in UUV reference frame (not motor frame).
     """
+
     class State:
         STEADY = 0
         SHIFTING = 1
@@ -19,16 +20,20 @@ class AxisController:
     def __init__(self, name, Kp, position_tolerance, command_tolerance):
         self.name = name
         self.Kp = Kp
-        self.position_tolerance = position_tolerance  # acceptable error for steady state
-        self.command_tolerance = command_tolerance    # min delta before sending new command
+        self.position_tolerance = (
+            position_tolerance  # acceptable error for steady state
+        )
+        self.command_tolerance = (
+            command_tolerance  # min delta before sending new command
+        )
 
         self.state = AxisController.State.STEADY
-        self.current_pos = 0.0        # sensor reading
-        self.target_pos = 0.0         # desired motor position
-        self.last_commanded_pos = 0.0 # to prevent unnecessary motor commands
+        self.current_pos = 0.0  # sensor reading
+        self.target_pos = 0.0  # desired motor position
+        self.last_commanded_pos = 0.0  # to prevent unnecessary motor commands
 
     def update_sensor(self, measured_pos):
-        # Update current position from sensor reading, UUV reference frame 
+        # Update current position from sensor reading, UUV reference frame
         self.current_pos = measured_pos
 
     def compute_control(self, desired_value):
@@ -73,18 +78,18 @@ class AxisController:
 
 class ACUController:
     def __init__(self):
-        self.roll = AxisController("roll", Kp=0.5,
-                                   position_tolerance=1.0,
-                                   command_tolerance=0.5)
+        self.roll = AxisController(
+            "roll", Kp=0.5, position_tolerance=1.0, command_tolerance=0.5
+        )
 
-        self.tilt = AxisController("tilt", Kp=0.5,
-                                   position_tolerance=1.0,
-                                   command_tolerance=0.5)
-    
+        self.tilt = AxisController(
+            "tilt", Kp=0.5, position_tolerance=1.0, command_tolerance=0.5
+        )
+
     def uuv_to_motor(self, desired_tilt, desired_roll):
-        # convert desired tilt and roll from uuv frame to motor frame 
+        # convert desired tilt and roll from uuv frame to motor frame
         # angles in degrees
-        # FOR NOW: assume fixed angles for tilting 
+        # FOR NOW: assume fixed angles for tilting
 
         if desired_tilt > 5:
             desired_tilt_motor = 0.065
@@ -92,12 +97,10 @@ class ACUController:
             desired_tilt_motor = -0.065
         else:
             desired_tilt_motor = 0.0
-        
+
         desired_roll_motor = SimMath.clamp_mag(desired_roll, -25, 25)
 
         return desired_tilt_motor, desired_roll_motor
-        
-
 
     def update(self, desired_roll, desired_tilt, measured_roll, measured_tilt):
 
