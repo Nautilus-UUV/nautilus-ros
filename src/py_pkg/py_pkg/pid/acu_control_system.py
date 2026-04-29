@@ -1,15 +1,15 @@
 """
 Author: Lisa Lustenberger
 Date: November 2025
-Description: Control system for ACU controller node. Simple State machine + P-controllers for roll and tilt axes.
+Description: Control system for ACU controller node. Simple State machine + P-controllers for roll and pitch axes.
 """
 
-import py_pkg.SimMath as SimMath
+import py_pkg.math_utils as SimMath
 
 
 class AxisController:
     """
-    Generic P-controller + state machine for a single axis (roll or tilt).
+    Generic P-controller + state machine for a single axis (roll or pitch).
     The entire class is in UUV reference frame (not motor frame).
     """
 
@@ -82,41 +82,41 @@ class ACUController:
             "roll", Kp=0.5, position_tolerance=1.0, command_tolerance=0.5
         )
 
-        self.tilt = AxisController(
-            "tilt", Kp=0.5, position_tolerance=1.0, command_tolerance=0.5
+        self.pitch = AxisController(
+            "pitch", Kp=0.5, position_tolerance=1.0, command_tolerance=0.5
         )
 
-    def uuv_to_motor(self, desired_tilt, desired_roll):
-        # convert desired tilt and roll from uuv frame to motor frame
+    def uuv_to_motor(self, desired_pitch, desired_roll):
+        # convert desired pitch and roll from uuv frame to motor frame
         # angles in degrees
-        # FOR NOW: assume fixed angles for tilting
+        # FOR NOW: assume fixed angles for pitching
 
-        if desired_tilt > 5:
-            desired_tilt_motor = 0.065
-        elif desired_tilt < -5:
-            desired_tilt_motor = -0.065
+        if desired_pitch > 5:
+            desired_pitch_motor = 0.065
+        elif desired_pitch < -5:
+            desired_pitch_motor = -0.065
         else:
-            desired_tilt_motor = 0.0
+            desired_pitch_motor = 0.0
 
         desired_roll_motor = SimMath.clamp_mag(desired_roll, -25, 25)
 
-        return desired_tilt_motor, desired_roll_motor
+        return desired_pitch_motor, desired_roll_motor
 
-    def update(self, desired_roll, desired_tilt, measured_roll, measured_tilt):
+    def update(self, desired_roll, desired_pitch, measured_roll, measured_pitch):
 
         self.roll.update_sensor(measured_roll)
-        self.tilt.update_sensor(measured_tilt)
+        self.pitch.update_sensor(measured_pitch)
 
         roll_cmd_uuv = self.roll.update(desired_roll)
-        tilt_cmd_uuv = self.tilt.update(desired_tilt)
+        pitch_cmd_uuv = self.pitch.update(desired_pitch)
 
-        tilt_cmd, roll_cmd = self.uuv_to_motor(tilt_cmd_uuv, roll_cmd_uuv)
+        pitch_cmd, roll_cmd = self.uuv_to_motor(pitch_cmd_uuv, roll_cmd_uuv)
 
         # Only send commands that changed
         commands = {}
         if roll_cmd is not None:
             commands["roll"] = roll_cmd
-        if tilt_cmd is not None:
-            commands["tilt"] = tilt_cmd
+        if pitch_cmd is not None:
+            commands["pitch"] = pitch_cmd
 
         return commands or None

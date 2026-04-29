@@ -5,6 +5,7 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float32, Int32
 
+from ..physics import pressure_to_depth
 from ..uuv_ros_core import (
     UUVTopics,
     create_publisher_for_topic,
@@ -27,15 +28,15 @@ class AutoTrimAndBuoyancyTest(Node):
         super().__init__("auto_trim_and_buoyancy")
 
         # BCU Control Parameters
-        self.declare_parameter("bcu_k_p", 1200.0)  # Gain: RPM per cm/s of error
+        self.declare_parameter("bcu_k_p", 120000.0)  # Gain: RPM per m/s of error
         self.declare_parameter("max_rpm", 4100)
-        self.declare_parameter("velocity_tolerance", 0.15)  # cm/s
+        self.declare_parameter("velocity_tolerance", 0.0015)  # m/s
 
         # ACU Control Parameters
         self.declare_parameter(
             "acu_k_p", 500.0
         )  # Gain: mm of mass translation per radian of pitch
-        self.declare_parameter("max_tilt", 300.0)  # Maximum mass translation in mm
+        self.declare_parameter("max_pitch", 300.0)  # Maximum mass translation in mm
         self.declare_parameter("pitch_tolerance", 0.05)  # radians (~2.8 degrees)
 
         # General Stability Parameters
@@ -48,14 +49,14 @@ class AutoTrimAndBuoyancyTest(Node):
         self.v_tol = self.get_parameter("velocity_tolerance").value
 
         self.acu_k_p = self.get_parameter("acu_k_p").value
-        self.max_tilt = self.get_parameter("max_tilt").value
+        self.max_pitch = self.get_parameter("max_pitch").value
         self.p_tol = self.get_parameter("pitch_tolerance").value
 
         self.g_tol = self.get_parameter("gyro_tolerance").value
         self.a_tol = self.get_parameter("accel_tolerance").value
         self.settle_time = self.get_parameter("settle_time").value
 
-        # State Variables
+        # State Variables (depths in metres, velocities in m/s)
         self.current_depth = None
         self.last_depth = None
         self.last_time = None
@@ -70,11 +71,11 @@ class AutoTrimAndBuoyancyTest(Node):
 
         # Comms: Publishers
         self.rpm_pub = create_publisher_for_topic(self, UUVTopics.BCU_RPM)
-        self.tilt_pub = create_publisher_for_topic(self, UUVTopics.ACU_TILT)
+        self.pitch_pub = create_publisher_for_topic(self, UUVTopics.ACU_PITCH)
 
         # Comms: Subscriptions
-        self.depth_sub = create_subscription_for_topic(
-            self, UUVTopics.TEST_EXTERNAL_DEPTH, self._depth_callback
+        self.pressure_sub = create_subscription_for_topic(
+            self, UUVTopics.EXTERNAL_PRESSURE, self._pressure_callback
         )
         self.imu_sub = create_subscription_for_topic(
             self, UUVTopics.IMU_LEFT, self._imu_callback
@@ -99,9 +100,9 @@ class AutoTrimAndBuoyancyTest(Node):
             pitch = math.asin(sinp)
         return pitch
 
-    def _depth_callback(self, msg):
+    def _pressure_callback(self, msg):
         now = self.get_clock().now()
-        depth = float(msg.data)
+        depth = pressure_to_depth(float(msg.data))
 
         if self.last_depth is not None:
             dt = (now - self.last_time).nanoseconds / 1e9
@@ -136,10 +137,10 @@ class AutoTrimAndBuoyancyTest(Node):
         rpm_cmd = max(-self.max_rpm, min(self.max_rpm, rpm_cmd))
 
         # --- 2. Trim Control (ACU) ---
-        # If pitch is positive (nose down), move mass backward (negative tilt)
+        # If pitch is positive (nose down), move mass backward (negative pitch)
         # Check your specific frame conventions; you may need to invert the sign here.
-        tilt_cmd = -1.0 * (self.current_pitch * self.acu_k_p)
-        tilt_cmd = max(-self.max_tilt, min(self.max_tilt, float(tilt_cmd)))
+        pitch_cmd = -1.0 * (self.current_pitch * self.acu_k_p)
+        pitch_cmd = max(-self.max_pitch, min(self.max_pitch, float(pitch_cmd)))
 
         # --- 3. Check Stability Criteria ---
         v_ok = abs(self.v_vert) < self.v_tol
@@ -166,14 +167,14 @@ class AutoTrimAndBuoyancyTest(Node):
                 if elapsed >= self.settle_time:
                     self.get_logger().info("--- TEST SUCCESSFUL ---")
                     self.get_logger().info(
-                        f"Stationary at depth: {self.current_depth:.1f} cm"
+                        f"Stationary at depth: {self.current_depth:.2f} m"
                     )
-                    self.get_logger().info(f"Final V_vert: {self.v_vert:.3f} cm/s")
+                    self.get_logger().info(f"Final V_vert: {self.v_vert:.4f} m/s")
                     self.get_logger().info(f"Final Pitch: {self.current_pitch:.4f} rad")
                     self.get_logger().info(f"Final Gyro: {g_mag:.4f} rad/s")
                     self.is_finished = True
                     rpm_cmd = 0
-                    # Note: We do not zero out tilt_cmd, as the mass needs to stay
+                    # Note: We do not zero out pitch_cmd, as the mass needs to stay
                     # in its current position to maintain horizontal trim.
         else:
             if self.stationary_start_time is not None:
@@ -187,15 +188,15 @@ class AutoTrimAndBuoyancyTest(Node):
         rpm_msg.data = rpm_cmd
         self.rpm_pub.publish(rpm_msg)
 
-        tilt_msg = Float32()
-        tilt_msg.data = tilt_cmd
-        self.tilt_pub.publish(tilt_msg)
+        pitch_msg = Float32()
+        pitch_msg.data = pitch_cmd
+        self.pitch_pub.publish(pitch_msg)
 
         # Logging
         if self.get_clock().now().nanoseconds % 1000000000 < 100000000:
             self.get_logger().info(
-                f"D:{self.current_depth:5.1f}cm | V:{self.v_vert:+6.2f} | "
-                f"P:{self.current_pitch:+5.3f}rad | ACU:{tilt_cmd:+6.1f}mm | RPM:{rpm_cmd:5d}"
+                f"D:{self.current_depth:5.2f}m | V:{self.v_vert:+7.4f} | "
+                f"P:{self.current_pitch:+5.3f}rad | ACU:{pitch_cmd:+6.1f}mm | RPM:{rpm_cmd:5d}"
             )
 
 

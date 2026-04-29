@@ -39,3 +39,4 @@ pip-wheel-metadata/
 # === Misc ===
 .colcon/
 .colcon_install_layout
+CLAUDE.md

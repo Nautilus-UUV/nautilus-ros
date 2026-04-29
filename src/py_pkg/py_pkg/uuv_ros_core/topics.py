@@ -33,9 +33,9 @@ class UUVTopics:
     BCU_RPM = "/bcu/rpm"
 
     # Attitude Control Unit (ACU)
-    ACU_TILT = "/acu/tilt"
+    ACU_PITCH = "/acu/pitch"
     ACU_ROLL = "/acu/roll"
-    ACU_TILT_STEPS = "/acu/tilt/steps"
+    ACU_PITCH_STEPS = "/acu/pitch/steps"
     ACU_ROLL_STEPS = "/acu/roll/steps"
     ACU_FEEDBACK_OFFSET = "/acu/feedback/offset"
     ACU_FEEDBACK_ANGLE = "/acu/feedback/angle"
@@ -54,6 +54,3 @@ class UUVTopics:
 
     # CAN communication
     CAN_OUT = "/can/out"
-
-    # !!! Topics defined for only testing (do not use in control)
-    TEST_EXTERNAL_DEPTH = "/test/external/depth"

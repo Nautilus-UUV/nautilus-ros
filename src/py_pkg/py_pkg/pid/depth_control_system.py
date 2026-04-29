@@ -2,8 +2,8 @@
 
 import typing
 
-import py_pkg.SimMath as SimMath
-from py_pkg.SimMath import Vector
+import py_pkg.math_utils as SimMath
+from py_pkg.math_utils import Vector
 
 """
 This is the Glider's control system module.

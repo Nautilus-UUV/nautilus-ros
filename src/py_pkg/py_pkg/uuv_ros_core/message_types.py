@@ -27,9 +27,9 @@ TOPIC_MESSAGE_MAP = {
     UUVTopics.BCU_PRESSURE: Int32,
     UUVTopics.BCU_FLOW_RATE: Float32,
     UUVTopics.BCU_RPM: Int32,
-    UUVTopics.ACU_TILT: Float32,
+    UUVTopics.ACU_PITCH: Float32,
     UUVTopics.ACU_ROLL: Float32,
-    UUVTopics.ACU_TILT_STEPS: Int32,
+    UUVTopics.ACU_PITCH_STEPS: Int32,
     UUVTopics.ACU_ROLL_STEPS: Int32,
     UUVTopics.ACU_FEEDBACK_OFFSET: Float32,
     UUVTopics.ACU_FEEDBACK_ANGLE: Float32,
@@ -42,6 +42,4 @@ TOPIC_MESSAGE_MAP = {
     UUVTopics.PATH: Float32MultiArray,
     UUVTopics.COMMAND: String,
     UUVTopics.CAN_OUT: Frame,
-    # !!! Topics defined for only testing (do not use in control)
-    UUVTopics.TEST_EXTERNAL_DEPTH: Int32,
 }

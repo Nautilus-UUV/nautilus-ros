@@ -3,6 +3,7 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Int32
 
+from ..physics import pressure_to_depth
 from ..uuv_ros_core import (
     UUVTopics,
     create_publisher_for_topic,
@@ -23,11 +24,11 @@ class NeutralBuoyancyTest(Node):
         super().__init__("neutral_buoyancy_test")
 
         # Control Parameters
-        self.declare_parameter("k_p", 1200.0)  # Gain: RPM per cm/s of error
+        self.declare_parameter("k_p", 120000.0)  # Gain: RPM per m/s of error
         self.declare_parameter(
             "max_rpm", 4100
         )  # taken max from: https://aris-space.atlassian.net/wiki/spaces/Nautilus/pages/306839555/ACU+and+BCU+Motors
-        self.declare_parameter("velocity_tolerance", 0.15)  # cm/s
+        self.declare_parameter("velocity_tolerance", 0.0015)  # m/s
         self.declare_parameter("gyro_tolerance", 0.02)  # rad/s
         self.declare_parameter("accel_tolerance", 0.05)  # m/s^2 (deviation from mean)
         self.declare_parameter("settle_time", 10.0)  # seconds
@@ -39,11 +40,11 @@ class NeutralBuoyancyTest(Node):
         self.a_tol = self.get_parameter("accel_tolerance").value
         self.settle_time = self.get_parameter("settle_time").value
 
-        # State Variables
+        # State Variables (depths in metres, velocities in m/s)
         self.current_depth = None
         self.last_depth = None
         self.last_time = None
-        self.v_vert = 0.0  # Vertical velocity (cm/s)
+        self.v_vert = 0.0
         self.imu_msg = None
         self.accel_history = []  # For checking acceleration stability
 
@@ -53,8 +54,8 @@ class NeutralBuoyancyTest(Node):
         # Comms
         self.rpm_pub = create_publisher_for_topic(self, UUVTopics.BCU_RPM)
 
-        self.depth_sub = create_subscription_for_topic(
-            self, UUVTopics.TEST_EXTERNAL_DEPTH, self._depth_callback
+        self.pressure_sub = create_subscription_for_topic(
+            self, UUVTopics.EXTERNAL_PRESSURE, self._pressure_callback
         )
         self.imu_sub = create_subscription_for_topic(
             self, UUVTopics.IMU_LEFT, self._imu_callback
@@ -65,9 +66,9 @@ class NeutralBuoyancyTest(Node):
 
         self.get_logger().info("Neutral Buoyancy Test: Initialized.")
 
-    def _depth_callback(self, msg):
+    def _pressure_callback(self, msg):
         now = self.get_clock().now()
-        depth = float(msg.data)
+        depth = pressure_to_depth(float(msg.data))
 
         if self.last_depth is not None:
             dt = (now - self.last_time).nanoseconds / 1e9
@@ -124,9 +125,9 @@ class NeutralBuoyancyTest(Node):
                 if elapsed >= self.settle_time:
                     self.get_logger().info("--- TEST SUCCESSFUL ---")
                     self.get_logger().info(
-                        f"Stationary at depth: {self.current_depth:.1f} cm"
+                        f"Stationary at depth: {self.current_depth:.2f} m"
                     )
-                    self.get_logger().info(f"Final V_vert: {self.v_vert:.3f} cm/s")
+                    self.get_logger().info(f"Final V_vert: {self.v_vert:.4f} m/s")
                     self.get_logger().info(f"Final Gyro: {g_mag:.4f} rad/s")
                     self.is_finished = True
                     rpm_cmd = 0
@@ -142,7 +143,7 @@ class NeutralBuoyancyTest(Node):
 
         if self.get_clock().now().nanoseconds % 1000000000 < 100000000:
             self.get_logger().info(
-                f"D:{self.current_depth:5.1f}cm | V:{self.v_vert:+6.2f} | G:{g_mag:5.3f} | RPM:{rpm_cmd:5d}"
+                f"D:{self.current_depth:5.2f}m | V:{self.v_vert:+7.4f} | G:{g_mag:5.3f} | RPM:{rpm_cmd:5d}"
             )
 
 

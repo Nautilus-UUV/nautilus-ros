@@ -10,7 +10,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
 from std_msgs.msg import Float64, Int32
 
-from py_pkg import SimMath
+from py_pkg import math_utils as SimMath
 from py_pkg.pid import depth_control_system as ControlSystem
 from py_pkg.pid.depth_config import (
     init_acc,
@@ -20,50 +20,11 @@ from py_pkg.pid.depth_config import (
     init_pos,
     init_vel,
 )
-
-
-def pressure_to_depth(pressure: float, density=1e3, std_pressure=1e5) -> float:
-    """
-    Convert pressure in Pa to depth in meters.
-    :param
-    pressure: Pressure in Pa
-    density: Density of the fluid in kg/m^3 (default is 1e3 kg/m^3 for water)
-    std_pressure: Standard atmospheric pressure in Pa (default is 1e5 Pa)
-    :return: Depth in meters
-    """
-    g = 9.806  # Zurich Area
-
-    # Convert pressure to depth using the formula: depth = pressure / (density * g)
-    depth = (pressure - std_pressure) / (density * g)
-    return depth
-
-
-def q_to_rpm(q: float, bladder_volume: float) -> float:
-    """
-    Convert flow rate ratio in 1/s to bladder level as a fraction of the bladder volume.
-    :param q: Flow rate as a fraction of total volume per second in Hz
-    :param bladder_volume: Bladder volume in m^3
-    :return motor_rpm: Motor's speed in RPM
-    """
-    efficiency = 0.93  # efficiency between 1000 and 3000 RPM
-    volume_per_rev = 0.32 * 1e-6  # m^3 / rev
-    flow_rate = q * bladder_volume  # m^3/s
-    min = 60  # seconds
-    motor_rpm = min / (volume_per_rev * efficiency) * flow_rate  # rev/min
-    return motor_rpm
-
-
-def rpm_to_q(motor_rpm: float, bladder_volume: float) -> float:
-    """
-    Convert motor RPM to flow rate ratio in 1/s.
-    :param motor_rpm: Motor's speed in RPM
-    :param bladder_volume: Bladder volume in m^3
-    :return q: Flow rate ratio is the flow rate as a fraction of total volume in 1/s
-    """
-    efficiency = 0.93
-    volume_per_rev = 0.32 * 1e-6
-    q = (motor_rpm * volume_per_rev * efficiency) / (60 * bladder_volume)
-    return q
+from py_pkg.physics import pressure_to_depth, q_to_rpm
+from py_pkg.uuv_ros_core import (
+    UUVTopics,
+    create_subscription_for_topic,
+)
 
 
 class DepthControlNode(Node):
@@ -110,12 +71,11 @@ class DepthControlNode(Node):
             callback_group=self.callback_group,
         )
 
-        # Subscriber for the current depth
-        self.pressure_external_subscriber = self.create_subscription(
-            Float64,
-            "/sensor/pressure_ext",
+        # Subscriber for external pressure (depth derived in the callback).
+        self.pressure_external_subscriber = create_subscription_for_topic(
+            self,
+            UUVTopics.EXTERNAL_PRESSURE,
             self.current_depth_callback,
-            10,
             callback_group=self.callback_group,
         )
 
@@ -143,8 +103,8 @@ class DepthControlNode(Node):
         self.control_system.target_depth = self.target_depth
         self.get_logger().info(f"Updated target depth: {self.target_depth}")
 
-    def current_depth_callback(self, msg: Float64):
-        self.current_depth = pressure_to_depth(msg.data)
+    def current_depth_callback(self, msg):
+        self.current_depth = pressure_to_depth(float(msg.data))
         self.get_logger().debug(f"Received current depth: {self.current_depth}")
 
     # def State_callback(self, msg: Float64):
