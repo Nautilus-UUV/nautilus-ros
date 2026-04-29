@@ -79,8 +79,6 @@ class TestCalcAccThrottling:
         cs = _make_system()
         result = cs.calc_acc(
             position=Vector(0, 0, 0),
-            velocity=Vector(0, 0, 0),
-            acceleration=Vector(0, 0, 0),
             tank=0.0,
             time=0.0,
         )
@@ -90,9 +88,9 @@ class TestCalcAccThrottling:
     def test_throttles_within_period(self):
         cs = _make_system()
         zero = Vector(0, 0, 0)
-        cs.calc_acc(zero, zero, zero, 0.0, 0.0)
+        cs.calc_acc(zero, 0.0, 0.0)
         # Period is 1/frequency = 0.1; t=0.05 still in cooldown
-        result = cs.calc_acc(zero, zero, zero, 0.0, 0.05)
+        result = cs.calc_acc(zero, 0.0, 0.05)
         assert result == 0.0
 
 
@@ -108,7 +106,7 @@ class TestCalcAccSign:
         cs = _make_system(target_depth=0.0)
         zero = Vector(0, 0, 0)
         for t in (0.0, 0.1, 0.2, 0.3):
-            result = cs.calc_acc(zero, zero, zero, 0.0, t)
+            result = cs.calc_acc(zero, 0.0, t)
         # At target = current, every cascade stage sees zero error → output 0
         assert result == pytest.approx(0.0)
 
@@ -116,7 +114,7 @@ class TestCalcAccSign:
         cs = _make_system(target_depth=-70.0)
         zero = Vector(0, 0, 0)
         for t in (0.0, 0.1, 0.2):
-            result = cs.calc_acc(zero, zero, zero, 0.0, t)
+            result = cs.calc_acc(zero, 0.0, t)
         # Need to sink → fill bladder → q > 0
         assert result > 0
 
@@ -124,8 +122,7 @@ class TestCalcAccSign:
         # Below the surface, asked to come up
         cs = _make_system(target_depth=0.0)
         deep = Vector(0, 0, -50)
-        zero = Vector(0, 0, 0)
         for t in (0.0, 0.1, 0.2):
-            result = cs.calc_acc(deep, zero, zero, 0.0, t)
+            result = cs.calc_acc(deep, 0.0, t)
         # Need to rise → drain bladder → q < 0
         assert result < 0

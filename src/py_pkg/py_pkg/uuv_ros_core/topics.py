@@ -49,6 +49,7 @@ class UUVTopics:
     # Navigation and control
     POSITION_TARGET = "/position/target"
     POSITION_ESTIMATION = "/position/estimation"
+    TARGET_DEPTH = "/target_depth"
     PATH = "/path"
     COMMAND = "/command"
 

@@ -270,6 +270,24 @@ def euler_to_direction(roll: float, pitch: float, yaw: float) -> "Vector":
     return Vector(x, y, z)
 
 
+def quaternion_to_roll_pitch(qx: float, qy: float, qz: float, qw: float) -> tuple:
+    """Extract roll and pitch (radians) from a quaternion (x, y, z, w).
+
+    ZYX Tait-Bryan convention; matches the math used in
+    integration/trim_and_buoyancy_test._euler_from_quaternion.
+    """
+    sinr_cosp = 2.0 * (qw * qx + qy * qz)
+    cosr_cosp = 1.0 - 2.0 * (qx * qx + qy * qy)
+    roll = np.arctan2(sinr_cosp, cosr_cosp)
+
+    sinp = 2.0 * (qw * qy - qz * qx)
+    if abs(sinp) >= 1:
+        pitch = np.copysign(np.pi / 2, sinp)
+    else:
+        pitch = np.arcsin(sinp)
+    return roll, pitch
+
+
 def euler_to_rotation_matrix(euler_angles: Vector) -> np.ndarray:
     """
     Converts Euler angles to a rotation matrix.

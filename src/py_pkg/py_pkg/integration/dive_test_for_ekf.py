@@ -1,6 +1,6 @@
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Int32, Float32
+from std_msgs.msg import Int32
 
 from ..physics import pressure_to_depth
 from ..uuv_ros_core import (
@@ -28,8 +28,8 @@ class Oscillator(Node):
         self.declare_parameter("max_vol_ml", 2400)
         self.declare_parameter("dive_depth_m", 2.0)
         self.declare_parameter("surface_depth_m", 0.15)
-        self.declare_parameter("acu_front_pitch", 150.0) #need to change
-        self.declare_parameter("acu_back_pitch", -150.0) #need to change to real vals
+        self.declare_parameter("acu_front_pitch", 150.0)  # need to change
+        self.declare_parameter("acu_back_pitch", -150.0)  # need to change to real vals
 
         self.target_rpm = self.get_parameter("target_rpm").value
         self.min_vol = self.get_parameter("min_vol_ml").value

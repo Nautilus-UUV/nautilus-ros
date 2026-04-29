@@ -12,8 +12,7 @@ from py_pkg.physics import (
     pressure_to_depth,
     q_to_rpm,
 )
-
-BLADDER_VOLUME_M3 = 0.002275  # from depth_config.init_buoyancy_engine["tank_volume"]
+from py_pkg.robot_specs import BLADDER_VOLUME_M3
 
 
 class TestPressureToDepth:

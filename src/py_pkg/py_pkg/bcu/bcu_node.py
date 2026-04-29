@@ -2,10 +2,11 @@
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Float64, Int32
+from std_msgs.msg import Float64
 
-# from simple_pid import PID
 from py_pkg.motor import MotorController
+from py_pkg.robot_specs import BCU_MOTOR_MAX_RPM
+from py_pkg.uuv_ros_core import UUVTopics, create_subscription_for_topic
 
 
 class BCUControllerNode(Node):
@@ -22,7 +23,7 @@ class BCUControllerNode(Node):
         self.create_subscription(
             Float64, "/sensor/pressure_tank", self.tank_pressure_callback, 10
         )
-        self.create_subscription(Int32, "/BCU_controller/RPM", self.rpm_callback, 10)
+        create_subscription_for_topic(self, UUVTopics.BCU_RPM, self.rpm_callback)
 
         self._motor = MotorController("libEposCmd.so.6.8.1.0")
 
@@ -37,7 +38,7 @@ class BCUControllerNode(Node):
 
     def rpm_callback(self, msg):
         rpm = msg.data
-        if rpm != self._rpm and rpm <= 4000 and rpm >= -4000:
+        if rpm != self._rpm and rpm <= BCU_MOTOR_MAX_RPM and rpm >= -BCU_MOTOR_MAX_RPM:
             self._rpm = msg.data
             self.get_logger().info(f"Received RPM: {self._rpm}")
 

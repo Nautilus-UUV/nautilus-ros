@@ -4,7 +4,13 @@ Sensor unit conversions for UUV topics.
 These helpers turn raw values from the registry's sensor topics
 (e.g. ``UUVTopics.EXTERNAL_PRESSURE``) into physically meaningful
 units used by control code.
+
+This module holds environmental constants and the pure-math
+conversion functions that use them. Robot-specific physical
+constants (pump, bladder, motors) live in `robot_specs.py`.
 """
+
+from py_pkg.robot_specs import PUMP_EFFICIENCY, VOLUME_PER_REV_M3
 
 # Standard atmosphere (Pa) — pressure at the water surface, subtracted
 # off the absolute reading from the external pressure sensor.
@@ -15,12 +21,6 @@ WATER_DENSITY_KG_M3 = 1_025.0
 
 # Gravitational acceleration (m/s^2).
 GRAVITY_M_S2 = 9.806
-
-# BCU pump volumetric efficiency between 1000 and 3000 RPM.
-PUMP_EFFICIENCY = 0.93
-
-# BCU pump volumetric displacement per revolution (m^3 / rev).
-VOLUME_PER_REV_M3 = 0.32e-6
 
 SECONDS_PER_MINUTE = 60
 

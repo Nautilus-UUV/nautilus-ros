@@ -1,13 +1,13 @@
-"""Tier 1 unit tests for the ACU per-axis controller.
+"""Tier 1 unit tests for the ACU per-axis controllers.
 
-Covers AxisController only (the P-controller + state-machine + deadband).
-ACUController.update is not tested here because it routes through
-ACUController.uuv_to_motor, which calls SimMath.clamp_mag with 3 args
-(it accepts 2) — a separate bug to fix before integration tests.
+Covers AxisController (roll: degrees-in / degrees-out, slewed) and
+MassShifterController (pitch: degrees-in / metres-out, error-direct).
+Both: PIDController-backed correction + state-machine + deadband +
+motor-frame output clamp.
 """
 
 import pytest
-from py_pkg.pid.acu_control_system import AxisController
+from py_pkg.pid.acu_axis_controller import AxisController, MassShifterController
 
 
 def make_axis(Kp=0.5, position_tolerance=1.0, command_tolerance=0.5):
@@ -123,3 +123,129 @@ class TestCommandDeadband:
         # error = 1, target = 0.5, |0.5-0| = 0.5 > 0.1 → emits 0.5
         cmd = axis.update(desired_value=1.0)
         assert cmd == pytest.approx(0.5)
+
+
+class TestPIDPathWired:
+    """Smoke test that the PIDController is actually feeding the axis.
+
+    Not re-testing PIDController itself (test_pid_controller.py covers
+    that); just confirming Ki>0 produces growing output under persistent
+    error. With Kp=0 we isolate the integral contribution.
+    """
+
+    def test_integral_accumulates_under_persistent_error(self):
+        axis = AxisController(
+            name="pitch",
+            Kp=0.0,
+            Ki=0.5,
+            Kd=0.0,
+            position_tolerance=0.01,
+            command_tolerance=0.0,
+            integral_limits=(-1000.0, 1000.0),
+            output_limits=(-1000.0, 1000.0),
+        )
+        axis.update_sensor(0.0)
+
+        # Fresh axis is in STEADY; first call w/ error > tol triggers
+        # SHIFTING and returns target_pos. With Kp=0, only Ki contributes.
+        cmd1 = axis.update(desired_value=10.0)
+        cmd2 = axis.update(desired_value=10.0)
+        cmd3 = axis.update(desired_value=10.0)
+
+        # Each successive tick the integral grows -> the correction grows
+        # -> target_pos grows.
+        assert cmd1 is not None and cmd2 is not None and cmd3 is not None
+        assert cmd2 > cmd1
+        assert cmd3 > cmd2
+
+
+class TestMotorFrameOutputClamp:
+    """Roll-style clamped-P at the motor-frame output."""
+
+    def _make(self, position_tolerance=1.0):
+        return AxisController(
+            name="roll",
+            Kp=0.5,
+            position_tolerance=position_tolerance,
+            command_tolerance=0.0,
+            output_limits=(-25.0, 25.0),
+        )
+
+    def test_large_positive_error_clamped_to_positive_limit(self):
+        axis = self._make()
+        axis.update_sensor(0.0)
+        # Error = 100°. Unclamped new_target = 0 + 0.5*100 = 50 — clamped to +25.
+        cmd = axis.update(desired_value=100.0)
+        assert cmd == pytest.approx(25.0)
+
+    def test_large_negative_error_clamped_to_negative_limit(self):
+        axis = self._make()
+        axis.update_sensor(0.0)
+        cmd = axis.update(desired_value=-100.0)
+        assert cmd == pytest.approx(-25.0)
+
+    def test_small_error_below_clamp_passes_through(self):
+        axis = self._make(position_tolerance=0.01)
+        axis.update_sensor(0.0)
+        # Error = 4°, new_target = 0 + 0.5*4 = 2 — well within ±25.
+        cmd = axis.update(desired_value=4.0)
+        assert cmd == pytest.approx(2.0)
+
+
+class TestMassShifterController:
+    """Pitch variant: cmd = clamp(Kp_m_per_deg * pitch_error_deg).
+
+    Kp's units are m/deg. Output is the PID correction directly, not
+    `current + correction` — the actuator (mass-shifter stroke) is in a
+    different frame from the sensor (pitch angle).
+    """
+
+    def _make(self, Kp=0.5, output_limits=(-0.07, 0.07), position_tolerance=1.0):
+        return MassShifterController(
+            name="pitch",
+            Kp=Kp,
+            position_tolerance=position_tolerance,
+            command_tolerance=0.0,
+            output_limits=output_limits,
+        )
+
+    def test_zero_error_returns_zero_correction(self):
+        # Distinguishes from base AxisController, which would return current_pos.
+        axis = self._make()
+        axis.update_sensor(5.0)
+        assert axis.compute_control(5.0) == pytest.approx(0.0)
+
+    def test_positive_error_returns_positive_correction(self):
+        axis = self._make()
+        axis.update_sensor(0.0)
+        # error = 10°, Kp = 0.5 m/deg → 5 m
+        assert axis.compute_control(10.0) == pytest.approx(5.0)
+
+    def test_negative_error_returns_negative_correction(self):
+        axis = self._make()
+        axis.update_sensor(10.0)
+        # error = -10° → -5 m
+        assert axis.compute_control(0.0) == pytest.approx(-5.0)
+
+    def test_clamped_at_positive_limit(self):
+        axis = self._make()
+        axis.update_sensor(0.0)
+        # 0.5 * 35 = 17.5 m; clamp to +0.07.
+        cmd = axis.update(desired_value=35.0)
+        assert cmd == pytest.approx(0.07)
+
+    def test_clamped_at_negative_limit(self):
+        axis = self._make()
+        axis.update_sensor(0.0)
+        cmd = axis.update(desired_value=-35.0)
+        assert cmd == pytest.approx(-0.07)
+
+    def test_proportional_region_below_clamp(self):
+        # Now observable: |err| < 0.14° produces a sub-saturation response.
+        # Pre-fix, the bogus 'current_deg + correction_deg' branch saturated
+        # the clamp at any |err| > 0.14° regardless of the proportional region.
+        axis = self._make(position_tolerance=0.01)
+        axis.update_sensor(0.0)
+        cmd = axis.update(desired_value=0.1)
+        # 0.5 * 0.1 = 0.05 m, well within ±0.07.
+        assert cmd == pytest.approx(0.05)

@@ -3,26 +3,22 @@
 #!/usr/bin/env python3
 
 import rclpy
-
-# from sensor_msgs.msg import Imu
-# from StatePackage.msg import StateVector
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
-from std_msgs.msg import Float64, Int32
+from std_msgs.msg import Int32
 
 from py_pkg import math_utils as SimMath
+from py_pkg.physics import pressure_to_depth, q_to_rpm
 from py_pkg.pid import depth_control_system as ControlSystem
 from py_pkg.pid.depth_config import (
-    init_acc,
     init_buoyancy_engine,
     init_control,
     init_motor,
     init_pos,
-    init_vel,
 )
-from py_pkg.physics import pressure_to_depth, q_to_rpm
 from py_pkg.uuv_ros_core import (
     UUVTopics,
+    create_publisher_for_topic,
     create_subscription_for_topic,
 )
 
@@ -31,47 +27,36 @@ class DepthControlNode(Node):
     def __init__(self):
         super().__init__("depth_control_node")
 
-        # Create a reentrant callback group to allow concurrent execution
+        # Reentrant callback group so subscriptions and the control timer
+        # can run concurrently.
         self.callback_group = ReentrantCallbackGroup()
 
         self.control_system = ControlSystem.DepthControlSystem(init_control)
         self.current_position = SimMath.Vector(
             init_pos.get("x"), init_pos.get("y"), init_pos.get("z")
         )
-        self.current_velocity = SimMath.Vector(
-            init_vel.get("x"), init_vel.get("y"), init_vel.get("z")
-        )  # Initialize velocity
-        self.current_acceleration = SimMath.Vector(
-            init_acc.get("x"), init_acc.get("y"), init_acc.get("z")
-        )  # Initialize acceleration
         self.current_bladder_level = init_buoyancy_engine.get(
             "initial_proportion_full"
-        )  # Initialize bladder level
-        self.bladder_volume = init_buoyancy_engine.get(
-            "tank_volume"
-        )  # Bladder volume in m^3
+        )
+        self.bladder_volume = init_buoyancy_engine.get("tank_volume")
         self.current_time = self.get_clock().now().nanoseconds / 1e9
 
-        self.control_output = 0.0  # Control output for buoyancy engine
-        self.motor_rpm = 0.0  # Motor RPM
-        self.target_depth = 0.0  # Target depth in meters
-        self.current_depth = 0.0  # Current depth in meterscontrol_action
+        self.control_output = 0.0
+        self.motor_rpm = 0.0
+        self.target_depth = 0.0
+        self.current_depth = 0.0
 
-        # Publisher for the control output (e.g., to a buoyancy control unit)
-        self.bcu_controller_rpm_publisher = self.create_publisher(
-            Int32, "BCU_controller/RPM", 10, callback_group=self.callback_group
+        self.bcu_controller_rpm_publisher = create_publisher_for_topic(
+            self, UUVTopics.BCU_RPM, callback_group=self.callback_group
         )
 
-        # Subscriber for the target depth
-        self.target_depth_subscriber = self.create_subscription(
-            Float64,
-            "target_depth",
+        self.target_depth_subscriber = create_subscription_for_topic(
+            self,
+            UUVTopics.TARGET_DEPTH,
             self.target_depth_callback,
-            10,
             callback_group=self.callback_group,
         )
 
-        # Subscriber for external pressure (depth derived in the callback).
         self.pressure_external_subscriber = create_subscription_for_topic(
             self,
             UUVTopics.EXTERNAL_PRESSURE,
@@ -79,27 +64,16 @@ class DepthControlNode(Node):
             callback_group=self.callback_group,
         )
 
-        # Subscriber for the current velocity (assuming you have this topic)
-        # self.State_subscriber = self.create_subscription(
-        #    StateVector, "/state", self.velocity_callback, 10, callback_group=self.callback_group
-        # )
-
-        # Subscriber for the current acceleration (assuming you have this topic)
-        # self.IMU_subscriber = self.create_subscription(
-        #     Imu, "/sensor/imu1", self.IMU_callback, 10, callback_group=self.callback_group
-        # )
-
-        # Timer to periodically run the control loop
         self.control_timer = self.create_timer(
-            1.0 / 10.0,  # 10 Hz control frequency (adjust as needed)
+            1.0 / 10.0,  # 10 Hz control frequency
             self.control_loop,
             callback_group=self.callback_group,
         )
 
         self.get_logger().info("Depth control node started.")
 
-    def target_depth_callback(self, msg: Float64):
-        self.target_depth = msg.data
+    def target_depth_callback(self, msg):
+        self.target_depth = float(msg.data)
         self.control_system.target_depth = self.target_depth
         self.get_logger().info(f"Updated target depth: {self.target_depth}")
 
@@ -107,85 +81,45 @@ class DepthControlNode(Node):
         self.current_depth = pressure_to_depth(float(msg.data))
         self.get_logger().debug(f"Received current depth: {self.current_depth}")
 
-    # def State_callback(self, msg: Float64):
-    #     self.current_velocity.x = msg.linear_velocity.x
-    #     self.current_velocity.y = msg.linear_velocity.y
-    #     self.current_velocity.z = msg.linear_velocity.z
-    #     self.get_logger().debug(f"Received velocity: {self.current_velocity.z} m/s")
-
-    # def IMU_callback(self, msg: Imu):
-    #     self.current_acceleration.x = msg.linear_acceleration.x
-    #     self.current_acceleration.y = msg.linear_acceleration.y
-    #     self.current_acceleration.z = msg.linear_acceleration.z
-    #     self.get_logger().debug(f"Received acceleration: {self.current_acceleration.z} m/s^2")
-
     def control_loop(self):
         self.current_time = self.get_clock().now().nanoseconds / 1e9
-        current_position = SimMath.Vector(
-            0.0, 0.0, self.current_depth
-        )  # Assuming x and y are irrelevant for depth control
+        current_position = SimMath.Vector(0.0, 0.0, self.current_depth)
         self.control_output = self.control_system.calc_acc(
             current_position,
-            self.current_velocity,
-            self.current_acceleration,
             0.0,
             self.current_time,
-        )  # vel and acc are estimated from depth with finite difference method
+        )
 
         msg = Int32()
         self.motor_rpm = q_to_rpm(self.control_output, self.bladder_volume)
-        if self.motor_rpm > 0:
-            self.motor_rpm = SimMath.clamp(
-                self.motor_rpm, init_motor.get("min_rpm"), init_motor.get("max_rpm")
-            )
+        min_rpm = init_motor.get("min_rpm")
+        max_rpm = init_motor.get("max_rpm")
+        if abs(self.motor_rpm) < min_rpm:
+            # Pump cannot run reliably below min_rpm; suppress small commands
+            # instead of slamming to +/-min_rpm (which would limit-cycle the setpoint).
+            self.motor_rpm = 0.0
+        elif self.motor_rpm > 0:
+            self.motor_rpm = SimMath.clamp(self.motor_rpm, min_rpm, max_rpm)
         else:
-            self.motor_rpm = SimMath.clamp(
-                self.motor_rpm, -init_motor.get("max_rpm"), -init_motor.get("min_rpm")
-            )
+            self.motor_rpm = SimMath.clamp(self.motor_rpm, -max_rpm, -min_rpm)
+        # Pump wiring inverts direction: positive q (fill bladder → sink) is
+        # delivered as a negative RPM command on the BCU bus.
         msg.data = int(-1 * self.motor_rpm)
         self.bcu_controller_rpm_publisher.publish(msg)
         self.get_logger().debug(
             f"Fraction of bladder volume filled per second in Hz: {self.control_output}"
         )
-        self.get_logger().debug(f"Command to motor in RPM: {self.control_output}")
-
-
-class TopicCheckerNode(Node):
-    def __init__(self, topic_name):
-        super().__init__("topic_checker_node")
-        self.topic_name = topic_name
-        self.message_received = False
-        self.subscription = self.create_subscription(
-            Float64,  # Replace with the appropriate message type
-            topic_name,
-            self.topic_callback,
-            10,
-        )
-        self.subscription  # prevent unused variable warning
-        self.get_logger().info(f"Waiting for message on topic {self.topic_name}")
-
-    def topic_callback(self, msg):
-        self.message_received = True
-        self.get_logger().info(f"Message received on topic {self.topic_name}")
+        self.get_logger().debug(f"Command to motor in RPM: {self.motor_rpm}")
 
 
 def main(args=None):
     rclpy.init(args=args)
-
-    topic_name = "target_depth"
-    topic_checker_node = TopicCheckerNode(topic_name)
-
-    # Wait for a message to be received on the topic
-    while not topic_checker_node.message_received:
-        rclpy.spin_once(topic_checker_node, timeout_sec=1.0)
-
-    # If a message is received, start the DepthControlNode
     depth_control_node = DepthControlNode()
-    rclpy.spin(depth_control_node)
-
-    depth_control_node.destroy_node()
-    topic_checker_node.destroy_node()
-    rclpy.shutdown()
+    try:
+        rclpy.spin(depth_control_node)
+    finally:
+        depth_control_node.destroy_node()
+        rclpy.shutdown()
 
 
 if __name__ == "__main__":

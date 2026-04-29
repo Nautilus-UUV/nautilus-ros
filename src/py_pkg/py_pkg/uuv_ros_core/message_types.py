@@ -39,6 +39,7 @@ TOPIC_MESSAGE_MAP = {
     UUVTopics.IMU_FILTERED_RIGHT: Imu,
     UUVTopics.POSITION_TARGET: Pose,
     UUVTopics.POSITION_ESTIMATION: Pose,
+    UUVTopics.TARGET_DEPTH: Float32,
     UUVTopics.PATH: Float32MultiArray,
     UUVTopics.COMMAND: String,
     UUVTopics.CAN_OUT: Frame,

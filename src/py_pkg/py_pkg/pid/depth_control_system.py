@@ -2,13 +2,14 @@
 
 import typing
 
-import py_pkg.math_utils as SimMath
 from py_pkg.math_utils import Vector
+from py_pkg.utils_controls import PIDController
 
 """
 This is the Glider's control system module.
 
-It provides a PID controller class, a state machine class, and logging.
+It provides a state machine class and logging. The PID controller lives in
+py_pkg.utils_controls.
 """
 
 
@@ -24,112 +25,6 @@ class Logger:
 
         self.glider_log: list = []
         self.control_log: list = []
-
-
-class PIDController:
-    """
-    Simple PID controller implementation.
-
-    Includes derivative kickback, integral windup, and output protections.
-
-    Attributes:
-        kp (float): Proportional gain.
-        ki (float): Integral gain.
-        kd (float): Derivative gain.
-        integral_limit (float): Integral windup limit.
-        output_limit (float): Output limit.
-        prev_error (float): Previous error value.
-        prev_input (float): Previous input value.
-        prev_time (float | None): Previous time value.
-        integral (float): Integral term.
-
-    Methods:
-        update(target: float, input: float, time: float) -> float:
-            Updates the PID controller with the given target, input, and time values.
-    """
-
-    def __init__(
-        self,
-        kp: float = 1,
-        ki: float = 0,
-        kd: float = 0,
-        integral_limit: float = 1_000,
-        output_limit: float = 1_000,
-    ) -> None:
-        """
-        Initializes a PIDController object.
-
-        Args:
-            kp (float): Proportional gain (default: 1).
-            ki (float): Integral gain (default: 0).
-            kd (float): Derivative gain (default: 0).
-            integral_limit (float): Integral windup limit (default: 1000).
-            output_limit (float): Output limit (default: 1000).
-
-        Returns:
-            None
-        """
-
-        # Tuning parameters
-        self.kp: float = kp
-        self.ki: float = ki
-        self.kd: float = kd
-
-        # Integral windup limit
-        self.integral_limit: float = integral_limit
-
-        # Output limit
-        self.output_limit: float = output_limit
-
-        # Previous values
-        self.prev_error: float = 0.0
-        self.prev_input: float = 0.0
-        self.prev_time: float | None = None
-
-        # Integral term
-        self.integral: float = 0.0
-
-    def update(self, target: float, input: float, time: float) -> float:
-        """
-        Updates the PID controller with the given target, input, and time values.
-
-        Args:
-            target (float): The desired target value.
-            input (float): The current input value.
-            time (float): The current time value.
-
-        Returns:
-            float: The calculated output value.
-
-        """
-
-        error = target - input
-
-        # Don't return anything on first call
-        if self.prev_time is None:
-            self.prev_error = error
-            self.prev_time = time
-            self.prev_input = input
-            return 0
-
-        time_delta = time - self.prev_time
-
-        # Integral windup prevention
-        self.integral = SimMath.clamp_mag(
-            self.integral + (error * time_delta), self.integral_limit
-        )
-
-        # Derivative kickback prevention
-        derivative = (error - self.prev_error) / time_delta
-
-        output = (self.kp * error) + (self.ki * self.integral) + (self.kd * derivative)
-
-        # Store previous values
-        self.prev_error = error
-        self.prev_time = time
-        self.prev_input = input
-
-        return SimMath.clamp_mag(output, self.output_limit)
 
 
 """
@@ -285,8 +180,6 @@ class DepthControlSystem:
     def calc_acc(
         self,
         position: Vector,
-        velocity: Vector,
-        acceleration: Vector,
         tank: float,
         time: float,
         other_to_log: list = [],
@@ -296,8 +189,6 @@ class DepthControlSystem:
 
         Args:
             position (Vector): The current position of the glider.
-            velocity (Vector): The current velocity of the glider.
-            acceleration (Vector): The current acceleration of the glider.
             tank (float): The current tank level.
             time (float): The current time.
 
@@ -306,20 +197,20 @@ class DepthControlSystem:
         """
 
         self.time = time
-        self.logger.glider_log.append(
-            [
-                time,
-                position.x(),
-                position.y(),
-                position.z(),
-                velocity,
-                acceleration,
-                tank * 10,
-            ]
-            + other_to_log
-        )
 
         if time < self.prev_update_time + self.period:
+            self.logger.glider_log.append(
+                [
+                    time,
+                    position.x(),
+                    position.y(),
+                    position.z(),
+                    0.0,
+                    0.0,
+                    tank * 10,
+                ]
+                + other_to_log
+            )
             return self.prev_command
 
         self.prev_update_time = time
@@ -341,11 +232,24 @@ class DepthControlSystem:
             self.previous_positions, self.previous_times
         )
 
-        # If velocity or acceleration cannot be estimated, use the given velocity and acceleration.
-        #  This will happen in the first few time steps.  We check for None
+        # First few ticks lack data for finite differences; default to 0.0.
         velocity_for_pid = velocity_estimate if velocity_estimate is not None else 0.0
         acceleration_for_pid = (
             acceleration_estimate if acceleration_estimate is not None else 0.0
+        )
+
+        # Log the estimates the PID actually consumes, not dead inputs.
+        self.logger.glider_log.append(
+            [
+                time,
+                position.x(),
+                position.y(),
+                position.z(),
+                velocity_for_pid,
+                acceleration_for_pid,
+                tank * 10,
+            ]
+            + other_to_log
         )
 
         # REMOVED logic since we are manually setting target_depth
