@@ -171,13 +171,14 @@ class ACURollSimTest(unittest.TestCase):
         return predicate()
 
     def test_positive_rad_command_rotates_roll_joint(self):
-        """Sustained +15deg command on ACU_ROLL -> roll joint rotates positive."""
-        # 15°: well under ±30° SDF limit; vel limit 0.5 rad/s settles in
-        # ~0.5 s, 5 s gives plenty of margin.
-        target_rad = 0.2618
+        """Sustained +30deg command on ACU_ROLL -> roll joint rotates positive."""
+        # Drive at the +30° SDF limit for 12 s: smaller angles or shorter
+        # runs get swallowed by the kP=-13 roll damping and the body
+        # rotation is invisible in the GUI.
+        target_rad = 0.5236
         startup_timeout_s = 60.0
         post_ready_settle_s = 2.0
-        drive_duration_s = 5.0
+        drive_duration_s = 12.0
         drive_period_s = 0.1
         settle_s = 1.5
 
