@@ -181,7 +181,7 @@ class TestSaturation:
     """Large errors must clamp to ±output_limit * steps_per_unit."""
 
     def test_roll_saturates_at_max_steps(self, acu_node_harness):
-        # Desired roll 100° far exceeds ACU_ROLL_MAX_ANGLE_DEG (25°) but stays
+        # Desired roll 100° far exceeds ACU_ROLL_MAX_ANGLE_DEG (30°) but stays
         # within (-180°, 180°) so the quaternion -> roll/pitch round-trip is
         # unambiguous (atan2 wraps inputs outside that range). Every emission
         # must be |steps| <= ROLL_MAX_STEPS.
@@ -253,7 +253,7 @@ class TestQuiescenceAfterShift:
     def test_roll_saturated_settles_to_no_new_emissions(self, acu_node_harness):
         h = acu_node_harness
         # 100° stays within the unambiguous quaternion->Euler range; the
-        # roll axis still saturates at ACU_ROLL_MAX_ANGLE_DEG (25°).
+        # roll axis still saturates at ACU_ROLL_MAX_ANGLE_DEG (30°).
         h.publish_target_attitude(roll_deg=100.0, pitch_deg=0.0)
         # Burst phase: collect a few emissions while target is shifting.
         h.spin_until(lambda: len(h.received_roll_steps) >= 2, timeout=1.5)

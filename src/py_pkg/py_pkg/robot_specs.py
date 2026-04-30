@@ -40,22 +40,29 @@ BCU_MOTOR_MIN_RPM = 1000
 # ---------------------------------------------------------------------------
 # ACU mechanics
 # ---------------------------------------------------------------------------
+# Values mirror the Gazebo glider_nautilus model
+# (src/dave/models/dave_robot_models/description/glider_nautilus/model.sdf,
+# ACU section). Duplicated here so the control stack can import them
+# without parsing the SDF; if you change one, change the other.
 
-# TODO: confirm exact value on the bench. Currently used as a saturation
-# cap in trim_and_buoyancy_test.py (300 mm). The pitch axis controller
-# uses the tighter ACU_PITCH_OUTPUT_LIMIT_M below as its operational
-# stroke clamp.
-ACU_PITCH_MAX_TRAVEL_M = 0.3
+# Pitch — acu_tilt_joint, prismatic, axis = +x in body frame.
+# SDF limit: lower=0, upper=-0.1195 (m) → travel = 0.1195 m.
+ACU_PITCH_MASS_KG = 1.83
+ACU_PITCH_MAX_TRAVEL_M = 0.1195
+ACU_PITCH_MAX_VELOCITY_M_S = 0.5
+ACU_PITCH_MAX_EFFORT_N = 10.0
 
-# Mass-shifter saturation used by the pitch axis controller. The previous
-# code used ±0.07 m as a hard cap (and ±0.065 m as a bang-bang setpoint);
-# kept here as the single source of truth for the clamped-P pitch output.
-# TODO: confirm against bench measurement.
+# Soft saturation used by the pitch axis controller (clamped-P output).
+# Must satisfy ACU_PITCH_OUTPUT_LIMIT_M <= ACU_PITCH_MAX_TRAVEL_M.
 ACU_PITCH_OUTPUT_LIMIT_M = 0.07
 
-# TODO: confirm exact value on the bench. Used as the roll-axis output
-# clamp in pid/acu_roll_config.py.
-ACU_ROLL_MAX_ANGLE_DEG = 25.0
+# Roll — acu_roll_joint, revolute, axis = +x in body frame.
+# SDF limit: lower=-0.5236, upper=0.5236 (rad) = ±30°.
+ACU_ROLL_MASS_KG = 4.069
+ACU_ROLL_MAX_ANGLE_RAD = 0.5236
+ACU_ROLL_MAX_ANGLE_DEG = 30.0
+ACU_ROLL_MAX_VELOCITY_RAD_S = 0.5
+ACU_ROLL_MAX_EFFORT_NM = 10.0
 
 # Motor-step conversion factors. The ACU motor topics (ACU_PITCH_STEPS /
 # ACU_ROLL_STEPS) are Int32 step counts; these constants convert from
