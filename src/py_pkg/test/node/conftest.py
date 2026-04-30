@@ -16,6 +16,7 @@ Layout:
 """
 
 import math
+import os
 import time
 
 import pytest
@@ -23,8 +24,9 @@ import rclpy
 from geometry_msgs.msg import Pose
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
-from std_msgs.msg import Float32, Int32
+from std_msgs.msg import Float32, Float32MultiArray, Int32, String
 
+from py_pkg.path.pathfinding import PathfindingNode
 from py_pkg.pid.acu_node import ACUControlNode
 from py_pkg.pid.depth_node import DepthControlNode
 from py_pkg.uuv_ros_core import (
@@ -34,9 +36,18 @@ from py_pkg.uuv_ros_core import (
 )
 
 
+def _isolated_ros_domain_id() -> int:
+    """Per-PID ROS_DOMAIN_ID. Tests use production topic names, so any
+    sibling rclpy participant on the default domain (stray `ros2` CLI,
+    leftover Gazebo, parallel pytest) would inject traffic into the
+    harness and corrupt assertions."""
+    return (os.getpid() % 101) + 1
+
+
 @pytest.fixture(scope="session", autouse=True)
 def rclpy_session():
-    """Init/shutdown rclpy exactly once per test session."""
+    """Init/shutdown rclpy once per session, on an isolated ROS_DOMAIN_ID."""
+    os.environ["ROS_DOMAIN_ID"] = str(_isolated_ros_domain_id())
     rclpy.init()
     yield
     rclpy.shutdown()
@@ -97,8 +108,8 @@ class _DepthTesterNode(Node):
         super().__init__("depth_node_tester")
         self.received_rpm: list[int] = []
 
-        self.target_depth_pub = create_publisher_for_topic(
-            self, UUVTopics.TARGET_DEPTH
+        self.target_pose_pub = create_publisher_for_topic(
+            self, UUVTopics.POSITION_TARGET
         )
         self.external_pressure_pub = create_publisher_for_topic(
             self, UUVTopics.EXTERNAL_PRESSURE
@@ -111,9 +122,10 @@ class _DepthTesterNode(Node):
         self.received_rpm.append(int(msg.data))
 
     def publish_target_depth(self, value: float) -> None:
-        msg = Float32()
-        msg.data = float(value)
-        self.target_depth_pub.publish(msg)
+        # depth_node only reads position.z; other fields are zeroed.
+        msg = Pose()
+        msg.position.z = float(value)
+        self.target_pose_pub.publish(msg)
 
     def publish_external_pressure(self, value_pa: int) -> None:
         msg = Int32()
@@ -154,11 +166,8 @@ def depth_node_harness():
 
 
 def _quat_from_roll_pitch_deg(roll_deg: float, pitch_deg: float):
-    """Build a unit quaternion (x, y, z, w) for the given roll/pitch (yaw=0).
-
-    Inverse of math_utils.quaternion_to_roll_pitch under ZYX Tait-Bryan with
-    yaw=0; verified to round-trip exactly for the angles used in tests.
-    """
+    """Quaternion for (roll, pitch, yaw=0). Inverse of
+    math_utils.quaternion_to_roll_pitch."""
     r = math.radians(roll_deg) / 2.0
     p = math.radians(pitch_deg) / 2.0
     qw = math.cos(r) * math.cos(p)
@@ -169,12 +178,12 @@ def _quat_from_roll_pitch_deg(roll_deg: float, pitch_deg: float):
 
 
 class _ACUTesterNode(Node):
-    """Drives ACUControlNode and captures ACU_PITCH_STEPS / ACU_ROLL_STEPS."""
+    """Drives ACUControlNode and captures ACU_PITCH (mm) / ACU_ROLL (rad)."""
 
     def __init__(self):
         super().__init__("acu_node_tester")
-        self.received_pitch_steps: list[int] = []
-        self.received_roll_steps: list[int] = []
+        self.received_pitch_mm: list[float] = []
+        self.received_roll_rad: list[float] = []
 
         self.target_pose_pub = create_publisher_for_topic(
             self, UUVTopics.POSITION_TARGET
@@ -182,18 +191,18 @@ class _ACUTesterNode(Node):
         self.estimation_pose_pub = create_publisher_for_topic(
             self, UUVTopics.POSITION_ESTIMATION
         )
-        self.pitch_steps_sub = create_subscription_for_topic(
-            self, UUVTopics.ACU_PITCH_STEPS, self._on_pitch
+        self.pitch_sub = create_subscription_for_topic(
+            self, UUVTopics.ACU_PITCH, self._on_pitch
         )
-        self.roll_steps_sub = create_subscription_for_topic(
-            self, UUVTopics.ACU_ROLL_STEPS, self._on_roll
+        self.roll_sub = create_subscription_for_topic(
+            self, UUVTopics.ACU_ROLL, self._on_roll
         )
 
-    def _on_pitch(self, msg: Int32) -> None:
-        self.received_pitch_steps.append(int(msg.data))
+    def _on_pitch(self, msg: Float32) -> None:
+        self.received_pitch_mm.append(float(msg.data))
 
-    def _on_roll(self, msg: Int32) -> None:
-        self.received_roll_steps.append(int(msg.data))
+    def _on_roll(self, msg: Float32) -> None:
+        self.received_roll_rad.append(float(msg.data))
 
     @staticmethod
     def _pose_from_roll_pitch(roll_deg: float, pitch_deg: float) -> Pose:
@@ -223,12 +232,12 @@ class ACUNodeHarness(NodeHarness):
         super().__init__(ACUControlNode, _ACUTesterNode)
 
     @property
-    def received_pitch_steps(self) -> list[int]:
-        return self.tester.received_pitch_steps
+    def received_pitch_mm(self) -> list[float]:
+        return self.tester.received_pitch_mm
 
     @property
-    def received_roll_steps(self) -> list[int]:
-        return self.tester.received_roll_steps
+    def received_roll_rad(self) -> list[float]:
+        return self.tester.received_roll_rad
 
     def publish_target_attitude(self, roll_deg: float, pitch_deg: float) -> None:
         self.tester.publish_target_attitude(roll_deg, pitch_deg)
@@ -241,6 +250,82 @@ class ACUNodeHarness(NodeHarness):
 def acu_node_harness():
     """Function-scoped harness. Tears both nodes down on exit."""
     harness = ACUNodeHarness()
+    try:
+        yield harness
+    finally:
+        harness.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Pathfinding node harness
+# ---------------------------------------------------------------------------
+
+
+class _PathfindingTesterNode(Node):
+    """Drives PathfindingNode and captures POSITION_TARGET emissions."""
+
+    def __init__(self):
+        super().__init__("pathfinding_node_tester")
+        self.received_targets: list = []
+
+        self.estimation_pub = create_publisher_for_topic(
+            self, UUVTopics.POSITION_ESTIMATION
+        )
+        self.command_pub = create_publisher_for_topic(self, UUVTopics.COMMAND)
+        self.path_pub = create_publisher_for_topic(self, UUVTopics.PATH)
+        self.target_sub = create_subscription_for_topic(
+            self, UUVTopics.POSITION_TARGET, self._on_target
+        )
+
+    def _on_target(self, msg: Pose) -> None:
+        self.received_targets.append(msg)
+
+    def publish_pose_estimation(self, x: float, y: float, z: float) -> None:
+        msg = Pose()
+        msg.position.x = float(x)
+        msg.position.y = float(y)
+        msg.position.z = float(z)
+        msg.orientation.w = 1.0
+        self.estimation_pub.publish(msg)
+
+    def publish_command(self, command: str) -> None:
+        msg = String()
+        msg.data = command
+        self.command_pub.publish(msg)
+
+    def publish_path(self, keypoints) -> None:
+        msg = Float32MultiArray()
+        flat = []
+        for x, y, z in keypoints:
+            flat.extend([float(x), float(y), float(z)])
+        msg.data = flat
+        self.path_pub.publish(msg)
+
+
+class PathfindingNodeHarness(NodeHarness):
+    """NodeHarness specialised for PathfindingNode + _PathfindingTesterNode."""
+
+    def __init__(self):
+        super().__init__(PathfindingNode, _PathfindingTesterNode)
+
+    @property
+    def received_targets(self) -> list:
+        return self.tester.received_targets
+
+    def publish_pose_estimation(self, x: float, y: float, z: float) -> None:
+        self.tester.publish_pose_estimation(x, y, z)
+
+    def publish_command(self, command: str) -> None:
+        self.tester.publish_command(command)
+
+    def publish_path(self, keypoints) -> None:
+        self.tester.publish_path(keypoints)
+
+
+@pytest.fixture
+def pathfinding_node_harness():
+    """Function-scoped harness. Tears both nodes down on exit."""
+    harness = PathfindingNodeHarness()
     try:
         yield harness
     finally:

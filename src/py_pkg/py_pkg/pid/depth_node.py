@@ -3,6 +3,7 @@
 #!/usr/bin/env python3
 
 import rclpy
+from geometry_msgs.msg import Pose
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
 from std_msgs.msg import Int32
@@ -50,10 +51,12 @@ class DepthControlNode(Node):
             self, UUVTopics.BCU_RPM, callback_group=self.callback_group
         )
 
-        self.target_depth_subscriber = create_subscription_for_topic(
+        # Depth setpoint is `position.z` of POSITION_TARGET (Z-up frame:
+        # deeper = more negative, matching the EKF Pose channel).
+        self.target_pose_subscriber = create_subscription_for_topic(
             self,
-            UUVTopics.TARGET_DEPTH,
-            self.target_depth_callback,
+            UUVTopics.POSITION_TARGET,
+            self.target_pose_callback,
             callback_group=self.callback_group,
         )
 
@@ -72,8 +75,8 @@ class DepthControlNode(Node):
 
         self.get_logger().info("Depth control node started.")
 
-    def target_depth_callback(self, msg):
-        self.target_depth = float(msg.data)
+    def target_pose_callback(self, msg: Pose):
+        self.target_depth = float(msg.position.z)
         self.control_system.target_depth = self.target_depth
         self.get_logger().info(f"Updated target depth: {self.target_depth}")
 

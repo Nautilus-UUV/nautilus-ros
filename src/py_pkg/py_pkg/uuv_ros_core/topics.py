@@ -29,14 +29,13 @@ class UUVTopics:
 
     # Buoyancy Control Unit (BCU)
     BCU_PRESSURE = "/bcu/pressure"
+    BCU_VOLUME = "/bcu/volume"
     BCU_FLOW_RATE = "/bcu/flow_rate"
     BCU_RPM = "/bcu/rpm"
 
     # Attitude Control Unit (ACU)
     ACU_PITCH = "/acu/pitch"
     ACU_ROLL = "/acu/roll"
-    ACU_PITCH_STEPS = "/acu/pitch/steps"
-    ACU_ROLL_STEPS = "/acu/roll/steps"
     ACU_FEEDBACK_OFFSET = "/acu/feedback/offset"
     ACU_FEEDBACK_ANGLE = "/acu/feedback/angle"
 
@@ -49,7 +48,6 @@ class UUVTopics:
     # Navigation and control
     POSITION_TARGET = "/position/target"
     POSITION_ESTIMATION = "/position/estimation"
-    TARGET_DEPTH = "/target_depth"
     PATH = "/path"
     COMMAND = "/command"
 

@@ -1,7 +1,8 @@
 """Tier 2 in-process rclpy tests for DepthControlNode.
 
-Black-box behavioral tests: drive the node via published TARGET_DEPTH /
-EXTERNAL_PRESSURE messages and assert on what it publishes on BCU_RPM.
+Black-box behavioral tests: drive the node via published POSITION_TARGET
+(Pose, depth in `position.z`) / EXTERNAL_PRESSURE messages and assert on
+what it publishes on BCU_RPM.
 
 The node has a 10 Hz control timer, so most tests need ~0.3-0.5s of spin
 time to see one or more emissions.
@@ -28,12 +29,12 @@ class TestWiringSmoke:
     def test_node_constructs(self, depth_node_harness):
         assert depth_node_harness.node is not None
 
-    def test_target_depth_subscription_present(self, depth_node_harness):
+    def test_target_pose_subscription_present(self, depth_node_harness):
         names = [
             sub.topic_name
             for sub in depth_node_harness.node.subscriptions
         ]
-        assert "/target_depth" in names
+        assert "/position/target" in names
 
     def test_external_pressure_subscription_present(self, depth_node_harness):
         names = [
@@ -51,7 +52,7 @@ class TestWiringSmoke:
 
 
 class TestTargetDepthIngress:
-    """TARGET_DEPTH messages flow into node.target_depth and the inner control system."""
+    """POSITION_TARGET.position.z flows into node.target_depth and the inner control system."""
 
     def test_target_depth_updates_node_state(self, depth_node_harness):
         h = depth_node_harness

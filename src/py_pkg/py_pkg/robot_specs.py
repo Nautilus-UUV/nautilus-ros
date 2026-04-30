@@ -64,10 +64,5 @@ ACU_ROLL_MAX_ANGLE_DEG = 30.0
 ACU_ROLL_MAX_VELOCITY_RAD_S = 0.5
 ACU_ROLL_MAX_EFFORT_NM = 10.0
 
-# Motor-step conversion factors. The ACU motor topics (ACU_PITCH_STEPS /
-# ACU_ROLL_STEPS) are Int32 step counts; these constants convert from
-# the physical UUV-frame quantity (metres for the pitch mass-shifter,
-# degrees for the roll ring) to motor steps.
-# TODO: replace with measured values once the mechanics are calibrated.
-ACU_PITCH_STEPS_PER_M = 10000.0
-ACU_ROLL_STEPS_PER_DEG = 100.0
+# Motor-step conversion lives with the EPOS driver (acu/acu_node.py).
+# ACU_PITCH/ACU_ROLL carry physical positions (mm / rad).

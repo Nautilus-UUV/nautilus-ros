@@ -44,7 +44,7 @@ class BCUOscillator(Node):
 
         # Subscriptions
         self.vol_sub = create_subscription_for_topic(
-            self, UUVTopics.BCU_PRESSURE, self._vol_callback
+            self, UUVTopics.BCU_VOLUME, self._vol_callback
         )
         self.pressure_sub = create_subscription_for_topic(
             self, UUVTopics.EXTERNAL_PRESSURE, self._pressure_callback

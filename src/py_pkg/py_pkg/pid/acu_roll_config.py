@@ -1,13 +1,10 @@
-"""Per-axis configuration for the ACU roll controller.
+"""ACU roll controller config.
 
-Roll output is bounded by ±ACU_ROLL_MAX_ANGLE_DEG (the physical ring
-travel of the roll mechanism).
+Output is degrees of ring rotation, clamped to ±ACU_ROLL_MAX_ANGLE_DEG.
+ACUControlNode converts deg -> rad at the publish site.
 """
 
-from py_pkg.robot_specs import (
-    ACU_ROLL_MAX_ANGLE_DEG,
-    ACU_ROLL_STEPS_PER_DEG,
-)
+from py_pkg.robot_specs import ACU_ROLL_MAX_ANGLE_DEG
 
 init_acu_roll = {
     "name": "roll",
@@ -19,6 +16,4 @@ init_acu_roll = {
     "integral_limits": (-30.0, 30.0),
     "output_limits": (-ACU_ROLL_MAX_ANGLE_DEG, ACU_ROLL_MAX_ANGLE_DEG),
     "derivative_filter": 0.0,
-    # Conversion from motor-frame degrees to Int32 steps for ACU_ROLL_STEPS.
-    "motor_steps_per_unit": ACU_ROLL_STEPS_PER_DEG,
 }

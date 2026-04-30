@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
 """ACU control node.
 
-Owns a per-axis controller for roll and pitch. Roll uses AxisController
-(degrees-in/degrees-out, slews current toward target). Pitch uses
-MassShifterController (degrees-in/metres-out, commands mass-shifter
-stroke directly from pitch error). Subscribes to POSITION_ESTIMATION
-(current pose) and POSITION_TARGET (desired pose), extracts roll/pitch
-from the quaternion, and publishes Int32 motor-step commands on
-ACU_ROLL_STEPS / ACU_PITCH_STEPS.
+Roll: AxisController (deg in, deg out). Pitch: MassShifterController
+(deg in, m out). Reads roll/pitch from POSITION_ESTIMATION/TARGET
+quaternions; publishes ACU_ROLL (rad) and ACU_PITCH (mm) — the units
+the HAL bridge and EPOS driver expect. Step conversion lives at the
+EPOS driver, not here.
 """
 
 import math
@@ -16,7 +14,7 @@ import rclpy
 from geometry_msgs.msg import Pose
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
-from std_msgs.msg import Int32
+from std_msgs.msg import Float32
 
 from py_pkg.math_utils import quaternion_to_roll_pitch
 from py_pkg.pid.acu_axis_controller import AxisController, MassShifterController
@@ -27,6 +25,10 @@ from py_pkg.uuv_ros_core import (
     create_publisher_for_topic,
     create_subscription_for_topic,
 )
+
+
+# Pitch PID runs in metres (mass-shifter stroke); ACU_PITCH topic is mm.
+_M_TO_MM = 1000.0
 
 
 def _build_axis(cls, cfg):
@@ -51,21 +53,17 @@ class ACUControlNode(Node):
 
         self.pitch_axis = _build_axis(MassShifterController, init_acu_pitch)
         self.roll_axis = _build_axis(AxisController, init_acu_roll)
-        self.pitch_steps_per_unit = init_acu_pitch["motor_steps_per_unit"]
-        self.roll_steps_per_unit = init_acu_roll["motor_steps_per_unit"]
 
         self.target_roll_deg = 0.0
         self.target_pitch_deg = 0.0
         self.current_roll_deg = 0.0
         self.current_pitch_deg = 0.0
 
-        # Motor-step topics (Int32). UUV-frame controller output is converted
-        # to integer steps via the per-axis steps_per_unit constant.
         self.pitch_pub = create_publisher_for_topic(
-            self, UUVTopics.ACU_PITCH_STEPS, callback_group=self.callback_group
+            self, UUVTopics.ACU_PITCH, callback_group=self.callback_group
         )
         self.roll_pub = create_publisher_for_topic(
-            self, UUVTopics.ACU_ROLL_STEPS, callback_group=self.callback_group
+            self, UUVTopics.ACU_ROLL, callback_group=self.callback_group
         )
 
         create_subscription_for_topic(
@@ -113,16 +111,16 @@ class ACUControlNode(Node):
         roll_cmd = self.roll_axis.update(self.target_roll_deg)
 
         if pitch_cmd is not None:
-            msg = Int32()
-            msg.data = int(round(pitch_cmd * self.pitch_steps_per_unit))
+            msg = Float32()
+            msg.data = float(pitch_cmd * _M_TO_MM)
             self.pitch_pub.publish(msg)
-            self.get_logger().debug(f"Pitch motor steps: {msg.data}")
+            self.get_logger().debug(f"Pitch position (mm): {msg.data}")
 
         if roll_cmd is not None:
-            msg = Int32()
-            msg.data = int(round(roll_cmd * self.roll_steps_per_unit))
+            msg = Float32()
+            msg.data = float(math.radians(roll_cmd))
             self.roll_pub.publish(msg)
-            self.get_logger().debug(f"Roll motor steps: {msg.data}")
+            self.get_logger().debug(f"Roll position (rad): {msg.data}")
 
 
 def main(args=None):
