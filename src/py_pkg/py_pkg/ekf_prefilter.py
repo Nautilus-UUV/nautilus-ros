@@ -8,6 +8,7 @@ from sensor_msgs.msg import Imu
 class EkfPrefilter(Node):
     """
     Exponential Moving Average (EMA) prefilter for IMU data before EKF.
+
     - Subscribes:  /imu/left            (sensor_msgs/Imu)
     - Publishes:   /filtered_imu_data   (sensor_msgs/Imu)
 

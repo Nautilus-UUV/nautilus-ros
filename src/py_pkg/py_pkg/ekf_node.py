@@ -12,6 +12,7 @@ from .ekf_filter import EKF_Filter
 class Ekf_Node(Node):
     """
     ROS2 Node that runs an Extended Kalman Filter (EKF) for state estimation using IMU data.
+
     Subscribes to: /filtered_imu_data  (sensor_msgs/Imu)
     Publishes to:  /ekf_position       (geometry_msgs/Point)
                    /ekf_orientation    (geometry_msgs/Quaternion)
@@ -54,11 +55,12 @@ class Ekf_Node(Node):
         )
 
         self.get_logger().info(
-            'EKF Node started, subscribed to /filtered_imu_data and publishing to /ekf_position and /ekf_orientation')
+            'EKF Node started, subscribed to /filtered_imu_data and '
+            'publishing to /ekf_position and /ekf_orientation'
+        )
 
     def imu_callback(self, msg_in: Imu):
-        """Callback for incoming IMU data to perform EKF prediction and update."""
-
+        """Run the EKF prediction and update step for incoming IMU data."""
         # Extract linear acceleration and angular velocity from the IMU message
         measured_accel = np.array([
             msg_in.linear_acceleration.x,
@@ -114,7 +116,9 @@ class Ekf_Node(Node):
         self.pub_orientation.publish(orientation_msg)
 
         self.get_logger().info(
-            f'Current position [x,y,z]: [{est_state[0]:.3f}, {est_state[1]:.3f}, {est_state[2]:.3f}] m')
+            f'Current position [x,y,z]: '
+            f'[{est_state[0]:.3f}, {est_state[1]:.3f}, {est_state[2]:.3f}] m'
+        )
 
 
 def main(args=None):

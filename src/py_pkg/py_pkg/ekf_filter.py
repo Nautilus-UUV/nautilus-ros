@@ -3,10 +3,12 @@ from scipy.spatial.transform import Rotation
 
 
 def skew(v):
-    """Return the 3x3 skew-symmetric matrix for a 3-vector v.
+    """
+    Return the 3x3 skew-symmetric matrix for a 3-vector v.
 
     Used in the linearized Jacobians to express cross-product operations
     in matrix form for small-angle rotations.
+
     """
     return np.array([
         [0.0, -v[2], v[1]],
@@ -17,10 +19,14 @@ def skew(v):
 
 class EKF_Filter:
     def __init__(self, dt):
-        """Initialize the EKF filter.
+        """
+        Initialize the EKF filter.
 
-        Args:
-            dt (float): Time step between updates.
+        Parameters
+        ----------
+        dt : float
+            Time step between updates.
+
         """
         self.dt = dt
         # State vector: [px, py, pz, vx, vy, vz, qx, qy, qz, qw]
@@ -49,12 +55,18 @@ class EKF_Filter:
         self.g = np.array([0.0, 0.0, -9.81])
 
     def predict(self, accel_body, gyro_body, dt=None):
-        """EKF Prediction step.
+        """
+        Run the EKF prediction step.
 
-        Args:
-            accel_body (np.ndarray): Measured acceleration in body frame [ax, ay, az].
-            gyro_body (np.ndarray): Measured angular velocity in body frame [wx, wy, wz].
-            dt (float, optional): Time step in seconds. Uses self.dt if not provided.
+        Parameters
+        ----------
+        accel_body : np.ndarray
+            Measured acceleration in body frame [ax, ay, az].
+        gyro_body : np.ndarray
+            Measured angular velocity in body frame [wx, wy, wz].
+        dt : float, optional
+            Time step in seconds. Uses self.dt if not provided.
+
         """
         if dt is None:
             dt = self.dt
@@ -67,7 +79,8 @@ class EKF_Filter:
         # Transform acceleration from body to world
         accel_world = rot.apply(accel_body)
 
-        # Compensate gravity (accelerometer measures specific force a - g so we must add g to get the actual linear acceleration)
+        # Compensate gravity: accelerometer measures specific force a - g,
+        # so we must add g to recover the actual linear acceleration.
         accel_world = accel_world + self.g
 
         # Kinematic updates
@@ -98,11 +111,14 @@ class EKF_Filter:
         self.P = F @ self.P @ F.T + self.Q
 
     def update(self, measured_accel):
-        """EKF Update step using accelerometer only (attitude correction).
+        """
+        Run the EKF update step using accelerometer only (attitude correction).
 
         We treat the accelerometer as a measurement of the gravity vector
-        expressed in the body frame under the assumption that translational accelerations are small during the
-        update window. This corrects roll/pitch robustly for low-dynamics.
+        expressed in the body frame under the assumption that translational
+        accelerations are small during the update window. This corrects
+        roll/pitch robustly for low-dynamics.
+
         """
         # Current orientation as a rotation matrix (body -> world)
         R_mat = Rotation.from_quat(self.x[6:10]).as_matrix()
@@ -135,5 +151,5 @@ class EKF_Filter:
         self.x[6:10] = q / np.linalg.norm(q)
 
         # Covariance update
-        I = np.eye(self.P.shape[0])
-        self.P = (I - K @ H) @ self.P
+        identity = np.eye(self.P.shape[0])
+        self.P = (identity - K @ H) @ self.P
