@@ -548,7 +548,7 @@ This sets the EKF time step to 20 ms (50 Hz). Match this to the actual IMU publi
 
 ### EKF Filter Parameters (hardcoded in `ekf_filter.py`)
 
-All EKF tuning parameters are currently defined directly in `EKF_Filter.__init__()`:
+All EKF tuning parameters are currently defined directly in `EKFFilter.__init__()`:
 
 | Parameter | Value | Description |
 |---|---|---|
