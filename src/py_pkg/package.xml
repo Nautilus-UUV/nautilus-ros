@@ -3,18 +3,17 @@
 <package format="3">
   <name>py_pkg</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
+  <description>Python ROS2 package for Nautilus's UUV navigation and control</description>
   <maintainer email="simon@todo.todo">simon</maintainer>
   <license>TODO: License declaration</license>
 
   <depend>rclpy</depend>
   <depend>std_msgs</depend>
+  <depend>can_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>sensor_msgs</depend>
 
   <test_depend>ament_copyright</test_depend>
-  <test_depend>ament_flake8</test_depend>
-  <test_depend>ament_pep257</test_depend>
   <test_depend>python3-pytest</test_depend>
 
   <export>
