@@ -40,3 +40,6 @@ pip-wheel-metadata/
 .colcon/
 .colcon_install_layout
 CLAUDE.md
+flake.lock
+flake.nix
+
