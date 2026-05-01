@@ -281,7 +281,12 @@ class DepthControlSystem:
             ]
         )
 
-        command = -pid_v_acc_output
+        # Z-positive-down throughout: target_depth, position.z(), and the
+        # finite-difference velocity / acceleration estimates all use the
+        # same convention, so the cascade's sign is already correct — no
+        # negation needed. Positive command = "fill bladder, glider sinks"
+        # (the wire-level inversion to motor RPM lives in depth_node).
+        command = pid_v_acc_output
         self.prev_command = command
 
         return command

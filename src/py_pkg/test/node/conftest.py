@@ -24,7 +24,7 @@ import rclpy
 from geometry_msgs.msg import Pose
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
-from std_msgs.msg import Float32, Float32MultiArray, Int32, String
+from std_msgs.msg import Float32, Float32MultiArray, Int32, String, UInt8
 
 from py_pkg.path.pathfinding import PathfindingNode
 from py_pkg.pid.acu_node import ACUControlNode
@@ -102,11 +102,12 @@ class NodeHarness:
 
 
 class _DepthTesterNode(Node):
-    """Drives DepthControlNode and captures BCU_RPM emissions."""
+    """Drives DepthControlNode and captures BCU_RPM + BCU_VALVES emissions."""
 
     def __init__(self):
         super().__init__("depth_node_tester")
         self.received_rpm: list[int] = []
+        self.received_valves: list[int] = []
 
         self.target_pose_pub = create_publisher_for_topic(
             self, UUVTopics.POSITION_TARGET
@@ -117,9 +118,15 @@ class _DepthTesterNode(Node):
         self.bcu_rpm_sub = create_subscription_for_topic(
             self, UUVTopics.BCU_RPM, self._on_rpm
         )
+        self.bcu_valves_sub = create_subscription_for_topic(
+            self, UUVTopics.BCU_VALVES, self._on_valves
+        )
 
     def _on_rpm(self, msg: Int32) -> None:
         self.received_rpm.append(int(msg.data))
+
+    def _on_valves(self, msg: UInt8) -> None:
+        self.received_valves.append(int(msg.data))
 
     def publish_target_depth(self, value: float) -> None:
         # depth_node only reads position.z; other fields are zeroed.
@@ -142,6 +149,10 @@ class DepthNodeHarness(NodeHarness):
     @property
     def received_rpm(self) -> list[int]:
         return self.tester.received_rpm
+
+    @property
+    def received_valves(self) -> list[int]:
+        return self.tester.received_valves
 
     def publish_target_depth(self, value: float) -> None:
         self.tester.publish_target_depth(value)

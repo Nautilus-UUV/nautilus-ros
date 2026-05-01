@@ -46,7 +46,11 @@ def plan_straight_segment(
 ) -> list:
     """Sample a straight line from ``start`` to ``goal`` every ``step`` m.
 
-    All waypoints share the same pitch (atan2(dz, horiz)), roll=0, yaw=0.
+    World frame is Z-positive-down (deeper = larger z). Body-frame pitch
+    follows REP-103 FLU (positive pitch = nose up), so the segment pitch
+    is ``atan2(-dz, horiz)`` — diving (dz>0) maps to negative pitch
+    (nose-down), climbing maps to positive pitch.
+
     First waypoint is one step in, last is exactly ``goal``. Pure-vertical
     or degenerate segments use pitch=0 (BCU drives those directly).
     """
@@ -62,7 +66,7 @@ def plan_straight_segment(
     if total < 1e-6:
         return [_make_pose(gx, gy, gz, pitch=0.0)]
 
-    pitch = 0.0 if horiz < 1e-6 else math.atan2(dz, horiz)
+    pitch = 0.0 if horiz < 1e-6 else math.atan2(-dz, horiz)
     num_steps = max(1, int(math.ceil(total / step)))
 
     poses = []

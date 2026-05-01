@@ -37,6 +37,13 @@ BLADDER_MIN_VOLUME_M3 = 0.0010
 BCU_MOTOR_MAX_RPM = 4000
 BCU_MOTOR_MIN_RPM = 1000
 
+# Depth past which the pump can no longer overcome ambient hydrostatic
+# pressure to fill the bladder. Below this we must descend passively
+# (valve 2 vents, pump off); above it the pump drives both directions
+# through valve 1. Set by the pump's max differential pressure against
+# the bladder, not a tuning knob.
+BCU_DEEP_THRESHOLD_M = 30.0
+
 # ---------------------------------------------------------------------------
 # ACU mechanics
 # ---------------------------------------------------------------------------

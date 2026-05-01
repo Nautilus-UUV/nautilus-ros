@@ -31,6 +31,7 @@ class UUVTopics:
     BCU_PRESSURE = "/bcu/pressure"
     BCU_VOLUME = "/bcu/volume"
     BCU_FLOW_RATE = "/bcu/flow_rate"
+    BCU_VALVES = "/bcu/valves"
     BCU_RPM = "/bcu/rpm"
 
     # Attitude Control Unit (ACU)

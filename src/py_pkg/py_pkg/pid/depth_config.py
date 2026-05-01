@@ -7,8 +7,9 @@ from py_pkg.robot_specs import (
 )
 
 init_control = {}
-init_control["high_depth"] = -20.0
-init_control["low_depth"] = -70.0
+# Z-positive-down: shallowest = +20.0, deepest = +70.0.
+init_control["high_depth"] = 20.0
+init_control["low_depth"] = 70.0
 init_control["frequency"] = 10
 init_control["pid_depth"] = {
     "kp": 0.1,

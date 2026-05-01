@@ -8,12 +8,10 @@ so target == current produces no traffic.
 import math
 
 import pytest
-
 from py_pkg.robot_specs import (
     ACU_PITCH_OUTPUT_LIMIT_M,
     ACU_ROLL_MAX_ANGLE_DEG,
 )
-
 
 # Saturation bounds in publish units. Mirror ACUControlNode's m -> mm and
 # deg -> rad conversions; update both sides if those change.

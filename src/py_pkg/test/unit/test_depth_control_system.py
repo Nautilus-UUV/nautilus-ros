@@ -13,7 +13,8 @@ from py_pkg.pid.depth_config import init_control
 from py_pkg.pid.depth_control_system import DepthControlSystem
 
 
-def _make_system(target_depth=-70.0):
+def _make_system(target_depth=70.0):
+    # Z-positive-down: 70.0 = "70 m below the surface" (deepest extreme).
     cs = DepthControlSystem(init_control)
     cs.target_depth = target_depth
     return cs
@@ -97,7 +98,9 @@ class TestCalcAccThrottling:
 class TestCalcAccSign:
     """Cascaded PID drives bladder flow toward closing the depth error.
 
-    Output convention (after the negation on `command = -pid_v_acc_output`):
+    Z-positive-down throughout (target_depth, position.z(), velocity, accel),
+    so the cascade's natural sign already matches q's semantic — no
+    negation in calc_acc:
       target deeper than current  → positive q (fill bladder, glider sinks)
       target shallower than current → negative q (drain bladder, glider rises)
     """
@@ -111,7 +114,7 @@ class TestCalcAccSign:
         assert result == pytest.approx(0.0)
 
     def test_command_positive_when_target_deeper(self):
-        cs = _make_system(target_depth=-70.0)
+        cs = _make_system(target_depth=70.0)
         zero = Vector(0, 0, 0)
         for t in (0.0, 0.1, 0.2):
             result = cs.calc_acc(zero, 0.0, t)
@@ -119,9 +122,9 @@ class TestCalcAccSign:
         assert result > 0
 
     def test_command_negative_when_target_shallower(self):
-        # Below the surface, asked to come up
+        # Already deep, asked to come up to the surface.
         cs = _make_system(target_depth=0.0)
-        deep = Vector(0, 0, -50)
+        deep = Vector(0, 0, 50)
         for t in (0.0, 0.1, 0.2):
             result = cs.calc_acc(deep, 0.0, t)
         # Need to rise → drain bladder → q < 0

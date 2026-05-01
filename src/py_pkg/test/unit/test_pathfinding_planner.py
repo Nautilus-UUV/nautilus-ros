@@ -3,7 +3,8 @@
 Pure geometry, no ROS spinning. Verifies plan_straight_segment:
 
 * yaw is never commanded (roll=0, yaw=0 round-trip; quaternion has qx=qz=0),
-* pitch is constant across each segment and equals atan2(dz, horiz),
+* pitch is constant across each segment and equals atan2(-dz, horiz)
+  (world is Z-positive-down, body pitch is REP-103 FLU),
 * the final waypoint is exactly the goal,
 * sampling step controls waypoint count,
 * edge cases: degenerate (start≈goal), purely vertical (horiz≈0), invalid step.
@@ -40,12 +41,13 @@ class TestStraightLineGeometry:
         assert first.position.z == pytest.approx(0.0)
 
     def test_waypoints_are_collinear(self):
-        poses = plan_straight_segment((0.0, 0.0, 0.0), (10.0, 5.0, -3.0), step=1.0)
+        # Z-positive-down: goal at depth +3 m.
+        poses = plan_straight_segment((0.0, 0.0, 0.0), (10.0, 5.0, 3.0), step=1.0)
         # Each waypoint should lie on the straight line from start to goal.
         for p in poses:
             t = p.position.x / 10.0
             assert p.position.y == pytest.approx(5.0 * t, abs=1e-9)
-            assert p.position.z == pytest.approx(-3.0 * t, abs=1e-9)
+            assert p.position.z == pytest.approx(3.0 * t, abs=1e-9)
 
     def test_waypoint_count_scales_with_step(self):
         # 10m segment, step=2 → ceil(10/2) = 5 waypoints
@@ -69,10 +71,10 @@ class TestPitchFromGeometry:
             assert pitch == pytest.approx(0.0, abs=1e-9)
 
     def test_dive_at_35_degrees(self):
-        # User's target scenario: pitch = -35° on the way down.
-        # tan(35°) = dz/horiz; pick horiz=20, dz=-20*tan(35°).
+        # User's target scenario: pitch = -35° (nose-down, FLU body) on the
+        # way down. World is Z-positive-down so dz = +horiz * tan(35°).
         horiz = 20.0
-        dz = -horiz * math.tan(math.radians(35.0))
+        dz = horiz * math.tan(math.radians(35.0))
         poses = plan_straight_segment((0, 0, 0), (horiz, 0, dz), step=2.0)
         for p in poses:
             _, pitch = _rp(p)
@@ -80,24 +82,25 @@ class TestPitchFromGeometry:
 
     def test_climb_at_35_degrees(self):
         horiz = 20.0
-        dz = horiz * math.tan(math.radians(35.0))
+        dz = -horiz * math.tan(math.radians(35.0))  # rising in Z-down → dz<0
         poses = plan_straight_segment((0, 0, 0), (horiz, 0, dz), step=2.0)
         for p in poses:
             _, pitch = _rp(p)
             assert math.degrees(pitch) == pytest.approx(35.0, abs=1e-6)
 
     def test_pitch_constant_across_segment(self):
-        poses = plan_straight_segment((0, 0, 0), (15.0, 7.0, -4.0), step=1.0)
+        # Z-down: dive of 4 m over 15 m horizontal, dy=7.
+        poses = plan_straight_segment((0, 0, 0), (15.0, 7.0, 4.0), step=1.0)
         pitches = [_rp(p)[1] for p in poses]
         # All pitches in a single segment must agree to floating-point precision.
         for pitch in pitches[1:]:
             assert pitch == pytest.approx(pitches[0], abs=1e-12)
 
-    def test_pitch_matches_atan2_dz_horiz(self):
-        # Mixed XY direction must not change the pitch — it's atan2(dz, horiz)
+    def test_pitch_matches_atan2_neg_dz_horiz(self):
+        # Mixed XY direction must not change the pitch — it's atan2(-dz, horiz)
         # over horiz = sqrt(dx^2 + dy^2), independent of the XY heading.
-        dx, dy, dz = 6.0, 8.0, -5.0  # horiz = 10
-        expected = math.atan2(dz, math.hypot(dx, dy))
+        dx, dy, dz = 6.0, 8.0, 5.0  # horiz = 10, diving 5 m in Z-down
+        expected = math.atan2(-dz, math.hypot(dx, dy))
         poses = plan_straight_segment((0, 0, 0), (dx, dy, dz), step=1.0)
         _, pitch = _rp(poses[-1])
         assert pitch == pytest.approx(expected, abs=1e-9)
@@ -109,10 +112,10 @@ class TestNoYawNoRoll:
     @pytest.mark.parametrize(
         "goal",
         [
-            (10.0, 0.0, -3.0),  # +X dive
-            (-10.0, 0.0, -3.0),  # -X dive
-            (0.0, 10.0, 2.0),  # +Y climb
-            (5.0, -5.0, -2.0),  # diagonal dive
+            (10.0, 0.0, 3.0),  # +X dive (Z-down: dive = positive dz)
+            (-10.0, 0.0, 3.0),  # -X dive
+            (0.0, 10.0, -2.0),  # +Y climb (Z-down: climb = negative dz)
+            (5.0, -5.0, 2.0),  # diagonal dive
         ],
     )
     def test_quaternion_has_only_pitch_component(self, goal):
@@ -126,10 +129,10 @@ class TestNoYawNoRoll:
     @pytest.mark.parametrize(
         "goal",
         [
-            (10.0, 0.0, -3.0),
-            (-10.0, 0.0, -3.0),
-            (0.0, 10.0, 2.0),
-            (5.0, -5.0, -2.0),
+            (10.0, 0.0, 3.0),
+            (-10.0, 0.0, 3.0),
+            (0.0, 10.0, -2.0),
+            (5.0, -5.0, 2.0),
         ],
     )
     def test_roll_round_trips_to_zero(self, goal):
@@ -151,18 +154,18 @@ class TestEdgeCases:
 
     def test_pure_vertical_segment_uses_zero_pitch(self):
         # horiz ≈ 0, dz ≠ 0: planner has no body-pitch authority, so pitch=0
-        # and the BCU drives the descent.
-        poses = plan_straight_segment((0, 0, 0), (0, 0, -10.0), step=2.0)
+        # and the BCU drives the descent. Z-positive-down: dive to +10 m.
+        poses = plan_straight_segment((0, 0, 0), (0, 0, 10.0), step=2.0)
         for p in poses:
             _, pitch = _rp(p)
             assert pitch == pytest.approx(0.0, abs=1e-12)
 
     def test_pure_vertical_segment_interpolates_z(self):
-        poses = plan_straight_segment((0, 0, 0), (0, 0, -10.0), step=2.0)
+        poses = plan_straight_segment((0, 0, 0), (0, 0, 10.0), step=2.0)
         zs = [p.position.z for p in poses]
-        # Monotonically decreasing, last is -10.
-        assert zs == sorted(zs, reverse=True)
-        assert zs[-1] == pytest.approx(-10.0)
+        # Z-positive-down dive: z increases monotonically from 0 to +10.
+        assert zs == sorted(zs)
+        assert zs[-1] == pytest.approx(10.0)
 
     def test_negative_step_rejected(self):
         with pytest.raises(ValueError):
@@ -191,16 +194,19 @@ class TestYoyoScenario:
         # corresponding horizontal distance for a 35° pitch is 2A/tan(35°).
         horiz = 2.0 * amplitude / math.tan(math.radians(pitch_deg))
 
+        # Z-positive-down: shallow extreme = 25 - A, deep extreme = 25 + A.
         # Down — Up — Down — Up
-        a = (0.0, 0.0, -25.0 + amplitude)
-        b = (horiz, 0.0, -25.0 - amplitude)
-        c = (2 * horiz, 0.0, -25.0 + amplitude)
-        d = (3 * horiz, 0.0, -25.0 - amplitude)
-        e = (4 * horiz, 0.0, -25.0 + amplitude)
+        a = (0.0, 0.0, 25.0 - amplitude)
+        b = (horiz, 0.0, 25.0 + amplitude)
+        c = (2 * horiz, 0.0, 25.0 - amplitude)
+        d = (3 * horiz, 0.0, 25.0 + amplitude)
+        e = (4 * horiz, 0.0, 25.0 - amplitude)
 
         legs = [self._leg(a, b), self._leg(b, c), self._leg(c, d), self._leg(d, e)]
         pitches_deg = [math.degrees(_rp(leg[-1])[1]) for leg in legs]
 
+        # Body-frame pitch is REP-103 FLU (-pitch = nose down), so dives
+        # still emit -35° and climbs +35°.
         assert pitches_deg[0] == pytest.approx(-pitch_deg, abs=1e-6)
         assert pitches_deg[1] == pytest.approx(+pitch_deg, abs=1e-6)
         assert pitches_deg[2] == pytest.approx(-pitch_deg, abs=1e-6)
@@ -209,15 +215,13 @@ class TestYoyoScenario:
     def test_yoyo_z_envelope_bounded_by_amplitude(self):
         amplitude = 5.0
         pitch_deg = 35.0
-        # Each leg traverses 2*amplitude in z (peak↔trough), so the
-        # corresponding horizontal distance for a 35° pitch is 2A/tan(35°).
         horiz = 2.0 * amplitude / math.tan(math.radians(pitch_deg))
 
-        a = (0.0, 0.0, -25.0 + amplitude)
-        b = (horiz, 0.0, -25.0 - amplitude)
-        c = (2 * horiz, 0.0, -25.0 + amplitude)
+        a = (0.0, 0.0, 25.0 - amplitude)
+        b = (horiz, 0.0, 25.0 + amplitude)
+        c = (2 * horiz, 0.0, 25.0 - amplitude)
 
         for leg in [self._leg(a, b), self._leg(b, c)]:
             for pose in leg:
-                assert pose.position.z >= -25.0 - amplitude - 1e-9
-                assert pose.position.z <= -25.0 + amplitude + 1e-9
+                assert pose.position.z >= 25.0 - amplitude - 1e-9
+                assert pose.position.z <= 25.0 + amplitude + 1e-9

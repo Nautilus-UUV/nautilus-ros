@@ -115,7 +115,9 @@ class TestPlannedPitchInEmissions:
     ):
         h = pathfinding_node_harness
         horiz = 20.0
-        dz = -horiz * math.tan(math.radians(35.0))
+        # Z-positive-down: diving means dz>0. Body-frame pitch is FLU
+        # (-pitch = nose down), so the planner emits pitch=-35° on a dive.
+        dz = horiz * math.tan(math.radians(35.0))
 
         h.publish_pose_estimation(0.0, 0.0, 0.0)
         h.publish_path([(horiz, 0.0, dz)])
@@ -139,7 +141,8 @@ class TestNoYawCommanded:
         # XY-diagonal segment with a Z component would produce non-zero yaw
         # in the OLD planner; the new planner must not.
         h.publish_pose_estimation(0.0, 0.0, 0.0)
-        h.publish_path([(5.0, 5.0, -3.0)])
+        # Z-positive-down: 3 m below the surface.
+        h.publish_path([(5.0, 5.0, 3.0)])
         h.spin_until(
             lambda: h.node.current_pose is not None and len(h.node.keypoints) == 1,
             timeout=1.0,
