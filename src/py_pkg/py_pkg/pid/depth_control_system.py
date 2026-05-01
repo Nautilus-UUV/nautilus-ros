@@ -6,10 +6,12 @@ from py_pkg.math_utils import Vector
 from py_pkg.utils_controls import PIDController
 
 """
-This is the Glider's control system module.
+Glider depth control system.
 
-It provides a state machine class and logging. The PID controller lives in
-py_pkg.utils_controls.
+The cascade tracks depth via gauge pressure (Pa) — pressure is the
+controlled variable end-to-end, with no metres on the control path.
+``Vector.z()`` carries gauge pressure (0 at the surface, positive when
+submerged). The output ``q`` is bladder flow ratio (1/s).
 """
 
 
@@ -72,24 +74,28 @@ class StateMachine:
 
 class DepthControlSystem:
     """
-    The ControlSystem class represents the control system for the glider simulation.
+    Cascaded pressure-tracking controller for the glider's BCU.
+
+    Stages: pressure -> pressure_dot -> pressure_ddot -> q. All internal
+    state, setpoints, and PID I/O are in gauge Pa (and its derivatives).
 
     Attributes:
         state_machine (StateMachine): The state machine for managing the glider's state.
-        frequency (int): The control system frequency.
-        period (float): The control system period.
-        time (float): The current time.
-        prev_update_time (float): The time of the previous update.
-        prev_command (float): The previous command value.
-        pid_depth (PIDController): The PID controller for depth control.
-        pid_v_vel (PIDController): The PID controller for vertical velocity control.
-        pid_v_acc (PIDController): The PID controller for vertical acceleration control.
-        min_depth (float): The minimum depth for the glider.
-        max_depth (float): The maximum depth for the glider.
-        target_depth (float): The target depth for the glider.
+        frequency (int): The control system frequency (Hz).
+        period (float): The control system period (s).
+        time (float): The current time (s).
+        prev_update_time (float): The time of the previous update (s).
+        prev_command (float): The previous q command (1/s).
+        pid_pressure (PIDController): Outer loop on gauge pressure.
+        pid_p_dot (PIDController): Middle loop on pressure rate (Pa/s).
+        pid_p_ddot (PIDController): Inner loop on pressure acceleration (Pa/s^2);
+            output is the bladder flow ratio q (1/s).
+        low_pressure_pa (float): Shallowest setpoint extreme (gauge Pa).
+        high_pressure_pa (float): Deepest setpoint extreme (gauge Pa).
+        target_pressure_pa (float): Active setpoint (gauge Pa).
         logger (Logger): The logger for logging control system data.
-        previous_positions (list): Stores the past positions for calculating derivatives
-        num_past_positions (int): The number of past positions to use for calculations
+        previous_positions (list): Stores the past positions for finite-difference estimates.
+        num_past_positions (int): Number of past positions to keep.
     """
 
     def __init__(self, config: dict) -> None:
@@ -111,15 +117,15 @@ class DepthControlSystem:
         self.prev_update_time: float = self.time
         self.prev_command: float = 0.0
 
-        # Create cascading PID controllers
-        self.pid_depth = PIDController(**config["pid_depth"])
-        self.pid_v_vel = PIDController(**config["pid_v_vel"])
-        self.pid_v_acc = PIDController(**config["pid_v_acc"])
+        # Cascading PID controllers (all stages operate in pressure units).
+        self.pid_pressure = PIDController(**config["pid_pressure"])
+        self.pid_p_dot = PIDController(**config["pid_p_dot"])
+        self.pid_p_ddot = PIDController(**config["pid_p_ddot"])
 
-        # Glide path parameters
-        self.min_depth: float = config["high_depth"]
-        self.max_depth: float = config["low_depth"]
-        self.target_depth: float = self.max_depth
+        # Glide path setpoints, gauge Pa.
+        self.low_pressure_pa: float = config["low_pressure_pa"]
+        self.high_pressure_pa: float = config["high_pressure_pa"]
+        self.target_pressure_pa: float = self.high_pressure_pa
 
         # Logging
         self.logger = Logger()
@@ -133,14 +139,9 @@ class DepthControlSystem:
         self, positions: list[Vector], times: list[float]
     ) -> float | None:
         """
-        Estimates the vertical velocity using the central difference method.
-
-        Args:
-            positions (list[Vector]): A list of past position vectors.
-            times (list[float]): A list of corresponding times.
-
-        Returns:
-            float | None: The estimated vertical velocity, or None if insufficient data.
+        Estimate the rate of change of the controlled variable
+        (gauge pressure, Pa/s) by forward difference on the last two
+        stored samples. Returns ``None`` if there is insufficient data.
         """
         if len(positions) < 2:
             return None  # Not enough data for velocity estimation
@@ -156,14 +157,10 @@ class DepthControlSystem:
         self, positions: list[Vector], times: list[float]
     ) -> float | None:
         """
-        Estimates the vertical acceleration using the central difference method.
-
-        Args:
-            positions (list[Vector]): A list of past position vectors.
-            times (list[float]): A list of corresponding times.
-
-        Returns:
-            float | None: The estimated vertical acceleration, or None if insufficient data.
+        Estimate the second derivative of the controlled variable
+        (gauge pressure, Pa/s^2) via central second difference on the
+        last three stored samples. Returns ``None`` if there is
+        insufficient data.
         """
         if len(positions) < 3:
             return None  # Not enough data for acceleration estimation
@@ -185,15 +182,16 @@ class DepthControlSystem:
         other_to_log: list = [],
     ) -> float:
         """
-        Calculates the acceleration command for the glider.
+        Calculates the bladder flow command (q, 1/s) for the glider.
 
         Args:
-            position (Vector): The current position of the glider.
+            position (Vector): position.z() = current gauge pressure (Pa).
             tank (float): The current tank level.
-            time (float): The current time.
+            time (float): The current time (s).
 
         Returns:
-            float: The acceleration command for the glider.
+            float: q, the bladder flow ratio command (1/s). Positive
+            means "fill bladder, glider sinks".
         """
 
         self.time = time
@@ -252,41 +250,34 @@ class DepthControlSystem:
             + other_to_log
         )
 
-        # REMOVED logic since we are manually setting target_depth
-        # if self.state_machine.state == diving:
-        #     if position.z() <= self.target_depth:
-        #         self.target_depth = self.min_depth
-        #         self.state_machine.next()
-        # else:
-        #     if position.z() >= self.target_depth:
-        #         self.target_depth = self.max_depth
-        #         self.state_machine.next()
-
-        # depth -> v_vel -> v_acc
-        pid_depth_output = self.pid_depth.update(self.target_depth, position.z(), time)
-        pid_v_vel_output = self.pid_v_vel.update(
-            pid_depth_output, velocity_for_pid, time
+        # pressure -> pressure_dot -> pressure_ddot -> q
+        pid_pressure_output = self.pid_pressure.update(
+            self.target_pressure_pa, position.z(), time
         )
-        pid_v_acc_output = self.pid_v_acc.update(
-            pid_v_vel_output, acceleration_for_pid, time
+        pid_p_dot_output = self.pid_p_dot.update(
+            pid_pressure_output, velocity_for_pid, time
+        )
+        pid_p_ddot_output = self.pid_p_ddot.update(
+            pid_p_dot_output, acceleration_for_pid, time
         )
 
         self.logger.control_log.append(
             [
                 time,
-                self.target_depth,
-                pid_depth_output,
-                pid_v_vel_output,
-                pid_v_acc_output,
+                self.target_pressure_pa,
+                pid_pressure_output,
+                pid_p_dot_output,
+                pid_p_ddot_output,
             ]
         )
 
-        # Z-positive-down throughout: target_depth, position.z(), and the
-        # finite-difference velocity / acceleration estimates all use the
-        # same convention, so the cascade's sign is already correct — no
-        # negation needed. Positive command = "fill bladder, glider sinks"
-        # (the wire-level inversion to motor RPM lives in depth_node).
-        command = pid_v_acc_output
+        # Z-positive-down throughout: target_pressure_pa, position.z(),
+        # and the finite-difference rate / acceleration estimates all
+        # share the convention, so the cascade's sign is already
+        # correct — no negation needed. Positive command = "fill bladder,
+        # glider sinks" (the wire-level inversion to motor RPM lives in
+        # depth_node).
+        command = pid_p_ddot_output
         self.prev_command = command
 
         return command

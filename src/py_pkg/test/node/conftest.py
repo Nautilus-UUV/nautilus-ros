@@ -128,10 +128,11 @@ class _DepthTesterNode(Node):
     def _on_valves(self, msg: UInt8) -> None:
         self.received_valves.append(int(msg.data))
 
-    def publish_target_depth(self, value: float) -> None:
-        # depth_node only reads position.z; other fields are zeroed.
+    def publish_target_pressure(self, value_pa: float) -> None:
+        # depth_node treats position.z as the gauge-pressure setpoint
+        # (Pa). Other Pose fields are zeroed.
         msg = Pose()
-        msg.position.z = float(value)
+        msg.position.z = float(value_pa)
         self.target_pose_pub.publish(msg)
 
     def publish_external_pressure(self, value_pa: int) -> None:
@@ -154,8 +155,8 @@ class DepthNodeHarness(NodeHarness):
     def received_valves(self) -> list[int]:
         return self.tester.received_valves
 
-    def publish_target_depth(self, value: float) -> None:
-        self.tester.publish_target_depth(value)
+    def publish_target_pressure(self, value_pa: float) -> None:
+        self.tester.publish_target_pressure(value_pa)
 
     def publish_external_pressure(self, value_pa: int) -> None:
         self.tester.publish_external_pressure(value_pa)

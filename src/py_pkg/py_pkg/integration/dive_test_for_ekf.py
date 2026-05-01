@@ -2,7 +2,10 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Int32
 
-from ..physics import pressure_to_depth
+from ..physics import (
+    depth_to_pressure_pa,
+    gauge_pressure_pa,
+)
 from ..uuv_ros_core import (
     UUVTopics,
     create_publisher_for_topic,
@@ -14,7 +17,10 @@ class Oscillator(Node):
     """
     Robust oscillator with BCU (buoyancy) and ACU (pitch) control.
     - BCU: better feedback and logging to ensure the glider reaches the surface and reverses
-    - ACU: pitchs front when descending, back when ascending
+    - ACU: pitches front when descending, back when ascending
+
+    State machine triggers run on gauge pressure (Pa); depth in metres
+    is shown only in human-facing log lines.
     """
 
     def __init__(self):
@@ -26,23 +32,33 @@ class Oscillator(Node):
         )  # taken max from: https://aris-space.atlassian.net/wiki/spaces/Nautilus/pages/306839555/ACU+and+BCU+Motors
         self.declare_parameter("min_vol_ml", 300)
         self.declare_parameter("max_vol_ml", 2400)
-        self.declare_parameter("dive_depth_m", 2.0)
-        self.declare_parameter("surface_depth_m", 0.15)
+        # Setpoints declared in Pa (gauge); defaults match the previous
+        # 2.0 m / 0.15 m thresholds at salt-water density.
+        self.declare_parameter(
+            "dive_pressure_pa",
+            float(gauge_pressure_pa(depth_to_pressure_pa(2.0))),
+        )
+        self.declare_parameter(
+            "surface_pressure_pa",
+            float(gauge_pressure_pa(depth_to_pressure_pa(0.15))),
+        )
         self.declare_parameter("acu_front_pitch", 150.0)  # need to change
         self.declare_parameter("acu_back_pitch", -150.0)  # need to change to real vals
 
         self.target_rpm = self.get_parameter("target_rpm").value
         self.min_vol = self.get_parameter("min_vol_ml").value
         self.max_vol = self.get_parameter("max_vol_ml").value
-        self.depth_limit = self.get_parameter("dive_depth_m").value
-        self.surface_limit = self.get_parameter("surface_depth_m").value
+        self.dive_pressure_pa = float(self.get_parameter("dive_pressure_pa").value)
+        self.surface_pressure_pa = float(
+            self.get_parameter("surface_pressure_pa").value
+        )
         self.acu_front_pitch = self.get_parameter("acu_front_pitch").value
         self.acu_back_pitch = self.get_parameter("acu_back_pitch").value
 
         # State machine
         self.state = "ASCENDING"
         self.current_vol_ml = 0
-        self.current_depth_m = 0.0
+        self.current_pressure_pa = 0.0
 
         # Publishers
         self.rpm_pub = create_publisher_for_topic(self, UUVTopics.BCU_RPM)
@@ -60,7 +76,8 @@ class Oscillator(Node):
         self.timer = self.create_timer(0.1, self._control_loop)
 
         self.get_logger().info(
-            f"BCU Safety Oscillator: Safe Range [{self.min_vol}, {self.max_vol}] mL. Surface: < {self.surface_limit} m"
+            f"BCU Safety Oscillator: Safe Range [{self.min_vol}, {self.max_vol}] mL. "
+            f"Surface: < {self.surface_pressure_pa:.0f} Pa"
         )
         self.get_logger().info(
             f"ACU Depth-based Oscillator: Front pitch={self.acu_front_pitch}, Back pitch={self.acu_back_pitch}"
@@ -70,7 +87,7 @@ class Oscillator(Node):
         self.current_vol_ml = msg.data
 
     def _pressure_callback(self, msg):
-        self.current_depth_m = pressure_to_depth(float(msg.data))
+        self.current_pressure_pa = gauge_pressure_pa(float(msg.data))
 
     def _control_loop(self):
         rpm_cmd = 0
@@ -78,13 +95,15 @@ class Oscillator(Node):
         # Log every 2 seconds
         if self.get_clock().now().nanoseconds % 2000000000 < 200000000:
             self.get_logger().info(
-                f"STATUS: State={self.state}, Depth={self.current_depth_m:.2f}m, Vol={self.current_vol_ml}mL"
+                f"STATUS: State={self.state}, "
+                f"P={self.current_pressure_pa:.0f}Pa, "
+                f"Vol={self.current_vol_ml}mL"
             )
 
         if self.state == "ASCENDING":
-            if self.current_depth_m <= self.surface_limit:
+            if self.current_pressure_pa <= self.surface_pressure_pa:
                 self.get_logger().info(
-                    f"Reached surface at {self.current_depth_m:.2f}m."
+                    f"Reached surface at {self.current_pressure_pa:.0f} Pa."
                 )
                 self.state = "DESCENDING"
 
@@ -95,9 +114,9 @@ class Oscillator(Node):
                 rpm_cmd = self.target_rpm
 
         elif self.state == "DESCENDING":
-            if self.current_depth_m >= self.depth_limit:
+            if self.current_pressure_pa >= self.dive_pressure_pa:
                 self.get_logger().info(
-                    f"Reached target dive depth at {self.current_depth_m:.2f}m."
+                    f"Reached target dive pressure at {self.current_pressure_pa:.0f} Pa."
                 )
                 self.state = "ASCENDING"
 

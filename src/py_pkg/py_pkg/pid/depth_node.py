@@ -9,7 +9,7 @@ from rclpy.node import Node
 from std_msgs.msg import Int32, UInt8
 
 from py_pkg import math_utils as SimMath
-from py_pkg.physics import pressure_to_depth, q_to_rpm
+from py_pkg.physics import gauge_pressure_pa, q_to_rpm
 from py_pkg.pid import depth_control_system as ControlSystem
 from py_pkg.pid.depth_config import (
     init_buoyancy_engine,
@@ -17,7 +17,7 @@ from py_pkg.pid.depth_config import (
     init_motor,
     init_pos,
 )
-from py_pkg.robot_specs import BCU_DEEP_THRESHOLD_M
+from py_pkg.robot_specs import BCU_DEEP_THRESHOLD_PA
 from py_pkg.uuv_ros_core import (
     UUVTopics,
     create_publisher_for_topic,
@@ -26,22 +26,22 @@ from py_pkg.uuv_ros_core import (
 
 
 def select_pump_and_valves(
-    current_depth: float,
+    current_pressure_pa: float,
     q: float,
     pump_rpm: int,
-    deep_threshold: float,
+    deep_threshold_pa: float,
 ) -> tuple[int, int, int]:
-    """Decide pump RPM and valve bitmask from depth + descent intent.
+    """Decide pump RPM and valve bitmask from gauge pressure + descent intent.
 
-    Below `deep_threshold` (Z-positive-down: ``current_depth > threshold``),
-    a descent intent (q > 0) is satisfied passively: the pump is forced
-    off and valve 2 vents the bladder. Otherwise valve 1 carries the
-    pumped flow when the command is non-zero; both valves stay closed
-    when the pump is idle.
+    Below ``deep_threshold_pa`` (Z-positive-down: ``current_pressure_pa
+    > threshold``), a descent intent (q > 0) is satisfied passively:
+    the pump is forced off and valve 2 vents the bladder. Otherwise
+    valve 1 carries the pumped flow when the command is non-zero;
+    both valves stay closed when the pump is idle.
 
     Returns ``(pump_rpm, valve1_open, valve2_open)``.
     """
-    deep = current_depth > deep_threshold
+    deep = current_pressure_pa > deep_threshold_pa
     wants_to_descend = q > 0
     if deep and wants_to_descend:
         return 0, 0, 1
@@ -70,8 +70,8 @@ class DepthControlNode(Node):
 
         self.control_output = 0.0
         self.motor_rpm = 0.0
-        self.target_depth = 0.0
-        self.current_depth = 0.0
+        self.target_pressure_pa = 0.0
+        self.current_pressure_pa = 0.0
 
         self.bcu_controller_rpm_publisher = create_publisher_for_topic(
             self, UUVTopics.BCU_RPM, callback_group=self.callback_group
@@ -81,9 +81,10 @@ class DepthControlNode(Node):
             self, UUVTopics.BCU_VALVES, callback_group=self.callback_group
         )
 
-        # Depth setpoint is `position.z` of POSITION_TARGET (Z-positive-down
-        # throughout the control stack: deeper = more positive, matching the
-        # EKF Pose channel and `pressure_to_depth`).
+        # Pressure setpoint is `position.z` of POSITION_TARGET, in gauge
+        # Pa (Z-positive-down: deeper = higher gauge pressure). Pose's
+        # position.z is reused as a pressure channel — the depth
+        # controller's contract; pathfinding/EKF emit accordingly.
         self.target_pose_subscriber = create_subscription_for_topic(
             self,
             UUVTopics.POSITION_TARGET,
@@ -94,7 +95,7 @@ class DepthControlNode(Node):
         self.pressure_external_subscriber = create_subscription_for_topic(
             self,
             UUVTopics.EXTERNAL_PRESSURE,
-            self.current_depth_callback,
+            self.current_pressure_callback,
             callback_group=self.callback_group,
         )
 
@@ -107,17 +108,22 @@ class DepthControlNode(Node):
         self.get_logger().info("Depth control node started.")
 
     def target_pose_callback(self, msg: Pose):
-        self.target_depth = float(msg.position.z)
-        self.control_system.target_depth = self.target_depth
-        self.get_logger().info(f"Updated target depth: {self.target_depth}")
+        self.target_pressure_pa = float(msg.position.z)
+        self.control_system.target_pressure_pa = self.target_pressure_pa
+        self.get_logger().info(
+            f"Updated target pressure: {self.target_pressure_pa} Pa"
+        )
 
-    def current_depth_callback(self, msg):
-        self.current_depth = pressure_to_depth(float(msg.data))
-        self.get_logger().debug(f"Received current depth: {self.current_depth}")
+    def current_pressure_callback(self, msg):
+        # EXTERNAL_PRESSURE is absolute Pa; the controller works in gauge.
+        self.current_pressure_pa = gauge_pressure_pa(float(msg.data))
+        self.get_logger().debug(
+            f"Received current pressure: {self.current_pressure_pa} Pa"
+        )
 
     def control_loop(self):
         self.current_time = self.get_clock().now().nanoseconds / 1e9
-        current_position = SimMath.Vector(0.0, 0.0, self.current_depth)
+        current_position = SimMath.Vector(0.0, 0.0, self.current_pressure_pa)
         self.control_output = self.control_system.calc_acc(
             current_position,
             0.0,
@@ -144,10 +150,10 @@ class DepthControlNode(Node):
         # opens valve 2 below the deep threshold, even when the pump RPM
         # has been zeroed by the deadband.
         pump_rpm, valve1_open, valve2_open = select_pump_and_valves(
-            self.current_depth,
+            self.current_pressure_pa,
             self.control_output,
             pump_rpm,
-            BCU_DEEP_THRESHOLD_M,
+            BCU_DEEP_THRESHOLD_PA,
         )
         msg.data = pump_rpm
         valves_msg = UInt8()

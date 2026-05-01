@@ -21,6 +21,7 @@ from launch import LaunchDescription
 from launch.actions import IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.substitutions import FindPackageShare
+from py_pkg.robot_specs import ACU_ROLL_MAX_ANGLE_RAD
 from py_pkg.uuv_ros_core import (
     UUVTopics,
     create_publisher_for_topic,
@@ -135,7 +136,8 @@ class _ACURollTestDriver(Node):
 
 @pytest.mark.sim
 class ACURollSimTest(unittest.TestCase):
-    """Behavior: a sustained +0.2618 rad roll command rotates the roll joint."""
+    """Behavior: a sustained max-roll (+ACU_ROLL_MAX_ANGLE_RAD) command
+    rotates the roll joint visibly."""
 
     @classmethod
     def setUpClass(cls):
@@ -171,14 +173,14 @@ class ACURollSimTest(unittest.TestCase):
         return predicate()
 
     def test_positive_rad_command_rotates_roll_joint(self):
-        """Sustained +30deg command on ACU_ROLL -> roll joint rotates positive."""
-        # Drive at the +30° SDF limit for 12 s: smaller angles or shorter
-        # runs get swallowed by the kP=-13 roll damping and the body
-        # rotation is invisible in the GUI.
-        target_rad = 0.5236
+        """Sustained max-roll command on ACU_ROLL -> roll joint rotates positive."""
+        # Drive at the SDF limit (ACU_ROLL_MAX_ANGLE_RAD ≈ +30°) for
+        # 18 s: anything smaller or shorter gets swallowed by the kP=-13
+        # roll damping and the body rotation is invisible in the GUI.
+        target_rad = ACU_ROLL_MAX_ANGLE_RAD
         startup_timeout_s = 60.0
         post_ready_settle_s = 2.0
-        drive_duration_s = 12.0
+        drive_duration_s = 18.0
         drive_period_s = 0.1
         settle_s = 1.5
 

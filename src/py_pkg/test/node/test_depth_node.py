@@ -1,8 +1,8 @@
 """Tier 2 in-process rclpy tests for DepthControlNode.
 
 Black-box behavioral tests: drive the node via published POSITION_TARGET
-(Pose, depth in `position.z`) / EXTERNAL_PRESSURE messages and assert on
-what it publishes on BCU_RPM.
+(Pose, gauge pressure in `position.z`, Pa) / EXTERNAL_PRESSURE messages
+and assert on what it publishes on BCU_RPM.
 
 The node has a 10 Hz control timer, so most tests need ~0.3-0.5s of spin
 time to see one or more emissions.
@@ -10,17 +10,26 @@ time to see one or more emissions.
 
 import pytest
 
-from py_pkg.physics import pressure_to_depth
+from py_pkg.physics import (
+    ATMOSPHERIC_PRESSURE_PA,
+    depth_to_pressure_pa,
+    gauge_pressure_pa,
+)
 from py_pkg.robot_specs import BCU_MOTOR_MAX_RPM, BCU_MOTOR_MIN_RPM
 
 
-# A pressure that yields current_depth = 0 (atmospheric).
-PRESSURE_AT_SURFACE_PA = 101_325
+# Absolute Pa at the surface (atmospheric); yields current_pressure_pa = 0.
+PRESSURE_AT_SURFACE_PA = int(ATMOSPHERIC_PRESSURE_PA)
 
-# Pressure giving current_depth ~= +50 m (Z-positive-down). pressure_to_depth
-# returns (pa - atm) / (rho * g), so 50 m * 1025 kg/m^3 * 9.806 m/s^2 ≈
-# 502_538 Pa above atmospheric.
-PRESSURE_FOR_DEEP_PA = 101_325 + 502_538
+# Absolute Pa for current depth ~+50 m (Z-positive-down).
+PRESSURE_FOR_DEEP_PA = int(depth_to_pressure_pa(50.0))
+
+# Gauge-Pa setpoints used by the tests, expressed via depth equivalents
+# so the intent ("70 m below the surface", "30 m") stays readable.
+TARGET_PA_70M = gauge_pressure_pa(depth_to_pressure_pa(70.0))
+TARGET_PA_30M = gauge_pressure_pa(depth_to_pressure_pa(30.0))
+TARGET_PA_100M = gauge_pressure_pa(depth_to_pressure_pa(100.0))
+TARGET_PA_DEEP_HUGE = gauge_pressure_pa(depth_to_pressure_pa(1000.0))
 
 
 class TestWiringSmoke:
@@ -58,45 +67,50 @@ class TestWiringSmoke:
         assert "/bcu/valves" in names
 
 
-class TestTargetDepthIngress:
-    """POSITION_TARGET.position.z flows into node.target_depth and the inner control system."""
+class TestTargetPressureIngress:
+    """POSITION_TARGET.position.z (gauge Pa) flows into node.target_pressure_pa
+    and the inner control system."""
 
-    def test_target_depth_updates_node_state(self, depth_node_harness):
+    def test_target_pressure_updates_node_state(self, depth_node_harness):
         h = depth_node_harness
-        h.publish_target_depth(42.0)
-        h.spin_until(lambda: h.node.target_depth == 42.0, timeout=1.0)
-        assert h.node.target_depth == pytest.approx(42.0)
+        h.publish_target_pressure(42.0)
+        h.spin_until(lambda: h.node.target_pressure_pa == 42.0, timeout=1.0)
+        assert h.node.target_pressure_pa == pytest.approx(42.0)
 
-    def test_target_depth_propagates_to_control_system(self, depth_node_harness):
+    def test_target_pressure_propagates_to_control_system(self, depth_node_harness):
         h = depth_node_harness
-        h.publish_target_depth(15.5)
+        h.publish_target_pressure(15.5)
         h.spin_until(
-            lambda: h.node.control_system.target_depth == 15.5, timeout=1.0
+            lambda: h.node.control_system.target_pressure_pa == 15.5, timeout=1.0
         )
-        assert h.node.control_system.target_depth == pytest.approx(15.5)
+        assert h.node.control_system.target_pressure_pa == pytest.approx(15.5)
 
 
 class TestPressureIngress:
-    """EXTERNAL_PRESSURE messages flow through pressure_to_depth into current_depth."""
+    """EXTERNAL_PRESSURE messages flow through gauge_pressure_pa
+    into current_pressure_pa."""
 
-    def test_atmospheric_pressure_yields_zero_depth(self, depth_node_harness):
+    def test_atmospheric_pressure_yields_zero_gauge(self, depth_node_harness):
         h = depth_node_harness
         h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
-        h.spin_until(lambda: h.node.current_depth != 0.0 or _seen_any(h), timeout=1.0)
-        # atmospheric → depth 0 to within float tolerance
-        expected = pressure_to_depth(PRESSURE_AT_SURFACE_PA)
-        assert h.node.current_depth == pytest.approx(expected, abs=1e-6)
+        h.spin_until(
+            lambda: h.node.current_pressure_pa != 0.0 or _seen_any(h),
+            timeout=1.0,
+        )
+        # atmospheric → gauge 0 to within float tolerance
+        expected = gauge_pressure_pa(PRESSURE_AT_SURFACE_PA)
+        assert h.node.current_pressure_pa == pytest.approx(expected, abs=1e-6)
 
-    def test_overpressure_matches_pressure_to_depth(self, depth_node_harness):
+    def test_overpressure_matches_gauge_pressure_pa(self, depth_node_harness):
         h = depth_node_harness
         pa = PRESSURE_AT_SURFACE_PA + 50_000
         h.publish_external_pressure(pa)
-        expected = pressure_to_depth(pa)
+        expected = gauge_pressure_pa(pa)
         h.spin_until(
-            lambda: h.node.current_depth == pytest.approx(expected, abs=1e-6),
+            lambda: h.node.current_pressure_pa == pytest.approx(expected, abs=1e-6),
             timeout=1.0,
         )
-        assert h.node.current_depth == pytest.approx(expected, abs=1e-6)
+        assert h.node.current_pressure_pa == pytest.approx(expected, abs=1e-6)
 
 
 class TestTimerEmits:
@@ -104,14 +118,14 @@ class TestTimerEmits:
 
     def test_emits_within_one_second(self, depth_node_harness):
         h = depth_node_harness
-        h.publish_target_depth(30.0)
+        h.publish_target_pressure(TARGET_PA_30M)
         h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
         h.spin_until(lambda: len(h.received_rpm) >= 1, timeout=1.5)
         assert len(h.received_rpm) >= 1
 
     def test_emits_multiple_at_10hz(self, depth_node_harness):
         h = depth_node_harness
-        h.publish_target_depth(30.0)
+        h.publish_target_pressure(TARGET_PA_30M)
         h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
         # 0.6s @ 10 Hz should give ~6 emissions; assert at least 3 to leave margin
         h.spin_for(0.6)
@@ -122,12 +136,12 @@ class TestSignConvention:
     """Pump wiring inverts q→rpm: positive q is published as a negative Int32.
 
     Z-positive-down throughout. Walkthrough (target deeper than current):
-      target=+70, current=0  → calc_acc returns q > 0 (fill bladder, sink)
+      target=70m gauge Pa, current=0  → calc_acc returns q > 0 (fill bladder, sink)
       → q_to_rpm preserves sign → motor_rpm > 0
       → msg.data = int(-1 * motor_rpm) → published RPM is NEGATIVE.
 
     Inverted case (target shallower than current):
-      target=0, current=+50  → q < 0 → motor_rpm < 0
+      target=0, current=+50m gauge Pa  → q < 0 → motor_rpm < 0
       → published RPM is POSITIVE.
 
     Note: the cascaded PID's first tick can emit 0 before its derivative /
@@ -137,8 +151,8 @@ class TestSignConvention:
 
     def test_target_deeper_publishes_negative_rpm(self, depth_node_harness):
         h = depth_node_harness
-        h.publish_target_depth(70.0)
-        h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)  # current_depth ≈ 0
+        h.publish_target_pressure(TARGET_PA_70M)
+        h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)  # current_pressure_pa ≈ 0
         h.spin_until(lambda: len(h.received_rpm) >= 4, timeout=1.5)
         # Once the cascade has settled, the steady command must be negative.
         last = h.received_rpm[-1]
@@ -147,8 +161,8 @@ class TestSignConvention:
 
     def test_target_shallower_publishes_positive_rpm(self, depth_node_harness):
         h = depth_node_harness
-        h.publish_target_depth(0.0)
-        h.publish_external_pressure(PRESSURE_FOR_DEEP_PA)  # current ≈ +50
+        h.publish_target_pressure(0.0)
+        h.publish_external_pressure(PRESSURE_FOR_DEEP_PA)  # current ≈ +50 m gauge Pa
         h.spin_until(lambda: len(h.received_rpm) >= 4, timeout=1.5)
         last = h.received_rpm[-1]
         assert last > 0, f"expected positive steady-state rpm, got {h.received_rpm}"
@@ -162,7 +176,7 @@ class TestClamping:
         h = depth_node_harness
         # Aggressive setpoint: target very deep, currently at surface — drives
         # the cascade into saturation.
-        h.publish_target_depth(1000.0)
+        h.publish_target_pressure(TARGET_PA_DEEP_HUGE)
         h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
         h.spin_for(0.6)
         assert len(h.received_rpm) >= 3
@@ -174,7 +188,7 @@ class TestClamping:
         # pump can't run reliably below that), so every emission must be
         # either 0 or have |rpm| >= min_rpm — no values inside (0, min_rpm).
         h = depth_node_harness
-        h.publish_target_depth(0.0)
+        h.publish_target_pressure(0.0)
         h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
         h.spin_for(0.6)
         assert len(h.received_rpm) >= 3
@@ -189,7 +203,7 @@ class TestValveEmission:
 
     def test_emits_within_one_second(self, depth_node_harness):
         h = depth_node_harness
-        h.publish_target_depth(30.0)
+        h.publish_target_pressure(TARGET_PA_30M)
         h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
         h.spin_until(lambda: len(h.received_valves) >= 1, timeout=1.5)
         assert len(h.received_valves) >= 1
@@ -198,7 +212,7 @@ class TestValveEmission:
         # Per-callback the node publishes RPM then valves; counts should
         # stay in lockstep within a sample of the timer.
         h = depth_node_harness
-        h.publish_target_depth(30.0)
+        h.publish_target_pressure(TARGET_PA_30M)
         h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
         h.spin_for(0.6)
         # Allow at most one sample of skew (RPM may have been delivered
@@ -207,7 +221,7 @@ class TestValveEmission:
 
 
 class TestValveSelection:
-    """End-to-end: depth + descent intent shape the BCU_VALVES bitmask.
+    """End-to-end: pressure + descent intent shape the BCU_VALVES bitmask.
 
     Bitmask layout: bit0 = valve 1 (pump path), bit1 = valve 2 (passive
     vent). The cascaded PID needs several ticks to settle, so assertions
@@ -218,7 +232,7 @@ class TestValveSelection:
         # At surface with target deep → pump active driving descent
         # → valve1=1, valve2=0 → bitmask = 0b01.
         h = depth_node_harness
-        h.publish_target_depth(70.0)
+        h.publish_target_pressure(TARGET_PA_70M)
         h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
         h.spin_until(lambda: len(h.received_valves) >= 4, timeout=1.5)
         assert h.received_valves[-1] == 0b01, (
@@ -229,8 +243,8 @@ class TestValveSelection:
         # Below threshold with descent intent → pump forced off and
         # valve 2 vents → bitmask = 0b10, RPM = 0.
         h = depth_node_harness
-        h.publish_target_depth(100.0)
-        h.publish_external_pressure(PRESSURE_FOR_DEEP_PA)  # current ≈ +50
+        h.publish_target_pressure(TARGET_PA_100M)
+        h.publish_external_pressure(PRESSURE_FOR_DEEP_PA)  # current ≈ +50 m gauge Pa
         h.spin_until(lambda: len(h.received_valves) >= 4, timeout=1.5)
         assert h.received_valves[-1] == 0b10, (
             f"expected passive-vent (0b10), got history {h.received_valves}"
@@ -243,8 +257,8 @@ class TestValveSelection:
         # Below threshold but ascending → pump active, valve 1 carries
         # flow, valve 2 closed → bitmask = 0b01.
         h = depth_node_harness
-        h.publish_target_depth(0.0)
-        h.publish_external_pressure(PRESSURE_FOR_DEEP_PA)  # current ≈ +50
+        h.publish_target_pressure(0.0)
+        h.publish_external_pressure(PRESSURE_FOR_DEEP_PA)  # current ≈ +50 m gauge Pa
         h.spin_until(lambda: len(h.received_valves) >= 4, timeout=1.5)
         assert h.received_valves[-1] == 0b01, (
             f"expected pump-via-valve1 (0b01), got history {h.received_valves}"
@@ -254,7 +268,7 @@ class TestValveSelection:
         # Target == current at the surface → q ≈ 0, pump idle → both
         # valves closed → bitmask = 0b00.
         h = depth_node_harness
-        h.publish_target_depth(0.0)
+        h.publish_target_pressure(0.0)
         h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
         h.spin_for(0.6)
         assert len(h.received_valves) >= 3
@@ -268,7 +282,7 @@ class TestValveSelection:
         # Cross-check the invariant from select_pump_and_valves: any
         # sample where valve 2 is open must have a zero pump command.
         h = depth_node_harness
-        h.publish_target_depth(100.0)
+        h.publish_target_pressure(TARGET_PA_100M)
         h.publish_external_pressure(PRESSURE_FOR_DEEP_PA)
         h.spin_for(0.6)
         # Pair-wise alignment: zip stops at the shorter list, which

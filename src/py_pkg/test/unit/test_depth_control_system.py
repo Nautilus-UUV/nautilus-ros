@@ -4,19 +4,29 @@ Covers the finite-difference estimators (estimate_velocity,
 estimate_acceleration) and the cascaded calc_acc loop. Pure logic; no
 ROS context, no hardware. Uses init_control from depth_config so the
 tests track the same gains and limits as the real node.
+
+The cascade is pressure-native: position.z() carries gauge Pa, the
+target is gauge Pa, and the rate / acceleration estimates are Pa/s
+and Pa/s^2.
 """
 
 import pytest
 
 from py_pkg.math_utils import Vector
+from py_pkg.physics import depth_to_pressure_pa, gauge_pressure_pa
 from py_pkg.pid.depth_config import init_control
 from py_pkg.pid.depth_control_system import DepthControlSystem
 
 
-def _make_system(target_depth=70.0):
-    # Z-positive-down: 70.0 = "70 m below the surface" (deepest extreme).
+def _gauge_pa_for_depth(depth_m: float) -> float:
+    return gauge_pressure_pa(depth_to_pressure_pa(depth_m))
+
+
+def _make_system(target_pressure_pa: float = _gauge_pa_for_depth(70.0)):
+    # Z-positive-down: target_pressure_pa = gauge pressure at the depth
+    # we want to hold; default tracks the deepest config extreme (~70 m).
     cs = DepthControlSystem(init_control)
-    cs.target_depth = target_depth
+    cs.target_pressure_pa = target_pressure_pa
     return cs
 
 
@@ -35,7 +45,7 @@ class TestEstimateVelocity:
         cs = _make_system()
         positions = [Vector(0, 0, 0), Vector(0, 0, -2)]
         times = [0.0, 0.1]
-        # (-2 - 0) / (0.1 - 0) = -20
+        # (-2 - 0) / (0.1 - 0) = -20  (Pa/s; the math is unit-agnostic)
         assert cs.estimate_velocity(positions, times) == pytest.approx(-20.0)
 
     def test_uses_only_last_two_points(self):
@@ -66,7 +76,7 @@ class TestEstimateAcceleration:
 
     def test_constant_acceleration_recovered(self):
         cs = _make_system()
-        # z(t) = 0.5 * a * t^2 with a = 4 m/s^2 (uniform spacing)
+        # z(t) = 0.5 * a * t^2 with a = 4 (Pa/s^2 in this regime; uniform spacing)
         a = 4.0
         positions = [Vector(0, 0, 0.5 * a * t**2) for t in (0.0, 0.1, 0.2)]
         times = [0.0, 0.1, 0.2]
@@ -96,17 +106,17 @@ class TestCalcAccThrottling:
 
 
 class TestCalcAccSign:
-    """Cascaded PID drives bladder flow toward closing the depth error.
+    """Cascaded PID drives bladder flow toward closing the pressure error.
 
-    Z-positive-down throughout (target_depth, position.z(), velocity, accel),
-    so the cascade's natural sign already matches q's semantic — no
-    negation in calc_acc:
-      target deeper than current  → positive q (fill bladder, glider sinks)
-      target shallower than current → negative q (drain bladder, glider rises)
+    Z-positive-down throughout (target_pressure_pa, position.z(), rate,
+    accel), so the cascade's natural sign already matches q's semantic —
+    no negation in calc_acc:
+      target deeper (higher Pa) than current  → positive q (fill bladder, glider sinks)
+      target shallower (lower Pa) than current → negative q (drain bladder, glider rises)
     """
 
     def test_zero_error_zero_command(self):
-        cs = _make_system(target_depth=0.0)
+        cs = _make_system(target_pressure_pa=0.0)
         zero = Vector(0, 0, 0)
         for t in (0.0, 0.1, 0.2, 0.3):
             result = cs.calc_acc(zero, 0.0, t)
@@ -114,7 +124,7 @@ class TestCalcAccSign:
         assert result == pytest.approx(0.0)
 
     def test_command_positive_when_target_deeper(self):
-        cs = _make_system(target_depth=70.0)
+        cs = _make_system(target_pressure_pa=_gauge_pa_for_depth(70.0))
         zero = Vector(0, 0, 0)
         for t in (0.0, 0.1, 0.2):
             result = cs.calc_acc(zero, 0.0, t)
@@ -123,8 +133,8 @@ class TestCalcAccSign:
 
     def test_command_negative_when_target_shallower(self):
         # Already deep, asked to come up to the surface.
-        cs = _make_system(target_depth=0.0)
-        deep = Vector(0, 0, 50)
+        cs = _make_system(target_pressure_pa=0.0)
+        deep = Vector(0, 0, _gauge_pa_for_depth(50.0))
         for t in (0.0, 0.1, 0.2):
             result = cs.calc_acc(deep, 0.0, t)
         # Need to rise → drain bladder → q < 0

@@ -2,17 +2,60 @@
 
 These functions are pure math (no ROS, no hardware) and form the
 input/output edges of the BCU control pipeline:
-  - pressure_to_depth: external pressure sensor (Pa) -> depth (m)
+  - gauge_pressure_pa: external pressure sensor (abs Pa) -> gauge (Pa)
+  - depth_to_pressure_pa: depth (m) -> absolute pressure (Pa)
+  - pressure_to_depth: absolute pressure (Pa) -> depth (m), legacy/log helper
   - q_to_rpm: bladder flow ratio (1/s) -> motor RPM
 """
 
 import pytest
 from py_pkg.physics import (
     ATMOSPHERIC_PRESSURE_PA,
+    WATER_PRESSURE_GRADIENT_PA_PER_M,
+    depth_to_pressure_pa,
+    gauge_pressure_pa,
     pressure_to_depth,
     q_to_rpm,
 )
 from py_pkg.robot_specs import BLADDER_VOLUME_M3
+
+
+class TestGaugePressurePa:
+    """gauge_pressure_pa(P_abs) = P_abs - P_atm."""
+
+    def test_atmospheric_is_zero_gauge(self):
+        assert gauge_pressure_pa(ATMOSPHERIC_PRESSURE_PA) == pytest.approx(0.0)
+
+    def test_overpressure_is_positive(self):
+        assert gauge_pressure_pa(ATMOSPHERIC_PRESSURE_PA + 5e4) == pytest.approx(5e4)
+
+    def test_below_atmospheric_is_negative(self):
+        assert gauge_pressure_pa(0.5 * ATMOSPHERIC_PRESSURE_PA) < 0
+
+    def test_custom_atmospheric_shifts_zero(self):
+        assert gauge_pressure_pa(1.5e5, atmospheric_pa=1.5e5) == pytest.approx(0.0)
+
+
+class TestDepthToPressurePa:
+    """depth_to_pressure_pa(d) = P_atm + d * rho * g."""
+
+    def test_zero_depth_is_atmospheric(self):
+        assert depth_to_pressure_pa(0.0) == pytest.approx(ATMOSPHERIC_PRESSURE_PA)
+
+    def test_round_trip_through_pressure_to_depth(self):
+        for d in (1.0, 5.5, 30.0, 70.0):
+            assert pressure_to_depth(depth_to_pressure_pa(d)) == pytest.approx(d)
+
+    def test_uses_water_pressure_gradient(self):
+        # 10 m → P_atm + 10 * gradient
+        expected = ATMOSPHERIC_PRESSURE_PA + 10.0 * WATER_PRESSURE_GRADIENT_PA_PER_M
+        assert depth_to_pressure_pa(10.0) == pytest.approx(expected)
+
+    def test_density_override(self):
+        # Fresh water gives less pressure rise than salt water for the same depth.
+        salt = depth_to_pressure_pa(10.0, density=1025)
+        fresh = depth_to_pressure_pa(10.0, density=1000)
+        assert salt > fresh
 
 
 class TestPressureToDepth:
