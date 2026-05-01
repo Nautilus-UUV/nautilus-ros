@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Imu
+
+from py_pkg.uuv_ros_core.node_factory import (
+    create_publisher_for_topic,
+    create_subscription_for_topic,
+)
+from py_pkg.uuv_ros_core.topics import UUVTopics
 
 
 class EkfPrefilter(Node):
     """
     Exponential Moving Average (EMA) prefilter for IMU data before EKF.
 
-    - Subscribes:  /imu/left            (sensor_msgs/Imu)
-    - Publishes:   /filtered_imu_data   (sensor_msgs/Imu)
+    - Subscribes:  UUVTopics.IMU_LEFT          (sensor_msgs/Imu)
+    - Publishes:   UUVTopics.IMU_FILTERED_LEFT (sensor_msgs/Imu)
 
     Purpose:
         Smooth out high-frequency noise from raw IMU data (acceleration
@@ -18,7 +23,7 @@ class EkfPrefilter(Node):
     """
 
     def __init__(self):
-        super().__init__('ekf_prefilter')
+        super().__init__("ekf_prefilter")
 
         # Filter coefficient: 0 = very smooth, 1 = no filtering
         self.alpha = 0.5
@@ -31,23 +36,12 @@ class EkfPrefilter(Node):
         self.prev_wy = None
         self.prev_wz = None
 
-        # Subscriber and publisher
-        # best_effort QoS matches the standard reliability of IMU sensor publishers
-        imu_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
-        self.sub = self.create_subscription(
-            Imu,
-            '/imu/left',
-            self.imu_callback,
-            imu_qos
+        self.sub = create_subscription_for_topic(
+            self, UUVTopics.IMU_LEFT, self.imu_callback
         )
+        self.pub = create_publisher_for_topic(self, UUVTopics.IMU_FILTERED_LEFT)
 
-        self.pub = self.create_publisher(
-            Imu,
-            '/filtered_imu_data',
-            10
-        )
-
-        self.get_logger().info(f'EKF prefilter started (alpha={self.alpha})')
+        self.get_logger().info(f"EKF prefilter started (alpha={self.alpha})")
 
     def ema(self, x_new, x_prev):
         """Exponential Moving Average step; on first sample return x_new directly."""
@@ -102,5 +96,5 @@ def main():
     rclpy.shutdown()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
