@@ -12,8 +12,9 @@ from .ekf_filter import EKF_Filter
 class Ekf_Node(Node):
     """
     ROS2 Node that runs an Extended Kalman Filter (EKF) for state estimation using IMU data.
-    Subscribes to: /filtered_imu_data (sensor_msgs/Imu)
-    Publishes to:
+    Subscribes to: /filtered_imu_data  (sensor_msgs/Imu)
+    Publishes to:  /ekf_position       (geometry_msgs/Point)
+                   /ekf_orientation    (geometry_msgs/Quaternion)
     """
 
     def __init__(self):

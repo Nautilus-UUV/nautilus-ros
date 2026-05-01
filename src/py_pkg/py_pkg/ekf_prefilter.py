@@ -8,7 +8,7 @@ from sensor_msgs.msg import Imu
 class EkfPrefilter(Node):
     """
     Exponential Moving Average (EMA) prefilter for IMU data before EKF.
-    - Subscribes:  /imu1                (sensor_msgs/Imu)
+    - Subscribes:  /imu/left            (sensor_msgs/Imu)
     - Publishes:   /filtered_imu_data   (sensor_msgs/Imu)
 
     Purpose:
@@ -35,7 +35,7 @@ class EkfPrefilter(Node):
         imu_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT)
         self.sub = self.create_subscription(
             Imu,
-            '/imu1',
+            '/imu/left',
             self.imu_callback,
             imu_qos
         )
