@@ -2,6 +2,7 @@
 # Kalman-filter notation, so capital letters are intentional here.
 # ruff: noqa: N806
 import numpy as np
+from scipy.linalg import cho_factor, cho_solve
 from scipy.spatial.transform import Rotation
 
 
@@ -142,8 +143,11 @@ class EKFFilter:
         # Innovation covariance
         S = H @ self.P @ H.T + self.R
 
-        # Kalman gain
-        K = self.P @ H.T @ np.linalg.inv(S)
+        # Kalman gain via Cholesky solve (S is symmetric positive definite,
+        # so factor S = L L^T and solve S K^T = H P instead of forming inv(S);
+        # numerically more stable than np.linalg.inv).
+        c, low = cho_factor(S, lower=True)
+        K = cho_solve((c, low), H @ self.P).T
 
         # State update (apply additive correction). For the quaternion we
         # add the small correction to the quaternion components and then
