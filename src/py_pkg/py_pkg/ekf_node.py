@@ -6,10 +6,10 @@ from geometry_msgs.msg import Point, Quaternion
 import numpy as np
 
 # Import EKF from the same package; relative import avoids module resolution issues
-from .ekf_filter import EKF_Filter
+from .ekf_filter import EKFFilter
 
 
-class Ekf_Node(Node):
+class EKFNode(Node):
     """
     ROS2 Node that runs an Extended Kalman Filter (EKF) for state estimation using IMU data.
 
@@ -28,7 +28,7 @@ class Ekf_Node(Node):
         dt = self.get_parameter('dt').get_parameter_value().double_value
 
         # EKF filter instance
-        self.ekf = EKF_Filter(dt)
+        self.ekf = EKFFilter(dt)
         self._last_stamp = None    # tracks previous message timestamp
         self._initialized = False  # whether initial orientation has been set
 
@@ -123,7 +123,7 @@ class Ekf_Node(Node):
 
 def main(args=None):
     rclpy.init(args=args)
-    ekf_node = Ekf_Node()
+    ekf_node = EKFNode()
     rclpy.spin(ekf_node)
     ekf_node.destroy_node()
     rclpy.shutdown()

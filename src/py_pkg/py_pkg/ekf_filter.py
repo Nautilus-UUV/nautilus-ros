@@ -1,3 +1,6 @@
+# Matrix variables (F, H, K, P, Q, R, S) follow standard textbook
+# Kalman-filter notation, so capital letters are intentional here.
+# ruff: noqa: N806
 import numpy as np
 from scipy.spatial.transform import Rotation
 
@@ -17,7 +20,7 @@ def skew(v):
     ])
 
 
-class EKF_Filter:
+class EKFFilter:
     def __init__(self, dt):
         """
         Initialize the EKF filter.
