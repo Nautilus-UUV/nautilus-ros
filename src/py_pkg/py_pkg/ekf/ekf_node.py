@@ -1,6 +1,7 @@
 import numpy as np
 import rclpy
 from geometry_msgs.msg import Pose
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from sensor_msgs.msg import Imu
 
@@ -105,11 +106,17 @@ class EKFNode(Node):
 
 
 def main(args=None):
+    # Catch SIGINT/SIGTERM so the process exits 0 instead of 1 on Ctrl-C —
+    # otherwise launch_testing's exit-code check intermittently fails.
     rclpy.init(args=args)
     ekf_node = EKFNode()
-    rclpy.spin(ekf_node)
-    ekf_node.destroy_node()
-    rclpy.shutdown()
+    try:
+        rclpy.spin(ekf_node)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass
+    finally:
+        ekf_node.destroy_node()
+        rclpy.try_shutdown()
 
 
 if __name__ == "__main__":

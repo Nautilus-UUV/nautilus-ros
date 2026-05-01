@@ -31,7 +31,7 @@ Tests live in `src/py_pkg/test/`, organised in four tiers of increasing realism 
 |---|---|---|---|
 | 1 — unit | `test/unit/` | pure logic: PID, depth/ACU control system, physics, math | nothing |
 | 2 — node | `test/node/` | in-process `rclpy` nodes with stubbed I/O via a `NodeHarness` | `rclpy` only |
-| 3 — sim | `test/sim/` | end-to-end through the HAL into Gazebo, via `launch_testing` | full DAVE workspace built |
+| 3 — sim | `test/sim/` | end-to-end through the HAL into Gazebo, via `launch_testing`. Currently covers BCU bladder filling, ACU pitch/roll joints, and the IMU → prefilter → EKF pose pipeline | full DAVE workspace built |
 | 4 — HIL | `test/hil/` *(planned)* | same node code as Tier 2 against the real STM driver | bench hardware |
 
 Tiers 3 and 4 are marker-gated (`@pytest.mark.sim`, `@pytest.mark.hil`) and excluded from default runs by `pytest.ini`.
@@ -54,9 +54,10 @@ Tier 3 tests default to **headless** Gazebo (no window) so they run fast and don
 source /opt/ros/jazzy/setup.bash
 source /home/girji/dave_ws/install/setup.bash    # nautilus_hal + dave_demos
 
-BCU_SIM_GUI=1 pytest -m sim test/sim/test_bcu_sim.py        -v -s
-ACU_SIM_GUI=1 pytest -m sim test/sim/test_acu_pitch_sim.py  -v -s
-ACU_SIM_GUI=1 pytest -m sim test/sim/test_acu_roll_sim.py   -v -s
+BCU_SIM_GUI=1 pytest -m sim test/sim/test_bcu_sim.py            -v -s
+ACU_SIM_GUI=1 pytest -m sim test/sim/test_acu_pitch_sim.py      -v -s
+ACU_SIM_GUI=1 pytest -m sim test/sim/test_acu_roll_sim.py       -v -s
+EKF_SIM_GUI=1 pytest -m sim test/sim/test_ekf_pipeline_sim.py   -v -s
 ```
 
 `pytest --collect-only -m sim test/sim/` only enumerates the tests.

@@ -278,6 +278,32 @@ class TestValveSelection:
             f"expected all-closed history, got {h.received_valves}"
         )
 
+    def test_deep_quiescent_closes_both_valves(self, depth_node_harness):
+        # Boundary on the strict `q > 0` in select_pump_and_valves. Deep +
+        # target == current settles to q ≈ 0; strict `>` keeps the vent
+        # closed, but a `>=` slip — or a cascade sign flip producing a
+        # tiny positive q at zero error — would open valve 2 here. The
+        # shallow-quiescent test above can't catch this because deep=False
+        # short-circuits the q-sign branch entirely.
+        h = depth_node_harness
+        target_gauge = gauge_pressure_pa(PRESSURE_FOR_DEEP_PA)
+        h.publish_target_pressure(target_gauge)
+        h.publish_external_pressure(PRESSURE_FOR_DEEP_PA)
+        h.spin_until(lambda: len(h.received_valves) >= 6, timeout=1.5)
+        # Tail-of-history: ignore transients while target/pressure subs
+        # land out of order. After settling, every sample must be both
+        # valves closed with the pump idle.
+        tail_valves = h.received_valves[-3:]
+        tail_rpm = h.received_rpm[-3:]
+        assert all(v == 0b00 for v in tail_valves), (
+            f"expected steady all-closed valves at deep quiescent, got tail "
+            f"{tail_valves} (full history {h.received_valves})"
+        )
+        assert all(r == 0 for r in tail_rpm), (
+            f"expected zero pump rpm at deep quiescent, got tail {tail_rpm} "
+            f"(full history {h.received_rpm})"
+        )
+
     def test_valve2_implies_zero_rpm(self, depth_node_harness):
         # Cross-check the invariant from select_pump_and_valves: any
         # sample where valve 2 is open must have a zero pump command.
