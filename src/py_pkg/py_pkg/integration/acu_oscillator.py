@@ -2,7 +2,7 @@ import time
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Float32
+from std_msgs.msg import Int16
 
 from ..uuv_ros_core import (
     UUVTopics,
@@ -58,8 +58,8 @@ class ACUOscillator(Node):
         return time.time() - self.state_start_time
 
     def _publish_pitch(self, value):
-        msg = Float32()
-        msg.data = value
+        msg = Int16()
+        msg.data = int(round(value))
         self.pitch_pub.publish(msg)
 
     def _control_loop(self):

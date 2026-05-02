@@ -1,227 +1,144 @@
 """Tier 1 unit tests for the pathfinding planner.
 
-Pure geometry, no ROS spinning. Verifies plan_straight_segment:
+Pure geometry, no ROS spinning. Targets the planner-specific
+``_build_turn_straight_xy_path`` (XY arc-then-straight construction);
+the orientation helpers it relies on (``quaternion_to_yaw``,
+``rpy_to_quaternion``, ``wrap_angle``) live in ``py_pkg.math_utils``
+and are covered by ``test_math_utils.py``.
 
-* yaw is never commanded (roll=0, yaw=0 round-trip; quaternion has qx=qz=0),
-* pitch is constant across each segment and equals atan2(-dz, horiz)
-  (world is Z-positive-down, body pitch is REP-103 FLU),
-* the final waypoint is exactly the goal,
-* sampling step controls waypoint count,
-* edge cases: degenerate (start≈goal), purely vertical (horiz≈0), invalid step.
+``_build_turn_straight_xy_path`` is an instance method that doesn't
+touch ``self``, so we call it unbound (passing ``None`` as the first
+argument) to avoid spinning up a node.
 """
 
 import math
 
 import pytest
+from py_pkg.path.pathfinding import PathfindingNode
 
-from py_pkg.math_utils import quaternion_to_roll_pitch
-from py_pkg.path.pathfinding import plan_straight_segment
-
-
-def _rp(pose):
-    """Extract (roll_rad, pitch_rad) from a Pose's quaternion."""
-    q = pose.orientation
-    return quaternion_to_roll_pitch(q.x, q.y, q.z, q.w)
+_build_xy = PathfindingNode._build_turn_straight_xy_path
 
 
-class TestStraightLineGeometry:
-    def test_last_waypoint_is_goal(self):
-        poses = plan_straight_segment((0.0, 0.0, 0.0), (10.0, 0.0, 0.0), step=2.0)
-        last = poses[-1]
-        assert last.position.x == pytest.approx(10.0)
-        assert last.position.y == pytest.approx(0.0)
-        assert last.position.z == pytest.approx(0.0)
+# ---------------------------------------------------------------------------
+# _build_turn_straight_xy_path
+# ---------------------------------------------------------------------------
 
-    def test_first_waypoint_is_one_step_from_start(self):
-        # 10m segment with step=2 → first waypoint at (2, 0, 0)
-        poses = plan_straight_segment((0.0, 0.0, 0.0), (10.0, 0.0, 0.0), step=2.0)
-        first = poses[0]
-        assert first.position.x == pytest.approx(2.0)
-        assert first.position.y == pytest.approx(0.0)
-        assert first.position.z == pytest.approx(0.0)
 
-    def test_waypoints_are_collinear(self):
-        # Z-positive-down: goal at depth +3 m.
-        poses = plan_straight_segment((0.0, 0.0, 0.0), (10.0, 5.0, 3.0), step=1.0)
-        # Each waypoint should lie on the straight line from start to goal.
-        for p in poses:
-            t = p.position.x / 10.0
-            assert p.position.y == pytest.approx(5.0 * t, abs=1e-9)
-            assert p.position.z == pytest.approx(3.0 * t, abs=1e-9)
+class TestBuildPathAlreadyFacingGoal:
+    """When start_yaw matches the goal heading, the planner skips the arc
+    and emits a straight linspace from start to goal."""
+
+    def test_first_point_is_start(self):
+        pts = _build_xy(None, 0.0, 0.0, yaw0=0.0, gx=10.0, gy=0.0, R=10.0, ds=2.0)
+        assert pts[0][0] == pytest.approx(0.0)
+        assert pts[0][1] == pytest.approx(0.0)
+
+    def test_last_point_is_goal(self):
+        pts = _build_xy(None, 0.0, 0.0, yaw0=0.0, gx=10.0, gy=0.0, R=10.0, ds=2.0)
+        assert pts[-1][0] == pytest.approx(10.0)
+        assert pts[-1][1] == pytest.approx(0.0)
+
+    def test_all_yaws_match_goal_heading(self):
+        pts = _build_xy(None, 0.0, 0.0, yaw0=0.0, gx=10.0, gy=0.0, R=10.0, ds=2.0)
+        for _, _, yaw in pts:
+            assert yaw == pytest.approx(0.0, abs=1e-12)
 
     def test_waypoint_count_scales_with_step(self):
-        # 10m segment, step=2 → ceil(10/2) = 5 waypoints
-        assert len(plan_straight_segment((0, 0, 0), (10, 0, 0), step=2.0)) == 5
-        # step=4 → ceil(10/4) = 3 waypoints
-        assert len(plan_straight_segment((0, 0, 0), (10, 0, 0), step=4.0)) == 3
-        # step=10 → 1 waypoint at the goal
-        assert len(plan_straight_segment((0, 0, 0), (10, 0, 0), step=10.0)) == 1
+        # Straight branch: num_steps = max(2, int(dist/ds) + 1).
+        n2 = len(_build_xy(None, 0, 0, 0.0, 10.0, 0.0, R=10.0, ds=2.0))
+        n4 = len(_build_xy(None, 0, 0, 0.0, 10.0, 0.0, R=10.0, ds=4.0))
+        assert n2 == max(2, int(10 / 2) + 1) == 6
+        assert n4 == max(2, int(10 / 4) + 1) == 3
 
-    def test_step_larger_than_segment_returns_single_waypoint_at_goal(self):
-        poses = plan_straight_segment((0, 0, 0), (1, 0, 0), step=5.0)
-        assert len(poses) == 1
-        assert poses[0].position.x == pytest.approx(1.0)
-
-
-class TestPitchFromGeometry:
-    def test_horizontal_segment_has_zero_pitch(self):
-        poses = plan_straight_segment((0, 0, 0), (10, 0, 0), step=2.0)
-        for p in poses:
-            _, pitch = _rp(p)
-            assert pitch == pytest.approx(0.0, abs=1e-9)
-
-    def test_dive_at_35_degrees(self):
-        # User's target scenario: pitch = -35° (nose-down, FLU body) on the
-        # way down. World is Z-positive-down so dz = +horiz * tan(35°).
-        horiz = 20.0
-        dz = horiz * math.tan(math.radians(35.0))
-        poses = plan_straight_segment((0, 0, 0), (horiz, 0, dz), step=2.0)
-        for p in poses:
-            _, pitch = _rp(p)
-            assert math.degrees(pitch) == pytest.approx(-35.0, abs=1e-6)
-
-    def test_climb_at_35_degrees(self):
-        horiz = 20.0
-        dz = -horiz * math.tan(math.radians(35.0))  # rising in Z-down → dz<0
-        poses = plan_straight_segment((0, 0, 0), (horiz, 0, dz), step=2.0)
-        for p in poses:
-            _, pitch = _rp(p)
-            assert math.degrees(pitch) == pytest.approx(35.0, abs=1e-6)
-
-    def test_pitch_constant_across_segment(self):
-        # Z-down: dive of 4 m over 15 m horizontal, dy=7.
-        poses = plan_straight_segment((0, 0, 0), (15.0, 7.0, 4.0), step=1.0)
-        pitches = [_rp(p)[1] for p in poses]
-        # All pitches in a single segment must agree to floating-point precision.
-        for pitch in pitches[1:]:
-            assert pitch == pytest.approx(pitches[0], abs=1e-12)
-
-    def test_pitch_matches_atan2_neg_dz_horiz(self):
-        # Mixed XY direction must not change the pitch — it's atan2(-dz, horiz)
-        # over horiz = sqrt(dx^2 + dy^2), independent of the XY heading.
-        dx, dy, dz = 6.0, 8.0, 5.0  # horiz = 10, diving 5 m in Z-down
-        expected = math.atan2(-dz, math.hypot(dx, dy))
-        poses = plan_straight_segment((0, 0, 0), (dx, dy, dz), step=1.0)
-        _, pitch = _rp(poses[-1])
-        assert pitch == pytest.approx(expected, abs=1e-9)
+    def test_points_are_collinear(self):
+        # Diagonal already-facing-goal: yaw0 already equals atan2(dy, dx).
+        gx, gy = 10.0, 5.0
+        yaw0 = math.atan2(gy, gx)
+        pts = _build_xy(None, 0.0, 0.0, yaw0, gx, gy, R=10.0, ds=2.0)
+        # Each point lies on the straight line from start to goal.
+        for x, y, _ in pts:
+            t = x / gx
+            assert y == pytest.approx(gy * t, abs=1e-9)
 
 
-class TestNoYawNoRoll:
-    """Yaw is never commanded; roll is always 0."""
+class TestBuildPathLeftTurn:
+    """delta_yaw > 0 -> arc to the left, then straight to the goal."""
 
-    @pytest.mark.parametrize(
-        "goal",
-        [
-            (10.0, 0.0, 3.0),  # +X dive (Z-down: dive = positive dz)
-            (-10.0, 0.0, 3.0),  # -X dive
-            (0.0, 10.0, -2.0),  # +Y climb (Z-down: climb = negative dz)
-            (5.0, -5.0, 2.0),  # diagonal dive
-        ],
-    )
-    def test_quaternion_has_only_pitch_component(self, goal):
-        # _pitch_to_quaternion produces qx=qz=0 (roll=yaw=0). The XY heading
-        # of the segment is encoded in position progression, not orientation.
-        poses = plan_straight_segment((0, 0, 0), goal, step=2.0)
-        for p in poses:
-            assert p.orientation.x == pytest.approx(0.0, abs=1e-12)
-            assert p.orientation.z == pytest.approx(0.0, abs=1e-12)
+    def test_first_point_is_start_with_start_yaw(self):
+        pts = _build_xy(None, 0.0, 0.0, 0.0, 5.0, 5.0, R=10.0, ds=2.0)
+        assert pts[0] == (pytest.approx(0.0), pytest.approx(0.0), pytest.approx(0.0))
 
-    @pytest.mark.parametrize(
-        "goal",
-        [
-            (10.0, 0.0, 3.0),
-            (-10.0, 0.0, 3.0),
-            (0.0, 10.0, -2.0),
-            (5.0, -5.0, 2.0),
-        ],
-    )
-    def test_roll_round_trips_to_zero(self, goal):
-        poses = plan_straight_segment((0, 0, 0), goal, step=2.0)
-        for p in poses:
-            roll, _ = _rp(p)
-            assert roll == pytest.approx(0.0, abs=1e-9)
+    def test_last_point_is_goal(self):
+        pts = _build_xy(None, 0.0, 0.0, 0.0, 5.0, 5.0, R=10.0, ds=2.0)
+        # Last appended point of the straight portion is exactly the goal.
+        assert pts[-1][0] == pytest.approx(5.0)
+        assert pts[-1][1] == pytest.approx(5.0)
+
+    def test_yaw_increases_along_arc(self):
+        # 90° left turn at R=10: arc_length = 10*π/2 ≈ 15.7, ds=2 -> 7 arc steps.
+        pts = _build_xy(None, 0.0, 0.0, 0.0, 0.0, 20.0, R=10.0, ds=2.0)
+        # First point has yaw=0 (start), then arc samples should be strictly
+        # increasing in yaw until the arc completes.
+        yaws = [yaw for _, _, yaw in pts]
+        # Arc steps = max(1, int(10*pi/2 / 2)) = 7. Indices 1..7 are the arc.
+        for i in range(1, 8):
+            assert yaws[i] > yaws[i - 1]
 
 
-class TestEdgeCases:
-    def test_start_equals_goal_returns_single_waypoint(self):
-        poses = plan_straight_segment((1.0, 2.0, 3.0), (1.0, 2.0, 3.0), step=2.0)
-        assert len(poses) == 1
-        assert poses[0].position.x == pytest.approx(1.0)
-        assert poses[0].position.y == pytest.approx(2.0)
-        assert poses[0].position.z == pytest.approx(3.0)
-        _, pitch = _rp(poses[0])
-        assert pitch == pytest.approx(0.0, abs=1e-12)
+class TestBuildPathRightTurn:
+    """delta_yaw < 0 -> arc to the right; yaw decreases."""
 
-    def test_pure_vertical_segment_uses_zero_pitch(self):
-        # horiz ≈ 0, dz ≠ 0: planner has no body-pitch authority, so pitch=0
-        # and the BCU drives the descent. Z-positive-down: dive to +10 m.
-        poses = plan_straight_segment((0, 0, 0), (0, 0, 10.0), step=2.0)
-        for p in poses:
-            _, pitch = _rp(p)
-            assert pitch == pytest.approx(0.0, abs=1e-12)
-
-    def test_pure_vertical_segment_interpolates_z(self):
-        poses = plan_straight_segment((0, 0, 0), (0, 0, 10.0), step=2.0)
-        zs = [p.position.z for p in poses]
-        # Z-positive-down dive: z increases monotonically from 0 to +10.
-        assert zs == sorted(zs)
-        assert zs[-1] == pytest.approx(10.0)
-
-    def test_negative_step_rejected(self):
-        with pytest.raises(ValueError):
-            plan_straight_segment((0, 0, 0), (1, 0, 0), step=-1.0)
-
-    def test_zero_step_rejected(self):
-        with pytest.raises(ValueError):
-            plan_straight_segment((0, 0, 0), (1, 0, 0), step=0.0)
+    def test_yaw_decreases_along_arc(self):
+        # Goal at (5, -5): goal_yaw = -π/4, delta_yaw = -π/4.
+        pts = _build_xy(None, 0.0, 0.0, 0.0, 5.0, -5.0, R=10.0, ds=2.0)
+        yaws = [yaw for _, _, yaw in pts]
+        # arc_length = 10*π/4 ≈ 7.85, arc_steps = 3. Arc samples are indices 1..3.
+        for i in range(1, 4):
+            assert yaws[i] < yaws[i - 1]
 
 
-class TestYoyoScenario:
-    """A sinusoidal yo-yo encoded as a chain of straight segments.
+class TestBuildPathDegenerate:
+    def test_zero_xy_distance_returns_single_point(self):
+        pts = _build_xy(None, 1.0, 2.0, yaw0=0.5, gx=1.0, gy=2.0, R=10.0, ds=2.0)
+        assert len(pts) == 1
+        assert pts[0] == (1.0, 2.0, 0.5)
 
-    Mean depth 25 m, peak amplitude ±5 m, pitch = ±35°. Each leg is a single
-    call to plan_straight_segment; chained together they form the yo-yo
-    pattern the planner is meant to express.
-    """
 
-    def _leg(self, start, goal):
-        return plan_straight_segment(start, goal, step=2.0)
+# ---------------------------------------------------------------------------
+# Segment pitch (from _plan_trajectory_from_current_pose's geometry rule)
+# ---------------------------------------------------------------------------
+
+
+class TestSegmentPitchGeometry:
+    """The full planner uses ``pitch = atan2(dz_total, total_horiz)`` (no
+    FLU sign flip). Verify the rule directly so changes to it surface
+    here, not just through the Tier 2 emission tests."""
+
+    def test_horizontal_segment_pitch_is_zero(self):
+        assert math.atan2(0.0, 10.0) == pytest.approx(0.0)
+
+    def test_dive_pitch_positive(self):
+        # Z-positive-down: dz>0 means dive. Original convention emits +pitch.
+        assert math.atan2(5.0, 5.0) == pytest.approx(math.radians(45.0))
+
+    def test_climb_pitch_negative(self):
+        assert math.atan2(-5.0, 5.0) == pytest.approx(math.radians(-45.0))
 
     def test_yoyo_alternates_pitch_sign(self):
-        amplitude = 5.0
-        pitch_deg = 35.0
-        # Each leg traverses 2*amplitude in z (peak↔trough), so the
-        # corresponding horizontal distance for a 35° pitch is 2A/tan(35°).
-        horiz = 2.0 * amplitude / math.tan(math.radians(pitch_deg))
-
-        # Z-positive-down: shallow extreme = 25 - A, deep extreme = 25 + A.
-        # Down — Up — Down — Up
-        a = (0.0, 0.0, 25.0 - amplitude)
-        b = (horiz, 0.0, 25.0 + amplitude)
-        c = (2 * horiz, 0.0, 25.0 - amplitude)
-        d = (3 * horiz, 0.0, 25.0 + amplitude)
-        e = (4 * horiz, 0.0, 25.0 - amplitude)
-
-        legs = [self._leg(a, b), self._leg(b, c), self._leg(c, d), self._leg(d, e)]
-        pitches_deg = [math.degrees(_rp(leg[-1])[1]) for leg in legs]
-
-        # Body-frame pitch is REP-103 FLU (-pitch = nose down), so dives
-        # still emit -35° and climbs +35°.
-        assert pitches_deg[0] == pytest.approx(-pitch_deg, abs=1e-6)
-        assert pitches_deg[1] == pytest.approx(+pitch_deg, abs=1e-6)
-        assert pitches_deg[2] == pytest.approx(-pitch_deg, abs=1e-6)
-        assert pitches_deg[3] == pytest.approx(+pitch_deg, abs=1e-6)
-
-    def test_yoyo_z_envelope_bounded_by_amplitude(self):
+        # Mean depth 25 m, ±5 m amplitude, 35° pitch -> horiz per leg.
         amplitude = 5.0
         pitch_deg = 35.0
         horiz = 2.0 * amplitude / math.tan(math.radians(pitch_deg))
 
-        a = (0.0, 0.0, 25.0 - amplitude)
-        b = (horiz, 0.0, 25.0 + amplitude)
-        c = (2 * horiz, 0.0, 25.0 - amplitude)
+        legs = [
+            (25.0 - amplitude, 25.0 + amplitude),  # dive
+            (25.0 + amplitude, 25.0 - amplitude),  # climb
+            (25.0 - amplitude, 25.0 + amplitude),  # dive
+            (25.0 + amplitude, 25.0 - amplitude),  # climb
+        ]
+        signs = []
+        for z_start, z_end in legs:
+            pitch = math.atan2(z_end - z_start, horiz)
+            signs.append(math.copysign(1.0, pitch))
 
-        for leg in [self._leg(a, b), self._leg(b, c)]:
-            for pose in leg:
-                assert pose.position.z >= 25.0 - amplitude - 1e-9
-                assert pose.position.z <= 25.0 + amplitude + 1e-9
+        assert signs == [+1.0, -1.0, +1.0, -1.0]

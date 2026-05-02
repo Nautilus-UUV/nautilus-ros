@@ -32,7 +32,7 @@ from py_pkg.uuv_ros_core import (
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from sensor_msgs.msg import Imu
-from std_msgs.msg import Float32, Float64
+from std_msgs.msg import Float64, Int16
 
 from ._sim_helpers import reap_lingering_gz
 
@@ -131,8 +131,8 @@ class _ACUPitchTestDriver(Node):
         self.imu_msg_count += 1
 
     def publish_pitch_mm(self, mm: float) -> None:
-        msg = Float32()
-        msg.data = float(mm)
+        msg = Int16()
+        msg.data = int(round(mm))
         self.pitch_pub.publish(msg)
 
 

@@ -1,6 +1,6 @@
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Int32
+from std_msgs.msg import Int16
 
 from ..physics import (
     depth_to_pressure_pa,
@@ -121,8 +121,8 @@ class BCUOscillator(Node):
                 rpm_cmd = -self.target_rpm
 
         # Publish command
-        msg = Int32()
-        msg.data = rpm_cmd
+        msg = Int16()
+        msg.data = int(rpm_cmd)
         self.rpm_pub.publish(msg)
 
 

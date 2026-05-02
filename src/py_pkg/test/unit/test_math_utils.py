@@ -5,6 +5,8 @@ class, the Euler/quaternion conversions, and the scalar helpers (lerp,
 clamp, clamp_mag, sign) that are consumed by the BCU/ACU/depth nodes.
 """
 
+import math
+
 import numpy as np
 import pytest
 from py_pkg.math_utils import (
@@ -16,7 +18,10 @@ from py_pkg.math_utils import (
     lerp,
     pi,
     quaternion_to_roll_pitch,
+    quaternion_to_yaw,
+    rpy_to_quaternion,
     sign,
+    wrap_angle,
 )
 
 
@@ -305,6 +310,83 @@ class TestQuaternionToRollPitch:
         result = quaternion_to_roll_pitch(0.0, 0.0, 0.0, 1.0)
         assert isinstance(result, tuple)
         assert len(result) == 2
+
+
+class TestQuaternionToYaw:
+    """ZYX Tait-Bryan extraction of yaw from (qx, qy, qz, qw)."""
+
+    def test_identity_quaternion_yields_zero_yaw(self):
+        assert quaternion_to_yaw(0.0, 0.0, 0.0, 1.0) == pytest.approx(0.0, abs=1e-12)
+
+    @pytest.mark.parametrize(
+        "yaw_deg",
+        [-170.0, -90.0, -45.0, -1.0, 1.0, 45.0, 90.0, 170.0],
+    )
+    def test_round_trip_via_rpy_to_quaternion(self, yaw_deg):
+        yaw = math.radians(yaw_deg)
+        qx, qy, qz, qw = rpy_to_quaternion(0.0, 0.0, yaw)
+        recovered = quaternion_to_yaw(qx, qy, qz, qw)
+        assert recovered == pytest.approx(yaw, abs=1e-9)
+
+    def test_pitch_does_not_leak_into_extracted_yaw(self):
+        qx, qy, qz, qw = rpy_to_quaternion(0.0, math.radians(40.0), 0.0)
+        assert quaternion_to_yaw(qx, qy, qz, qw) == pytest.approx(0.0, abs=1e-9)
+
+
+class TestRpyToQuaternion:
+    """(roll, pitch, yaw) -> (qx, qy, qz, qw), inverse of the extractors."""
+
+    def test_zero_rpy_is_identity(self):
+        qx, qy, qz, qw = rpy_to_quaternion(0.0, 0.0, 0.0)
+        assert (qx, qy, qz) == (
+            pytest.approx(0.0),
+            pytest.approx(0.0),
+            pytest.approx(0.0),
+        )
+        assert qw == pytest.approx(1.0)
+
+    def test_pitch_only_has_zero_qx_and_qz(self):
+        # roll=0, yaw=0 -> qx and qz vanish, only qy + qw are non-zero.
+        qx, qy, qz, _ = rpy_to_quaternion(0.0, math.radians(35.0), 0.0)
+        assert qx == pytest.approx(0.0, abs=1e-12)
+        assert qz == pytest.approx(0.0, abs=1e-12)
+        assert qy != pytest.approx(0.0)
+
+    def test_pitch_round_trips_through_quaternion_to_roll_pitch(self):
+        # Ensures the planner's pose orientations decode to the input pitch
+        # under the math_utils extractor that downstream nodes use.
+        for pitch_deg in (-35.0, -10.0, 5.0, 35.0):
+            qx, qy, qz, qw = rpy_to_quaternion(0.0, math.radians(pitch_deg), 0.0)
+            roll, pitch = quaternion_to_roll_pitch(qx, qy, qz, qw)
+            assert roll == pytest.approx(0.0, abs=1e-9)
+            assert math.degrees(pitch) == pytest.approx(pitch_deg, abs=1e-6)
+
+
+class TestWrapAngle:
+    """Reduce an angle to the principal range near [-pi, pi]."""
+
+    def test_inside_range_unchanged(self):
+        for a in (-math.pi + 0.1, -1.0, 0.0, 1.0, math.pi - 0.1):
+            assert wrap_angle(a) == pytest.approx(a)
+
+    def test_endpoints_preserved(self):
+        # ±pi sit at the boundary; the loop-based implementation leaves
+        # them as-is rather than canonicalizing both to -pi.
+        assert wrap_angle(math.pi) == pytest.approx(math.pi)
+        assert wrap_angle(-math.pi) == pytest.approx(-math.pi)
+
+    def test_wraps_above_pi(self):
+        assert wrap_angle(math.pi + 0.1) == pytest.approx(-math.pi + 0.1)
+        assert wrap_angle(1.5 * math.pi) == pytest.approx(-0.5 * math.pi)
+
+    def test_wraps_below_negative_pi(self):
+        assert wrap_angle(-math.pi - 0.1) == pytest.approx(math.pi - 0.1)
+        assert wrap_angle(-1.5 * math.pi) == pytest.approx(0.5 * math.pi)
+
+    def test_multi_revolution_wraps(self):
+        # Inputs that need more than one ±2π adjustment.
+        assert wrap_angle(5.0 * math.pi) == pytest.approx(math.pi)
+        assert wrap_angle(-3.5 * math.pi) == pytest.approx(0.5 * math.pi)
 
 
 class TestEulerToRotationMatrix:

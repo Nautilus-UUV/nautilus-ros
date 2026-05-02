@@ -35,7 +35,7 @@ from py_pkg.uuv_ros_core import (
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from sensor_msgs.msg import Imu
-from std_msgs.msg import Float32, Int32
+from std_msgs.msg import Float32, Int16, Int32
 
 from ._sim_helpers import reap_lingering_gz
 
@@ -143,7 +143,7 @@ class _BCUTestDriver(Node):
         self.imu_msg_count += 1
 
     def publish_rpm(self, rpm: int) -> None:
-        msg = Int32()
+        msg = Int16()
         msg.data = int(rpm)
         self.rpm_pub.publish(msg)
 

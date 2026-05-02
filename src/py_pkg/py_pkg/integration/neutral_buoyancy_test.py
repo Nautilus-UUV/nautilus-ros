@@ -1,7 +1,7 @@
 import numpy as np
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Int32
+from std_msgs.msg import Int16
 
 from ..physics import pressure_to_depth
 from ..uuv_ros_core import (
@@ -137,8 +137,8 @@ class NeutralBuoyancyTest(Node):
             self.stationary_start_time = None
 
         # publish rpm to BCU
-        cmd_msg = Int32()
-        cmd_msg.data = rpm_cmd
+        cmd_msg = Int16()
+        cmd_msg.data = int(rpm_cmd)
         self.rpm_pub.publish(cmd_msg)
 
         if self.get_clock().now().nanoseconds % 1000000000 < 100000000:

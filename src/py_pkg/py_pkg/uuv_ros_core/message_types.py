@@ -16,6 +16,7 @@ from sensor_msgs.msg import Imu, Temperature
 from std_msgs.msg import (
     Float32,
     Float32MultiArray,
+    Int16,
     Int32,
     String,
     UInt8,
@@ -34,11 +35,11 @@ TOPIC_MESSAGE_MAP = {
     UUVTopics.BCU_PRESSURE: Int32,
     UUVTopics.BCU_VOLUME: Int32,
     UUVTopics.BCU_FLOW_RATE: Float32,
-    UUVTopics.BCU_RPM: Int32,
+    UUVTopics.BCU_RPM: Int16,
     # Bit 0 = valve 1, bit 1 = valve 2; 1 = open, 0 = closed.
     UUVTopics.BCU_VALVES: UInt8,
-    UUVTopics.ACU_PITCH: Float32,
-    UUVTopics.ACU_ROLL: Float32,
+    UUVTopics.ACU_PITCH: Int16,
+    UUVTopics.ACU_ROLL: Int16,
     UUVTopics.ACU_FEEDBACK_OFFSET: Float32,
     UUVTopics.ACU_FEEDBACK_ANGLE: Float32,
     UUVTopics.IMU_LEFT: Imu,

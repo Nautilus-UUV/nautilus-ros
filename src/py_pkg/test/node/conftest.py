@@ -24,7 +24,7 @@ import rclpy
 from geometry_msgs.msg import Pose
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
-from std_msgs.msg import Float32, Float32MultiArray, Int32, String, UInt8
+from std_msgs.msg import Float32MultiArray, Int16, Int32, String, UInt8
 
 from py_pkg.path.pathfinding import PathfindingNode
 from py_pkg.pid.acu_node import ACUControlNode
@@ -122,7 +122,7 @@ class _DepthTesterNode(Node):
             self, UUVTopics.BCU_VALVES, self._on_valves
         )
 
-    def _on_rpm(self, msg: Int32) -> None:
+    def _on_rpm(self, msg: Int16) -> None:
         self.received_rpm.append(int(msg.data))
 
     def _on_valves(self, msg: UInt8) -> None:
@@ -190,12 +190,12 @@ def _quat_from_roll_pitch_deg(roll_deg: float, pitch_deg: float):
 
 
 class _ACUTesterNode(Node):
-    """Drives ACUControlNode and captures ACU_PITCH (mm) / ACU_ROLL (rad)."""
+    """Drives ACUControlNode and captures ACU_PITCH (Int16 mm) / ACU_ROLL (Int16 rad)."""
 
     def __init__(self):
         super().__init__("acu_node_tester")
-        self.received_pitch_mm: list[float] = []
-        self.received_roll_rad: list[float] = []
+        self.received_pitch_mm: list[int] = []
+        self.received_roll_cdeg: list[int] = []
 
         self.target_pose_pub = create_publisher_for_topic(
             self, UUVTopics.POSITION_TARGET
@@ -210,11 +210,11 @@ class _ACUTesterNode(Node):
             self, UUVTopics.ACU_ROLL, self._on_roll
         )
 
-    def _on_pitch(self, msg: Float32) -> None:
-        self.received_pitch_mm.append(float(msg.data))
+    def _on_pitch(self, msg: Int16) -> None:
+        self.received_pitch_mm.append(int(msg.data))
 
-    def _on_roll(self, msg: Float32) -> None:
-        self.received_roll_rad.append(float(msg.data))
+    def _on_roll(self, msg: Int16) -> None:
+        self.received_roll_cdeg.append(int(msg.data))
 
     @staticmethod
     def _pose_from_roll_pitch(roll_deg: float, pitch_deg: float) -> Pose:
@@ -244,12 +244,12 @@ class ACUNodeHarness(NodeHarness):
         super().__init__(ACUControlNode, _ACUTesterNode)
 
     @property
-    def received_pitch_mm(self) -> list[float]:
+    def received_pitch_mm(self) -> list[int]:
         return self.tester.received_pitch_mm
 
     @property
-    def received_roll_rad(self) -> list[float]:
-        return self.tester.received_roll_rad
+    def received_roll_cdeg(self) -> list[int]:
+        return self.tester.received_roll_cdeg
 
     def publish_target_attitude(self, roll_deg: float, pitch_deg: float) -> None:
         self.tester.publish_target_attitude(roll_deg, pitch_deg)

@@ -3,7 +3,7 @@ import math
 import numpy as np
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Float32, Int32
+from std_msgs.msg import Int16
 
 from ..physics import pressure_to_depth
 from ..uuv_ros_core import (
@@ -184,12 +184,12 @@ class AutoTrimAndBuoyancyTest(Node):
             self.stationary_start_time = None
 
         # --- 5. Publish Commands ---
-        rpm_msg = Int32()
-        rpm_msg.data = rpm_cmd
+        rpm_msg = Int16()
+        rpm_msg.data = int(rpm_cmd)
         self.rpm_pub.publish(rpm_msg)
 
-        pitch_msg = Float32()
-        pitch_msg.data = pitch_cmd
+        pitch_msg = Int16()
+        pitch_msg.data = int(round(pitch_cmd))
         self.pitch_pub.publish(pitch_msg)
 
         # Logging

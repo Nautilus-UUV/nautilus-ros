@@ -71,5 +71,8 @@ ACU_ROLL_MAX_ANGLE_DEG = 30.0
 ACU_ROLL_MAX_VELOCITY_RAD_S = 0.5
 ACU_ROLL_MAX_EFFORT_NM = 10.0
 
-# Motor-step conversion lives with the EPOS driver (acu/acu_node.py).
-# ACU_PITCH/ACU_ROLL carry physical positions (mm / rad).
+# ACU_ROLL wire format: Int16 centidegrees. ±30° -> ±3000 on the topic,
+# 0.01° per step. Native rad would collapse the range to {-1, 0, +1}.
+# Both the producer (pid/acu_node.py) and the HAL bridge
+# (nautilus_hal/acu_sim_bridge.py) read this constant.
+ACU_ROLL_CDEG_PER_DEG = 100

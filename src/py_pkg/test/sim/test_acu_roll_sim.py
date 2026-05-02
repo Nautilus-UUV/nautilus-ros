@@ -1,8 +1,9 @@
 """Tier 3 sim test for the ACU roll control path.
 
-Drives ACU_ROLL (rad) and reads the bridge's /sim/.../roll_position_rad
-feedback. Asserts the simulated acu_roll_joint rotates in the commanded
-direction. Bridge passes rad through unchanged; SDF range is symmetric
+Drives ACU_ROLL (Int16 centidegrees) and reads the bridge's
+/sim/.../roll_position_rad feedback. Asserts the simulated
+acu_roll_joint rotates in the commanded direction. Bridge converts
+cdeg -> deg -> rad before forwarding to Gazebo; SDF range is symmetric
 (±0.5236 rad), we pick positive. Composed lean (no oscillator) so we
 don't race acu_oscillator for ACU_ROLL.
 """
@@ -21,7 +22,11 @@ from launch import LaunchDescription
 from launch.actions import IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.substitutions import FindPackageShare
-from py_pkg.robot_specs import ACU_ROLL_MAX_ANGLE_RAD
+from py_pkg.robot_specs import (
+    ACU_ROLL_CDEG_PER_DEG,
+    ACU_ROLL_MAX_ANGLE_DEG,
+    ACU_ROLL_MAX_ANGLE_RAD,
+)
 from py_pkg.uuv_ros_core import (
     UUVTopics,
     create_publisher_for_topic,
@@ -30,7 +35,7 @@ from py_pkg.uuv_ros_core import (
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from sensor_msgs.msg import Imu
-from std_msgs.msg import Float32, Float64
+from std_msgs.msg import Float64, Int16
 
 from ._sim_helpers import reap_lingering_gz
 
@@ -128,9 +133,11 @@ class _ACURollTestDriver(Node):
     def _on_imu(self, msg: Imu) -> None:
         self.imu_msg_count += 1
 
-    def publish_roll_rad(self, rad: float) -> None:
-        msg = Float32()
-        msg.data = float(rad)
+    def publish_roll_cdeg(self, cdeg: int) -> None:
+        # ACU_ROLL wire format: Int16 centidegrees. Bridge converts to
+        # rad before forwarding to Gazebo's joint controller.
+        msg = Int16()
+        msg.data = int(cdeg)
         self.roll_pub.publish(msg)
 
 
@@ -172,12 +179,13 @@ class ACURollSimTest(unittest.TestCase):
             self.executor.spin_once(timeout_sec=slice_s)
         return predicate()
 
-    def test_positive_rad_command_rotates_roll_joint(self):
+    def test_positive_cdeg_command_rotates_roll_joint(self):
         """Sustained max-roll command on ACU_ROLL -> roll joint rotates positive."""
-        # Drive at the SDF limit (ACU_ROLL_MAX_ANGLE_RAD ≈ +30°) for
-        # 18 s: anything smaller or shorter gets swallowed by the kP=-13
+        # Drive at the SDF limit (ACU_ROLL_MAX_ANGLE_DEG = +30° = +3000 cdeg)
+        # for 18 s: anything smaller or shorter gets swallowed by the kP=-13
         # roll damping and the body rotation is invisible in the GUI.
-        target_rad = ACU_ROLL_MAX_ANGLE_RAD
+        target_cdeg = int(round(ACU_ROLL_MAX_ANGLE_DEG * ACU_ROLL_CDEG_PER_DEG))
+        target_rad = ACU_ROLL_MAX_ANGLE_RAD  # for the joint-position assertion
         startup_timeout_s = 60.0
         post_ready_settle_s = 2.0
         drive_duration_s = 18.0
@@ -215,7 +223,7 @@ class ACURollSimTest(unittest.TestCase):
         while time.monotonic() < deadline:
             now = time.monotonic()
             if now >= next_publish:
-                self.driver.publish_roll_rad(target_rad)
+                self.driver.publish_roll_cdeg(target_cdeg)
                 next_publish = now + drive_period_s
             self.executor.spin_once(timeout_sec=0.02)
 

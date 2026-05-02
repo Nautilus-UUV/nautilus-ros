@@ -7,6 +7,11 @@ The planner emits the first POSITION_TARGET synchronously inside the
 ``start`` command callback (no timer wait), so most happy-path assertions
 resolve in well under a second. Timer-driven advance tests still need
 ``timer_dt = 0.5s``-class spin time to see the next emission.
+
+Targets the turn-then-straight (Dubins-style) planner: each segment
+starts with the EKF pose itself (so the first emission is at the start
+position), pitch is ``atan2(dz, horiz)`` (no FLU sign flip), and yaw is
+commanded along the arc + straight portion.
 """
 
 import math
@@ -19,6 +24,13 @@ from py_pkg.math_utils import quaternion_to_roll_pitch
 def _rp(pose):
     q = pose.orientation
     return quaternion_to_roll_pitch(q.x, q.y, q.z, q.w)
+
+
+def _yaw(pose):
+    q = pose.orientation
+    siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
+    cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+    return math.atan2(siny_cosp, cosy_cosp)
 
 
 class TestWiringSmoke:
@@ -100,8 +112,10 @@ class TestStartCommand:
         h.spin_until(lambda: len(h.received_targets) >= 1, timeout=1.0)
 
         first = h.received_targets[0]
-        # path_step=2.0 over a 10m segment: first emission is one step in.
-        assert first.position.x == pytest.approx(2.0, abs=1e-6)
+        # Dubins-style planner emits the start position itself as the first
+        # waypoint (start_yaw=0 already faces the goal -> straight-line case,
+        # whose linspace includes the start point).
+        assert first.position.x == pytest.approx(0.0, abs=1e-6)
         assert first.position.y == pytest.approx(0.0, abs=1e-6)
         assert first.position.z == pytest.approx(0.0, abs=1e-6)
         assert h.node.mode == "RUNNING"
@@ -115,8 +129,9 @@ class TestPlannedPitchInEmissions:
     ):
         h = pathfinding_node_harness
         horiz = 20.0
-        # Z-positive-down: diving means dz>0. Body-frame pitch is FLU
-        # (-pitch = nose down), so the planner emits pitch=-35° on a dive.
+        # World frame is Z-positive-down (dz>0 means dive). The Dubins
+        # planner uses pitch = atan2(dz_total, total_horiz) with no sign
+        # flip, so a 35° dive emits +35° pitch.
         dz = horiz * math.tan(math.radians(35.0))
 
         h.publish_pose_estimation(0.0, 0.0, 0.0)
@@ -128,31 +143,37 @@ class TestPlannedPitchInEmissions:
         h.publish_command("start")
         h.spin_until(lambda: len(h.received_targets) >= 1, timeout=1.0)
 
+        # Goal is straight ahead in XY (y=0), so yaw=0 throughout and
+        # quaternion_to_roll_pitch reads pitch cleanly.
         roll, pitch = _rp(h.received_targets[0])
         assert roll == pytest.approx(0.0, abs=1e-9)
-        assert math.degrees(pitch) == pytest.approx(-35.0, abs=1e-6)
+        assert math.degrees(pitch) == pytest.approx(35.0, abs=1e-6)
 
 
-class TestNoYawCommanded:
-    """Pose orientation never carries a yaw component."""
+class TestYawCommandedOnDiagonal:
+    """Diagonal segments require a heading change; the planner commands yaw
+    along the arc-then-straight construction."""
 
-    def test_quaternion_qx_qz_are_zero(self, pathfinding_node_harness):
+    def test_diagonal_segment_emits_nonzero_yaw(self, pathfinding_node_harness):
         h = pathfinding_node_harness
-        # XY-diagonal segment with a Z component would produce non-zero yaw
-        # in the OLD planner; the new planner must not.
+        # XY-diagonal segment with non-zero dz: start_yaw=0, goal_yaw=π/4,
+        # so the planner runs the arc branch and emits a yaw-bearing
+        # quaternion on every waypoint past the start.
         h.publish_pose_estimation(0.0, 0.0, 0.0)
-        # Z-positive-down: 3 m below the surface.
         h.publish_path([(5.0, 5.0, 3.0)])
         h.spin_until(
             lambda: h.node.current_pose is not None and len(h.node.keypoints) == 1,
             timeout=1.0,
         )
         h.publish_command("start")
-        h.spin_until(lambda: len(h.received_targets) >= 1, timeout=1.0)
+        # First emission is the start point with yaw=0; the arc kicks in
+        # from the second waypoint onward.
+        h.spin_until(lambda: len(h.received_targets) >= 2, timeout=2.5)
 
-        for pose in h.received_targets:
-            assert pose.orientation.x == pytest.approx(0.0, abs=1e-12)
-            assert pose.orientation.z == pytest.approx(0.0, abs=1e-12)
+        yaw_second = _yaw(h.received_targets[1])
+        assert abs(yaw_second) > 1e-3, (
+            f"Expected non-zero yaw after the start point, got {yaw_second}"
+        )
 
 
 class TestEKFAdvance:
@@ -168,13 +189,13 @@ class TestEKFAdvance:
         )
         h.publish_command("start")
         h.spin_until(lambda: len(h.received_targets) >= 1, timeout=1.0)
-        # First target is (2, 0, 0). Now claim we're there.
-        h.publish_pose_estimation(2.0, 0.0, 0.0)
-        # timer_dt = 0.5s — give it a couple of cycles to fire.
+        # First emission is the start point (0,0,0); EKF still claims
+        # (0,0,0), so the next timer tick sees us at the waypoint and
+        # advances to the next sample (dubins_step=2.0 along x).
         h.spin_until(lambda: len(h.received_targets) >= 2, timeout=2.5)
 
         second = h.received_targets[1]
-        assert second.position.x == pytest.approx(4.0, abs=1e-6)
+        assert second.position.x == pytest.approx(2.0, abs=1e-6)
 
 
 class TestStopCommand:
@@ -186,16 +207,21 @@ class TestStopCommand:
             lambda: h.node.current_pose is not None and len(h.node.keypoints) == 1,
             timeout=1.0,
         )
+        # Issue start + stop back-to-back so no timer tick can sneak an
+        # advance in between (first waypoint is the start point itself,
+        # which the timer would otherwise immediately advance past).
         h.publish_command("start")
-        h.spin_until(lambda: len(h.received_targets) >= 1, timeout=1.0)
-        emissions_after_start = len(h.received_targets)
-
         h.publish_command("stop")
         h.spin_until(lambda: h.node.mode == "STOPPED", timeout=1.0)
-        # Even if EKF says we reached the first waypoint, no advance fires.
-        h.publish_pose_estimation(2.0, 0.0, 0.0)
+        # Drain any in-flight POSITION_TARGET emissions sitting in the
+        # tester's subscription queue before snapshotting; once mode is
+        # STOPPED the timer callback no-ops, so further emissions would
+        # be a real advance.
+        h.spin_for(0.6)
+        emissions_after_stop = len(h.received_targets)
+
         h.spin_for(1.5)
-        assert len(h.received_targets) == emissions_after_start
+        assert len(h.received_targets) == emissions_after_stop
 
 
 class TestAbortCommand:

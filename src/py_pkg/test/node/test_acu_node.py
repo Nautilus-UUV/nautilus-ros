@@ -1,25 +1,22 @@
 """Tier 2 tests for ACUControlNode.
 
-Drive POSITION_TARGET / POSITION_ESTIMATION; assert on ACU_PITCH (mm) and
-ACU_ROLL (rad). The ACU only emits while its state machine is shifting,
-so target == current produces no traffic.
+Drive POSITION_TARGET / POSITION_ESTIMATION; assert on ACU_PITCH (Int16
+mm) and ACU_ROLL (Int16 centidegrees, scale = ACU_ROLL_CDEG_PER_DEG).
+The ACU only emits while its state machine is shifting, so target ==
+current produces no traffic.
 """
-
-import math
 
 import pytest
 from py_pkg.robot_specs import (
     ACU_PITCH_OUTPUT_LIMIT_M,
+    ACU_ROLL_CDEG_PER_DEG,
     ACU_ROLL_MAX_ANGLE_DEG,
 )
 
 # Saturation bounds in publish units. Mirror ACUControlNode's m -> mm and
-# deg -> rad conversions; update both sides if those change.
-PITCH_MAX_MM = ACU_PITCH_OUTPUT_LIMIT_M * 1000.0
-ROLL_MAX_RAD = math.radians(ACU_ROLL_MAX_ANGLE_DEG)
-
-# Float32 wire round-trip slack.
-TOL = 1e-4
+# deg -> centidegrees conversions; update if wire units change.
+PITCH_MAX_MM = int(round(ACU_PITCH_OUTPUT_LIMIT_M * 1000.0))
+ROLL_MAX_CDEG = int(round(ACU_ROLL_MAX_ANGLE_DEG * ACU_ROLL_CDEG_PER_DEG))
 
 
 class TestWiringSmoke:
@@ -112,8 +109,8 @@ class TestTimerEmits:
         # current pose stays at 0; target roll 20° creates error > position_tolerance
         # so the roll axis goes SHIFTING and publishes.
         h.publish_target_attitude(roll_deg=20.0, pitch_deg=0.0)
-        h.spin_until(lambda: len(h.received_roll_rad) >= 1, timeout=1.5)
-        assert len(h.received_roll_rad) >= 1
+        h.spin_until(lambda: len(h.received_roll_cdeg) >= 1, timeout=1.5)
+        assert len(h.received_roll_cdeg) >= 1
 
     def test_emits_pitch_within_one_second(self, acu_node_harness):
         h = acu_node_harness
@@ -128,33 +125,33 @@ class TestTimerEmits:
         h.publish_target_attitude(roll_deg=0.0, pitch_deg=0.0)
         h.publish_current_attitude(roll_deg=0.0, pitch_deg=0.0)
         h.spin_for(0.6)
-        assert h.received_roll_rad == []
+        assert h.received_roll_cdeg == []
         assert h.received_pitch_mm == []
 
 
 class TestRollSignConvention:
-    """Positive desired roll (relative to current=0) -> positive ACU_ROLL (rad).
+    """Positive desired roll (relative to current=0) -> positive ACU_ROLL (cdeg).
 
     Roll axis: target_pos_deg = current + Kp*(desired - current); published
-    value is math.radians(target_pos_deg). No sign inversion in the publish
-    path.
+    value is int(round(target_pos_deg * ACU_ROLL_CDEG_PER_DEG)). No sign
+    inversion in the publish path.
     """
 
     def test_positive_target_publishes_positive_value(self, acu_node_harness):
         h = acu_node_harness
         h.publish_target_attitude(roll_deg=20.0, pitch_deg=0.0)
-        h.spin_until(lambda: len(h.received_roll_rad) >= 1, timeout=1.5)
-        first = h.received_roll_rad[0]
-        assert first > 0, f"expected positive roll rad, got {h.received_roll_rad}"
-        assert abs(first) <= ROLL_MAX_RAD + TOL
+        h.spin_until(lambda: len(h.received_roll_cdeg) >= 1, timeout=1.5)
+        first = h.received_roll_cdeg[0]
+        assert first > 0, f"expected positive roll cdeg, got {h.received_roll_cdeg}"
+        assert abs(first) <= ROLL_MAX_CDEG
 
     def test_negative_target_publishes_negative_value(self, acu_node_harness):
         h = acu_node_harness
         h.publish_target_attitude(roll_deg=-20.0, pitch_deg=0.0)
-        h.spin_until(lambda: len(h.received_roll_rad) >= 1, timeout=1.5)
-        first = h.received_roll_rad[0]
-        assert first < 0, f"expected negative roll rad, got {h.received_roll_rad}"
-        assert abs(first) <= ROLL_MAX_RAD + TOL
+        h.spin_until(lambda: len(h.received_roll_cdeg) >= 1, timeout=1.5)
+        first = h.received_roll_cdeg[0]
+        assert first < 0, f"expected negative roll cdeg, got {h.received_roll_cdeg}"
+        assert abs(first) <= ROLL_MAX_CDEG
 
 
 class TestPitchSignConvention:
@@ -166,7 +163,7 @@ class TestPitchSignConvention:
         h.spin_until(lambda: len(h.received_pitch_mm) >= 1, timeout=1.5)
         first = h.received_pitch_mm[0]
         assert first > 0, f"expected positive pitch mm, got {h.received_pitch_mm}"
-        assert abs(first) <= PITCH_MAX_MM + TOL
+        assert abs(first) <= PITCH_MAX_MM
 
     def test_negative_target_publishes_negative_value(self, acu_node_harness):
         h = acu_node_harness
@@ -174,7 +171,7 @@ class TestPitchSignConvention:
         h.spin_until(lambda: len(h.received_pitch_mm) >= 1, timeout=1.5)
         first = h.received_pitch_mm[0]
         assert first < 0, f"expected negative pitch mm, got {h.received_pitch_mm}"
-        assert abs(first) <= PITCH_MAX_MM + TOL
+        assert abs(first) <= PITCH_MAX_MM
 
 
 class TestSaturation:
@@ -186,21 +183,21 @@ class TestSaturation:
         h = acu_node_harness
         h.publish_target_attitude(roll_deg=100.0, pitch_deg=0.0)
         h.spin_for(0.6)
-        assert len(h.received_roll_rad) >= 1
-        for v in h.received_roll_rad:
-            assert abs(v) <= ROLL_MAX_RAD + TOL, (
-                f"published roll {v} rad exceeds ROLL_MAX_RAD={ROLL_MAX_RAD}"
+        assert len(h.received_roll_cdeg) >= 1
+        for v in h.received_roll_cdeg:
+            assert abs(v) <= ROLL_MAX_CDEG, (
+                f"published roll {v} cdeg exceeds ROLL_MAX_CDEG={ROLL_MAX_CDEG}"
             )
-        assert h.received_roll_rad[-1] == pytest.approx(ROLL_MAX_RAD, abs=TOL)
+        assert h.received_roll_cdeg[-1] == ROLL_MAX_CDEG
 
     def test_roll_saturates_at_min_for_negative_target(self, acu_node_harness):
         h = acu_node_harness
         h.publish_target_attitude(roll_deg=-100.0, pitch_deg=0.0)
         h.spin_for(0.6)
-        assert len(h.received_roll_rad) >= 1
-        for v in h.received_roll_rad:
-            assert abs(v) <= ROLL_MAX_RAD + TOL
-        assert h.received_roll_rad[-1] == pytest.approx(-ROLL_MAX_RAD, abs=TOL)
+        assert len(h.received_roll_cdeg) >= 1
+        for v in h.received_roll_cdeg:
+            assert abs(v) <= ROLL_MAX_CDEG
+        assert h.received_roll_cdeg[-1] == -ROLL_MAX_CDEG
 
     def test_pitch_saturates_at_max(self, acu_node_harness):
         # 60° far exceeds the 0.07 m mass-shifter limit, well below the
@@ -210,10 +207,10 @@ class TestSaturation:
         h.spin_for(0.6)
         assert len(h.received_pitch_mm) >= 1
         for v in h.received_pitch_mm:
-            assert abs(v) <= PITCH_MAX_MM + TOL, (
+            assert abs(v) <= PITCH_MAX_MM, (
                 f"published pitch {v} mm exceeds PITCH_MAX_MM={PITCH_MAX_MM}"
             )
-        assert h.received_pitch_mm[-1] == pytest.approx(PITCH_MAX_MM, abs=TOL)
+        assert h.received_pitch_mm[-1] == PITCH_MAX_MM
 
 
 class TestPositionToleranceDeadband:
@@ -224,7 +221,7 @@ class TestPositionToleranceDeadband:
         h = acu_node_harness
         h.publish_target_attitude(roll_deg=0.5, pitch_deg=0.0)
         h.spin_for(0.6)
-        assert h.received_roll_rad == []
+        assert h.received_roll_cdeg == []
 
     def test_pitch_within_tolerance_silent(self, acu_node_harness):
         h = acu_node_harness
@@ -240,11 +237,11 @@ class TestQuiescenceAfterShift:
     def test_roll_saturated_settles_to_no_new_emissions(self, acu_node_harness):
         h = acu_node_harness
         h.publish_target_attitude(roll_deg=100.0, pitch_deg=0.0)
-        h.spin_until(lambda: len(h.received_roll_rad) >= 2, timeout=1.5)
-        early_count = len(h.received_roll_rad)
+        h.spin_until(lambda: len(h.received_roll_cdeg) >= 2, timeout=1.5)
+        early_count = len(h.received_roll_cdeg)
         # After settling at the clamp, no new emissions; allow 1 for slack.
         h.spin_for(0.6)
-        late_count = len(h.received_roll_rad)
+        late_count = len(h.received_roll_cdeg)
         assert late_count - early_count <= 1, (
-            f"expected quiescence after saturation, got {h.received_roll_rad}"
+            f"expected quiescence after saturation, got {h.received_roll_cdeg}"
         )

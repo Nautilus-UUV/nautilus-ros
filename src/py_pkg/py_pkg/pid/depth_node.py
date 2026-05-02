@@ -6,7 +6,7 @@ import rclpy
 from geometry_msgs.msg import Pose
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
-from std_msgs.msg import Int32, UInt8
+from std_msgs.msg import Int16, UInt8
 
 from py_pkg import math_utils as SimMath
 from py_pkg.physics import gauge_pressure_pa, q_to_rpm
@@ -62,9 +62,7 @@ class DepthControlNode(Node):
         self.current_position = SimMath.Vector(
             init_pos.get("x"), init_pos.get("y"), init_pos.get("z")
         )
-        self.current_bladder_level = init_buoyancy_engine.get(
-            "initial_proportion_full"
-        )
+        self.current_bladder_level = init_buoyancy_engine.get("initial_proportion_full")
         self.bladder_volume = init_buoyancy_engine.get("tank_volume")
         self.current_time = self.get_clock().now().nanoseconds / 1e9
 
@@ -110,9 +108,7 @@ class DepthControlNode(Node):
     def target_pose_callback(self, msg: Pose):
         self.target_pressure_pa = float(msg.position.z)
         self.control_system.target_pressure_pa = self.target_pressure_pa
-        self.get_logger().info(
-            f"Updated target pressure: {self.target_pressure_pa} Pa"
-        )
+        self.get_logger().info(f"Updated target pressure: {self.target_pressure_pa} Pa")
 
     def current_pressure_callback(self, msg):
         # EXTERNAL_PRESSURE is absolute Pa; the controller works in gauge.
@@ -130,7 +126,7 @@ class DepthControlNode(Node):
             self.current_time,
         )
 
-        msg = Int32()
+        msg = Int16()
         self.motor_rpm = q_to_rpm(self.control_output, self.bladder_volume)
         min_rpm = init_motor.get("min_rpm")
         max_rpm = init_motor.get("max_rpm")

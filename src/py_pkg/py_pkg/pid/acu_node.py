@@ -3,9 +3,10 @@
 
 Roll: AxisController (deg in, deg out). Pitch: MassShifterController
 (deg in, m out). Reads roll/pitch from POSITION_ESTIMATION/TARGET
-quaternions; publishes ACU_ROLL (rad) and ACU_PITCH (mm) — the units
-the HAL bridge and EPOS driver expect. Step conversion lives at the
-EPOS driver, not here.
+quaternions; publishes ACU_ROLL (Int16 centidegrees, scale =
+ACU_ROLL_CDEG_PER_DEG) and ACU_PITCH (Int16 mm) — the wire format the
+HAL bridge and EPOS driver expect. Step conversion lives at the EPOS
+driver, not here.
 """
 
 import math
@@ -14,18 +15,18 @@ import rclpy
 from geometry_msgs.msg import Pose
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
-from std_msgs.msg import Float32
+from std_msgs.msg import Int16
 
 from py_pkg.math_utils import quaternion_to_roll_pitch
 from py_pkg.pid.acu_axis_controller import AxisController, MassShifterController
 from py_pkg.pid.acu_pitch_config import init_acu_pitch
 from py_pkg.pid.acu_roll_config import init_acu_roll
+from py_pkg.robot_specs import ACU_ROLL_CDEG_PER_DEG
 from py_pkg.uuv_ros_core import (
     UUVTopics,
     create_publisher_for_topic,
     create_subscription_for_topic,
 )
-
 
 # Pitch PID runs in metres (mass-shifter stroke); ACU_PITCH topic is mm.
 _M_TO_MM = 1000.0
@@ -111,16 +112,16 @@ class ACUControlNode(Node):
         roll_cmd = self.roll_axis.update(self.target_roll_deg)
 
         if pitch_cmd is not None:
-            msg = Float32()
-            msg.data = float(pitch_cmd * _M_TO_MM)
+            msg = Int16()
+            msg.data = int(round(pitch_cmd * _M_TO_MM))
             self.pitch_pub.publish(msg)
             self.get_logger().debug(f"Pitch position (mm): {msg.data}")
 
         if roll_cmd is not None:
-            msg = Float32()
-            msg.data = float(math.radians(roll_cmd))
+            msg = Int16()
+            msg.data = int(round(roll_cmd * ACU_ROLL_CDEG_PER_DEG))
             self.roll_pub.publish(msg)
-            self.get_logger().debug(f"Roll position (rad): {msg.data}")
+            self.get_logger().debug(f"Roll position (cdeg): {msg.data}")
 
 
 def main(args=None):
