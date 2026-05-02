@@ -6,7 +6,12 @@ from rclpy.node import Node
 import numpy as np
 from geometry_msgs.msg import Pose
 from std_msgs.msg import Float32MultiArray, String
-from .uuv_ros_core import UUVTopics, UUVQoS, TOPIC_MESSAGE_MAP
+from ..math_utils import quaternion_to_yaw, rpy_to_quaternion, wrap_angle
+from ..uuv_ros_core import (
+    UUVTopics,
+    create_publisher_for_topic,
+    create_subscription_for_topic,
+)
 
 
 class PathfindingNode(Node):
@@ -36,34 +41,23 @@ class PathfindingNode(Node):
         self.dubins_step = 2.0  # [m] step size along the path (arc + straight)
 
         # Current estimated pose (from EKF)
-        self.state_sub = self.create_subscription(
-            TOPIC_MESSAGE_MAP[UUVTopics.POSITION_ESTIMATION],  # Pose
-            UUVTopics.POSITION_ESTIMATION,
-            self._state_callback,
-            UUVQoS.SENSOR_STREAM,
+        self.state_sub = create_subscription_for_topic(
+            self, UUVTopics.POSITION_ESTIMATION, self._state_callback
         )
 
         # High-level commands: "start", "stop", "abort"
-        self.command_sub = self.create_subscription(
-            TOPIC_MESSAGE_MAP[UUVTopics.COMMAND],  # String
-            UUVTopics.COMMAND,
-            self._command_callback,
-            UUVQoS.COMMAND,
+        self.command_sub = create_subscription_for_topic(
+            self, UUVTopics.COMMAND, self._command_callback
         )
 
-        # Full path (flattened list of Poses)
-        self.path_sub = self.create_subscription(
-            TOPIC_MESSAGE_MAP[UUVTopics.PATH],  # Float32MultiArray
-            UUVTopics.PATH,
-            self._path_callback,
-            UUVQoS.CONTROL,
+        # Full path: flattened keypoints [x1, y1, z1, x2, y2, z2, ...]
+        self.path_sub = create_subscription_for_topic(
+            self, UUVTopics.PATH, self._path_callback
         )
 
         # Next waypoint Pose (what control should aim at)
-        self.position_target_pub = self.create_publisher(
-            TOPIC_MESSAGE_MAP[UUVTopics.POSITION_TARGET],  # Pose
-            UUVTopics.POSITION_TARGET,
-            UUVQoS.CONTROL,
+        self.position_target_pub = create_publisher_for_topic(
+            self, UUVTopics.POSITION_TARGET
         )
 
         self.keypoints: list[tuple[float, float, float]] = []
@@ -209,16 +203,8 @@ class PathfindingNode(Node):
         # the heading we need to turn to in order to go straight to the goal
         goal_yaw = math.atan2(dy, dx)
 
-        # Normalize angle difference goal_yaw - yaw0 to [-pi, pi]
-        def normalize_angle(angle):
-            while angle > math.pi:
-                angle -= 2.0 * math.pi
-            while angle < -math.pi:
-                angle += 2.0 * math.pi
-            return angle
-
         # angle difference of where we are facing and where we should face
-        delta_yaw = normalize_angle(goal_yaw - yaw0)
+        delta_yaw = wrap_angle(goal_yaw - yaw0)
 
         # If already roughly facing the goal, skip the turn
         if abs(delta_yaw) < 1e-3:
@@ -280,13 +266,6 @@ class PathfindingNode(Node):
 
         return points
 
-    def _quaternion_to_yaw(self, x: float, y: float, z: float, w: float) -> float:
-        """Extract yaw (rotation around Z) from a quaternion assuming ZYX convention."""
-        # yaw (z-axis rotation)
-        siny_cosp = 2.0 * (w * z + x * y)
-        cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
-        return math.atan2(siny_cosp, cosy_cosp)
-
     def _plan_trajectory_from_current_pose(self, goal_position):
         """
         Compute a trajectory from current_pose to goal_position.
@@ -303,7 +282,7 @@ class PathfindingNode(Node):
 
         # Extract yaw from quaternion (we ignore roll & pitch for planning here)
         q = self.current_pose.orientation
-        start_yaw = self._quaternion_to_yaw(q.x, q.y, q.z, q.w)
+        start_yaw = quaternion_to_yaw(q.x, q.y, q.z, q.w)
 
         # 2) Goal position
         gx, gy, gz = goal_position
@@ -380,7 +359,7 @@ class PathfindingNode(Node):
             pose.position.z = start_z + t * dz_total
 
             # Orientation from roll=0, constant pitch, yaw_i
-            qx, qy, qz, qw = self._rpy_to_quaternion(0.0, pitch, yaw)
+            qx, qy, qz, qw = rpy_to_quaternion(0.0, pitch, yaw)
             pose.orientation.x = qx
             pose.orientation.y = qy
             pose.orientation.z = qz
@@ -524,23 +503,6 @@ class PathfindingNode(Node):
                     f"Replanning from current pose to current keypoint."
                 )
                 self._plan_trajectory_to_current_keypoint()
-
-    def _rpy_to_quaternion(self, roll: float, pitch: float, yaw: float):
-        """Convert roll, pitch, yaw (in radians) to a quaternion (x, y, z, w)."""
-        cy = math.cos(yaw * 0.5)
-        sy = math.sin(yaw * 0.5)
-        cp = math.cos(pitch * 0.5)
-        sp = math.sin(pitch * 0.5)
-        cr = math.cos(roll * 0.5)
-        sr = math.sin(roll * 0.5)
-
-        qw = cr * cp * cy + sr * sp * sy
-        qx = sr * cp * cy - cr * sp * sy
-        qy = cr * sp * cy + sr * cp * sy
-        qz = cr * cp * sy - sr * sp * cy
-
-        return qx, qy, qz, qw
-
 
 def main(args=None):
     rclpy.init(args=args)

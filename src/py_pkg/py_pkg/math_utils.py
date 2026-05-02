@@ -1,10 +1,8 @@
-#Copied from divetest files: depth_control_node_SimMath.py
+# Copied from divetest files: depth_control_node_SimMath.py
 
 import numpy as np
 
-
 pi = np.pi
-
 
 
 class Vector:
@@ -33,9 +31,7 @@ class Vector:
             z (float): The z-coordinate value (default is 0).
         """
 
-        self.vec : np.ndarray = np.array([x, y, z])
-
-
+        self.vec: np.ndarray = np.array([x, y, z])
 
     def x(self, set: float | int | None = None) -> float:
         """
@@ -50,8 +46,6 @@ class Vector:
 
         return self.vec[0]
 
-
-
     def y(self, set: float | int | None = None) -> float:
         """
         Returns the y-coordinate value of the vector.
@@ -65,8 +59,6 @@ class Vector:
 
         return self.vec[1]
 
-
-
     def z(self, set: float | int | None = None) -> float:
         """
         Returns the z-coordinate value of the vector.
@@ -79,10 +71,8 @@ class Vector:
             self.vec[2] = set
 
         return self.vec[2]
-    
 
-
-    def rotate(self, angle: float, axis: 'Vector') -> 'Vector':
+    def rotate(self, angle: float, axis: "Vector") -> "Vector":
         """
         Rotates the vector by the given angle around the specified axis.
 
@@ -108,18 +98,18 @@ class Vector:
         dot_product = normalized_axis.dot(self)
 
         # Compute the rotated vector
-        rotated_vec = self * cos_angle + cross_product * sin_angle + normalized_axis * dot_product * (1 - cos_angle)
+        rotated_vec = (
+            self * cos_angle
+            + cross_product * sin_angle
+            + normalized_axis * dot_product * (1 - cos_angle)
+        )
 
         return rotated_vec
-    
-
 
     def magnitude(self) -> float:
         return float(np.linalg.norm(self.vec))
 
-    
-
-    def normalized(self) -> 'Vector':
+    def normalized(self) -> "Vector":
         """
         Returns a normalized version of the vector.
 
@@ -131,20 +121,16 @@ class Vector:
 
         if norm == 0:
             return Vector(0, 0, 0)
-        
+
         normalized_vec = self.vec / norm
 
         return Vector(normalized_vec[0], normalized_vec[1], normalized_vec[2])
-    
 
-
-    def modulo(self, val: float) -> 'Vector':
+    def modulo(self, val: float) -> "Vector":
 
         return Vector(self.x() % val, self.y() % val, self.z() % val)
-    
 
-
-    def loop(self, low: float, high: float) -> 'Vector':
+    def loop(self, low: float, high: float) -> "Vector":
         """
         Loops the vector's coordinates between the specified low and high values.
 
@@ -164,16 +150,11 @@ class Vector:
         looped_z = ((self.z() - low) % range_size) + low
 
         return Vector(looped_x, looped_y, looped_z)
-        
-    
 
-
-    def dot(self, other: 'Vector') -> float:
+    def dot(self, other: "Vector") -> float:
         return np.dot(self.vec, other.vec)
-    
 
-
-    def cross(self, other: 'Vector') -> 'Vector':
+    def cross(self, other: "Vector") -> "Vector":
         """
         Computes the cross product of two vectors.
 
@@ -184,13 +165,10 @@ class Vector:
             Vector: A new Vector instance representing the cross product of the two vectors.
         """
 
-
         cross_product = np.cross(self.vec, other.vec)
         return Vector(cross_product[0], cross_product[1], cross_product[2])
-    
 
-
-    def __add__(self, other: 'Vector') -> 'Vector':
+    def __add__(self, other: "Vector") -> "Vector":
         """
         Performs component-wise addition with another vector.
 
@@ -203,11 +181,8 @@ class Vector:
 
         added_vec = self.vec + other.vec
         return Vector(added_vec[0], added_vec[1], added_vec[2])
-    
 
-
-
-    def __sub__(self, other: 'Vector') -> 'Vector':
+    def __sub__(self, other: "Vector") -> "Vector":
         """
         Performs component-wise subtraction with another vector.
 
@@ -220,11 +195,8 @@ class Vector:
 
         subtracted_vec = self.vec - other.vec
         return Vector(subtracted_vec[0], subtracted_vec[1], subtracted_vec[2])
-    
 
-
-
-    def __mul__(self, scalar: int | float) -> 'Vector':
+    def __mul__(self, scalar: int | float) -> "Vector":
         """
         Multiply the vector by a scalar or perform dot product with another vector.
 
@@ -240,11 +212,8 @@ class Vector:
 
         multiplied_vec = self.vec * scalar
         return Vector(multiplied_vec[0], multiplied_vec[1], multiplied_vec[2])
-    
 
-
-
-    def __truediv__(self, scalar: int | float) -> 'Vector':
+    def __truediv__(self, scalar: int | float) -> "Vector":
         """
         Performs scalar division on the vector.
 
@@ -258,10 +227,8 @@ class Vector:
         divided_vec = self.vec / scalar
 
         return Vector(divided_vec[0], divided_vec[1], divided_vec[2])
-    
 
-
-    def __neg__(self) -> 'Vector':
+    def __neg__(self) -> "Vector":
         """
         Performs unary negation on the vector.
 
@@ -272,8 +239,6 @@ class Vector:
         negated_vec = -self.vec
 
         return Vector(negated_vec[0], negated_vec[1], negated_vec[2])
-    
-
 
     def __str__(self) -> str:
         """
@@ -285,11 +250,8 @@ class Vector:
 
         return f"Vector({self.vec[0]}, {self.vec[1]}, {self.vec[2]})"
 
-    
 
-
-
-def euler_to_direction(roll: float, pitch: float, yaw: float) -> 'Vector':
+def euler_to_direction(roll: float, pitch: float, yaw: float) -> "Vector":
     """
     Converts Euler angles to a direction vector.
 
@@ -307,6 +269,66 @@ def euler_to_direction(roll: float, pitch: float, yaw: float) -> 'Vector':
     z = np.sin(pitch)
     return Vector(x, y, z)
 
+
+def quaternion_to_roll_pitch(qx: float, qy: float, qz: float, qw: float) -> tuple:
+    """Extract roll and pitch (radians) from a quaternion (x, y, z, w).
+
+    ZYX Tait-Bryan convention; matches the math used in
+    integration/trim_and_buoyancy_test._euler_from_quaternion.
+    """
+    sinr_cosp = 2.0 * (qw * qx + qy * qz)
+    cosr_cosp = 1.0 - 2.0 * (qx * qx + qy * qy)
+    roll = np.arctan2(sinr_cosp, cosr_cosp)
+
+    sinp = 2.0 * (qw * qy - qz * qx)
+    if abs(sinp) >= 1:
+        pitch = np.copysign(np.pi / 2, sinp)
+    else:
+        pitch = np.arcsin(sinp)
+    return roll, pitch
+
+
+def quaternion_to_yaw(qx: float, qy: float, qz: float, qw: float) -> float:
+    """Extract yaw (rotation around Z, radians) from a quaternion (x, y, z, w).
+
+    ZYX Tait-Bryan convention; pairs with ``quaternion_to_roll_pitch``.
+    """
+    siny_cosp = 2.0 * (qw * qz + qx * qy)
+    cosy_cosp = 1.0 - 2.0 * (qy * qy + qz * qz)
+    return float(np.arctan2(siny_cosp, cosy_cosp))
+
+
+def rpy_to_quaternion(roll: float, pitch: float, yaw: float) -> tuple:
+    """Convert (roll, pitch, yaw) in radians to a quaternion (x, y, z, w).
+
+    ZYX Tait-Bryan convention; round-trips through
+    ``quaternion_to_roll_pitch`` + ``quaternion_to_yaw``.
+    """
+    cy = np.cos(yaw * 0.5)
+    sy = np.sin(yaw * 0.5)
+    cp = np.cos(pitch * 0.5)
+    sp = np.sin(pitch * 0.5)
+    cr = np.cos(roll * 0.5)
+    sr = np.sin(roll * 0.5)
+
+    qw = cr * cp * cy + sr * sp * sy
+    qx = sr * cp * cy - cr * sp * sy
+    qy = cr * sp * cy + sr * cp * sy
+    qz = cr * cp * sy - sr * sp * cy
+    return float(qx), float(qy), float(qz), float(qw)
+
+
+def wrap_angle(angle: float) -> float:
+    """Wrap an angle (radians) into the principal range near [-pi, pi].
+
+    Subtracts/adds 2π until the value lies in [-pi, pi]; values already in
+    that range — including the endpoints ±pi — are returned unchanged.
+    """
+    while angle > np.pi:
+        angle -= 2.0 * np.pi
+    while angle < -np.pi:
+        angle += 2.0 * np.pi
+    return float(angle)
 
 
 def euler_to_rotation_matrix(euler_angles: Vector) -> np.ndarray:
@@ -326,32 +348,28 @@ def euler_to_rotation_matrix(euler_angles: Vector) -> np.ndarray:
     yaw = euler_angles.z()
 
     # Rotation matrix for roll
-    R_x = np.array([
-        [1,             0,             0],
-        [0,  np.cos(roll), -np.sin(roll)],
-        [0,  np.sin(roll),  np.cos(roll)]
-    ])
+    R_x = np.array(
+        [[1, 0, 0], [0, np.cos(roll), -np.sin(roll)], [0, np.sin(roll), np.cos(roll)]]
+    )
 
     # Rotation matrix for pitch
-    R_y = np.array([
-        [ np.cos(pitch),   0,  np.sin(pitch)],
-        [             0,   1,              0],
-        [-np.sin(pitch),   0,  np.cos(pitch)]
-    ])
+    R_y = np.array(
+        [
+            [np.cos(pitch), 0, np.sin(pitch)],
+            [0, 1, 0],
+            [-np.sin(pitch), 0, np.cos(pitch)],
+        ]
+    )
 
     # Rotation matrix for yaw
-    R_z = np.array([
-        [ np.cos(yaw), -np.sin(yaw),    0],
-        [ np.sin(yaw),  np.cos(yaw),    0],
-        [           0,            0,    1]
-    ])
+    R_z = np.array(
+        [[np.cos(yaw), -np.sin(yaw), 0], [np.sin(yaw), np.cos(yaw), 0], [0, 0, 1]]
+    )
 
     # Combined rotation matrix
     R = np.dot(R_z, np.dot(R_y, R_x))
 
     return R
-
-
 
 
 def lerp(start: float, end: float, t: float) -> float:
@@ -369,9 +387,6 @@ def lerp(start: float, end: float, t: float) -> float:
     """
 
     return start + ((end - start) * t)
-
-
-
 
 
 def clamp(val: float, min: float, max: float) -> float:
@@ -397,10 +412,6 @@ def clamp(val: float, min: float, max: float) -> float:
     return val
 
 
-
-
-
-
 def clamp_mag(val: float, max_mag: float) -> float:
     """
     Clamps the value `val` between -max_mag and max_mag.
@@ -413,7 +424,7 @@ def clamp_mag(val: float, max_mag: float) -> float:
         float: The clamped value.
 
     """
-    
+
     if val > max_mag:
         return max_mag
 
@@ -421,9 +432,6 @@ def clamp_mag(val: float, max_mag: float) -> float:
         return -max_mag
 
     return val
-
-
-
 
 
 def sign(val: int | float) -> int:
@@ -438,8 +446,8 @@ def sign(val: int | float) -> int:
     """
     if val > 0:
         return 1
-    
+
     if val == 0:
         return 0
-    
+
     return -1
