@@ -81,7 +81,7 @@ The system is structured as a two-stage processing pipeline:
 │  IMU Hardware   │
 │  (or simulator) │
 └────────┬────────┘
-         │  /imu1
+         │  /imu/left
          │  sensor_msgs/Imu
          ▼
 ┌─────────────────────────────────────────┐
@@ -92,7 +92,7 @@ The system is structured as a two-stage processing pipeline:
 │  velocity channels independently.       │
 │  alpha = 0.5                            │
 └────────┬────────────────────────────────┘
-         │  /filtered_imu_data
+         │  /imu/filtered/left
          │  sensor_msgs/Imu
          ▼
 ┌─────────────────────────────────────────┐
@@ -103,8 +103,8 @@ The system is structured as a two-stage processing pipeline:
 │  Prediction: accel + gyro               │
 │  Update: accel as gravity reference     │
 └────────┬────────────────────────────────┘
-         │  /ekf_position
-         │  geometry_msgs/Point
+         │  /position/estimation
+         │  geometry_msgs/Pose
          ▼
 ┌─────────────────┐
 │  Downstream     │
@@ -137,8 +137,8 @@ The active implementation package. Contains the full IMU preprocessing and EKF s
 
 | Console Script | Module | Entry Function |
 |---|---|---|
-| `ekf_prefilter` | `py_pkg.ekf_prefilter` | `main` |
-| `ekf_node` | `py_pkg.ekf_node` | `main` |
+| `ekf_prefilter` | `py_pkg.ekf_prefilter.ekf_prefilter` | `main` |
+| `ekf_node` | `py_pkg.ekf.ekf_node` | `main` |
 
 > **Note:** `package.xml` contains a typo on the `geometry_msgs` dependency (`geomety_msgs`). This may cause dependency resolution issues with some tools. The Python imports work because the packages are installed at the system level regardless.
 
@@ -177,13 +177,13 @@ The `CMakeLists.txt` sets compiler warnings (`-Wall -Wextra -Wpedantic`) and inc
 
 | Topic | Type | Description |
 |---|---|---|
-| `/imu1` | `sensor_msgs/Imu` | Raw IMU data from hardware |
+| `/imu/left` (`UUVTopics.IMU_LEFT`) | `sensor_msgs/Imu` | Raw IMU data from hardware |
 
 **Publications:**
 
 | Topic | Type | Description |
 |---|---|---|
-| `/filtered_imu_data` | `sensor_msgs/Imu` | Smoothed IMU data |
+| `/imu/filtered/left` (`UUVTopics.IMU_FILTERED_LEFT`) | `sensor_msgs/Imu` | Smoothed IMU data |
 
 **Algorithm — Exponential Moving Average (EMA):**
 
@@ -220,13 +220,13 @@ The published message preserves the input covariance fields. The `orientation_co
 
 | Topic | Type | Description |
 |---|---|---|
-| `/filtered_imu_data` | `sensor_msgs/Imu` | Preprocessed IMU data from `ekf_prefilter` |
+| `/imu/filtered/left` (`UUVTopics.IMU_FILTERED_LEFT`) | `sensor_msgs/Imu` | Preprocessed IMU data from `ekf_prefilter` |
 
 **Publications:**
 
 | Topic | Type | Description |
 |---|---|---|
-| `/ekf_position` | `geometry_msgs/Point` | Estimated 3D position (x, y, z) in meters |
+| `/position/estimation` (`UUVTopics.POSITION_ESTIMATION`) | `geometry_msgs/Pose` | Estimated 3D position + orientation quaternion |
 
 **ROS 2 Parameters:**
 
@@ -240,11 +240,11 @@ The published message preserves the input covariance fields. The `orientation_co
 2. Extract `angular_velocity` (wx, wy, wz) as a NumPy array.
 3. Call `ekf.predict(accel, gyro)` — propagate state forward by `dt`.
 4. Call `ekf.update(accel)` — correct attitude estimate using gravity reference.
-5. Read position estimate from `ekf.x[0:3]`.
-6. Publish as `geometry_msgs/Point`.
+5. Read position (`ekf.x[0:3]`) and orientation quaternion (`ekf.x[6:10]`) from the EKF state.
+6. Publish as `geometry_msgs/Pose` (position + orientation).
 7. Log current position to ROS console at INFO level.
 
-> **Note:** Only position is currently published. The full 10-dimensional state (including velocity and quaternion orientation) is computed inside the EKF but not exposed on any topic.
+> **Note:** Velocity (`ekf.x[3:6]`) is computed inside the EKF but not exposed on any topic.
 
 ---
 
@@ -390,9 +390,9 @@ All orientation operations use unit quaternions `q = [qx, qy, qz, qw]` (scalar-l
 
 | Topic | Message Type | Publisher | Subscriber | Description |
 |---|---|---|---|---|
-| `/imu1` | `sensor_msgs/Imu` | Hardware / simulator | `ekf_prefilter` | Raw IMU measurements |
-| `/filtered_imu_data` | `sensor_msgs/Imu` | `ekf_prefilter` | `ekf_node` | EMA-smoothed IMU data |
-| `/ekf_position` | `geometry_msgs/Point` | `ekf_node` | Downstream | Estimated 3D position |
+| `/imu/left` (`UUVTopics.IMU_LEFT`) | `sensor_msgs/Imu` | Hardware / simulator | `ekf_prefilter` | Raw IMU measurements |
+| `/imu/filtered/left` (`UUVTopics.IMU_FILTERED_LEFT`) | `sensor_msgs/Imu` | `ekf_prefilter` | `ekf_node` | EMA-smoothed IMU data |
+| `/position/estimation` (`UUVTopics.POSITION_ESTIMATION`) | `geometry_msgs/Pose` | `ekf_node` | Downstream | Estimated pose (position + orientation) |
 
 ### Message Structures Used
 
@@ -405,11 +405,10 @@ float64[9] angular_velocity_covariance      # passed through
 float64[9] orientation_covariance           # set to -1 at [0] = no orientation
 ```
 
-**`geometry_msgs/Point`** — fields published:
+**`geometry_msgs/Pose`** — fields published:
 ```
-float64 x   # position east (m)
-float64 y   # position north (m)
-float64 z   # position up/depth (m)
+geometry_msgs/Point      position      # x, y, z (m)
+geometry_msgs/Quaternion orientation   # qx, qy, qz, qw (unit quaternion, body→world)
 ```
 
 ---
@@ -517,19 +516,19 @@ ros2 run py_pkg ekf_node
 ros2 topic list
 
 # Inspect raw IMU data
-ros2 topic echo /imu1
+ros2 topic echo /imu/left
 
 # Inspect filtered IMU data
-ros2 topic echo /filtered_imu_data
+ros2 topic echo /imu/filtered/left
 
-# Inspect EKF position output
-ros2 topic echo /ekf_position
+# Inspect EKF pose output
+ros2 topic echo /position/estimation
 
 # Check topic publication rate
-ros2 topic hz /ekf_position
+ros2 topic hz /position/estimation
 
 # Manually inject a test IMU message
-ros2 topic pub /imu1 sensor_msgs/msg/Imu \
+ros2 topic pub /imu/left sensor_msgs/msg/Imu \
   "{linear_acceleration: {x: 0.0, y: 0.0, z: 9.81}, \
     angular_velocity: {x: 0.0, y: 0.0, z: 0.0}}"
 ```
@@ -602,9 +601,9 @@ The EKF assumes a constant time step `dt`. If IMU messages arrive at variable in
 
 Position is estimated by double-integrating acceleration. Any small errors in gravity compensation or bias accumulate quadratically over time. Without an absolute position reference (GPS, acoustic positioning), the position estimate will drift unboundedly. The current system is useful only for short-duration relative position tracking.
 
-### Only Position Is Published
+### Velocity Is Not Published
 
-The full 10-dimensional state (position, velocity, quaternion) is computed but only position is published on `/ekf_position`. Velocity and orientation are available in `ekf.x` but not exposed as ROS topics. Downstream nodes cannot access attitude or velocity estimates.
+Position and orientation are published as a `geometry_msgs/Pose` on `/position/estimation`, but velocity (`ekf.x[3:6]`) is computed and discarded. Downstream nodes cannot currently access velocity estimates.
 
 ### No Launch File
 

@@ -23,9 +23,9 @@ setup(
     },
     entry_points={
         "console_scripts": [
-            "ekf_prefilter = py_pkg.ekf_prefilter:main",
-            "ekf_node = py_pkg.ekf_node:main",
-            "pathfinding_node = py_pkg.pathfinding:main",
+            "pathfinding_node = py_pkg.path.pathfinding:main",
+            "ekf_prefilter = py_pkg.ekf_prefilter.ekf_prefilter:main",
+            "ekf_node = py_pkg.ekf.ekf_node:main",
             "bcu_oscillator = py_pkg.integration.bcu_oscillator:main",
             "acu_oscillator = py_pkg.integration.acu_oscillator:main",
             "neutral_buoyancy_test = py_pkg.integration.neutral_buoyancy_test:main",

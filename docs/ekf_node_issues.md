@@ -79,14 +79,14 @@ F[3:6, 6:9] = -skew(accel_world) * dt
 ```python
 """
 ROS2 Node ...
-Subscribes to: /filtered_imu_data (sensor_msgs/Imu)
+Subscribes to: /imu/filtered/left (sensor_msgs/Imu)
 Publishes to:
 """
 ```
 
 The `Publishes to:` line is empty.
 
-**Fix:** Add `/ekf_position (geometry_msgs/Point)`.
+**Fix:** Add `/position/estimation (geometry_msgs/Pose)`.
 
 ---
 

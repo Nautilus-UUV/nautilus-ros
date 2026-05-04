@@ -39,7 +39,7 @@ pip-wheel-metadata/
 # === Misc ===
 .colcon/
 .colcon_install_layout
-
-# === Nix === 
+CLAUDE.md
 flake.lock
 flake.nix
+
