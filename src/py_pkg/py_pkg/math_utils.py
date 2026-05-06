@@ -273,8 +273,7 @@ def euler_to_direction(roll: float, pitch: float, yaw: float) -> "Vector":
 def quaternion_to_roll_pitch(qx: float, qy: float, qz: float, qw: float) -> tuple:
     """Extract roll and pitch (radians) from a quaternion (x, y, z, w).
 
-    ZYX Tait-Bryan convention; matches the math used in
-    integration/trim_and_buoyancy_test._euler_from_quaternion.
+    ZYX Tait-Bryan convention.
     """
     sinr_cosp = 2.0 * (qw * qx + qy * qz)
     cosr_cosp = 1.0 - 2.0 * (qx * qx + qy * qy)

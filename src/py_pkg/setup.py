@@ -26,11 +26,7 @@ setup(
             "pathfinding_node = py_pkg.path.pathfinding:main",
             "ekf_prefilter = py_pkg.ekf_prefilter.ekf_prefilter:main",
             "ekf_node = py_pkg.ekf.ekf_node:main",
-            "bcu_oscillator = py_pkg.integration.bcu_oscillator:main",
-            "acu_oscillator = py_pkg.integration.acu_oscillator:main",
-            "neutral_buoyancy_test = py_pkg.integration.neutral_buoyancy_test:main",
-            "trim_and_buoyancy_test = py_pkg.integration.trim_and_buoyancy_test:main",
-            "dive_test_for_ekf = py_pkg.integration.dive_test_for_ekf:main",
+            "mqtt_bridge_node = py_pkg.mqtt.mqtt_bridge_node:main",
         ],
     },
 )

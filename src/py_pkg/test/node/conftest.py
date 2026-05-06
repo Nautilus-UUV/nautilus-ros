@@ -22,9 +22,10 @@ import time
 import pytest
 import rclpy
 from geometry_msgs.msg import Pose
+from nautilus_msgs.msg import MissionCommand
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
-from std_msgs.msg import Float32MultiArray, Int16, Int32, String, UInt8
+from std_msgs.msg import Int16, Int32, String, UInt8
 
 from py_pkg.path.pathfinding import PathfindingNode
 from py_pkg.pid.acu_node import ACUControlNode
@@ -283,6 +284,9 @@ class _PathfindingTesterNode(Node):
         self.estimation_pub = create_publisher_for_topic(
             self, UUVTopics.POSITION_ESTIMATION
         )
+        self.external_pressure_pub = create_publisher_for_topic(
+            self, UUVTopics.EXTERNAL_PRESSURE
+        )
         self.command_pub = create_publisher_for_topic(self, UUVTopics.COMMAND)
         self.path_pub = create_publisher_for_topic(self, UUVTopics.PATH)
         self.target_sub = create_subscription_for_topic(
@@ -300,17 +304,29 @@ class _PathfindingTesterNode(Node):
         msg.orientation.w = 1.0
         self.estimation_pub.publish(msg)
 
+    def publish_external_pressure(self, value_pa: int) -> None:
+        # EXTERNAL_PRESSURE is absolute Pa; the node converts to gauge.
+        msg = Int32()
+        msg.data = int(value_pa)
+        self.external_pressure_pub.publish(msg)
+
     def publish_command(self, command: str) -> None:
         msg = String()
         msg.data = command
         self.command_pub.publish(msg)
 
-    def publish_path(self, keypoints) -> None:
-        msg = Float32MultiArray()
-        flat = []
-        for x, y, z in keypoints:
-            flat.extend([float(x), float(y), float(z)])
-        msg.data = flat
+    def publish_mission_command(
+        self,
+        mission_id: int,
+        target_pressure_pa: float = 0.0,
+        angle_rad: float = 0.0,
+        n_resurfaces: int = 0,
+    ) -> None:
+        msg = MissionCommand()
+        msg.mission_id = int(mission_id)
+        msg.target_pressure_pa = float(target_pressure_pa)
+        msg.angle_rad = float(angle_rad)
+        msg.n_resurfaces = int(n_resurfaces)
         self.path_pub.publish(msg)
 
 
@@ -327,11 +343,25 @@ class PathfindingNodeHarness(NodeHarness):
     def publish_pose_estimation(self, x: float, y: float, z: float) -> None:
         self.tester.publish_pose_estimation(x, y, z)
 
+    def publish_external_pressure(self, value_pa: int) -> None:
+        self.tester.publish_external_pressure(value_pa)
+
     def publish_command(self, command: str) -> None:
         self.tester.publish_command(command)
 
-    def publish_path(self, keypoints) -> None:
-        self.tester.publish_path(keypoints)
+    def publish_mission_command(
+        self,
+        mission_id: int,
+        target_pressure_pa: float = 0.0,
+        angle_rad: float = 0.0,
+        n_resurfaces: int = 0,
+    ) -> None:
+        self.tester.publish_mission_command(
+            mission_id,
+            target_pressure_pa=target_pressure_pa,
+            angle_rad=angle_rad,
+            n_resurfaces=n_resurfaces,
+        )
 
 
 @pytest.fixture

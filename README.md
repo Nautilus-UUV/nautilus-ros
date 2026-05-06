@@ -19,9 +19,7 @@ Prepared for C++ ROS2 nodes.
 
 ## Digital Twin Integration Testing
 
-To run integration testing of the whole system, follow the [nautilus-dave](https://github.com/Nautilus-UUV/nautilus-dave/tree/dev) repository Installation instructions.
-
-Then, the nodes in `src/py_pkg/py_pkg/integration` represent differnet test scenarios.
+To run integration testing of the whole system, follow the [nautilus-dave](https://github.com/Nautilus-UUV/nautilus-dave/tree/dev) repository Installation instructions, then drive the controller nodes (`bcu`, `acu`, `pid`) directly against the HAL bridge.
 
 ## Testing
 

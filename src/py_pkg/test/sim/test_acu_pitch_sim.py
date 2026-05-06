@@ -6,8 +6,8 @@ commanded direction. Negative-mm is the only in-range motion from the
 SDF resting pose; positive-mm would clamp to 0 and look static.
 
 Assertion is on (final - initial) so the test survives SDF link/joint
-pose changes. Composed lean (bridges + Gazebo + robot, no oscillator)
-so we don't race acu_oscillator for ACU_PITCH.
+pose changes. Composed lean (bridges + Gazebo + robot, no controller)
+so the test owns ACU_PITCH exclusively.
 """
 
 import os

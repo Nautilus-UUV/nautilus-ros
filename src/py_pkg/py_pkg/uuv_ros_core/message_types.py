@@ -12,10 +12,10 @@ Example:
 
 from can_msgs.msg import Frame
 from geometry_msgs.msg import Pose
+from nautilus_msgs.msg import MissionCommand
 from sensor_msgs.msg import Imu, Temperature
 from std_msgs.msg import (
     Float32,
-    Float32MultiArray,
     Int16,
     Int32,
     String,
@@ -48,7 +48,7 @@ TOPIC_MESSAGE_MAP = {
     UUVTopics.IMU_FILTERED_RIGHT: Imu,
     UUVTopics.POSITION_TARGET: Pose,
     UUVTopics.POSITION_ESTIMATION: Pose,
-    UUVTopics.PATH: Float32MultiArray,
+    UUVTopics.PATH: MissionCommand,
     UUVTopics.COMMAND: String,
     UUVTopics.CAN_OUT: Frame,
 }
