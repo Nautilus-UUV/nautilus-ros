@@ -17,10 +17,6 @@ Contains Python-based ROS2 nodes and auxiliary libraries:
 Prepared for C++ ROS2 nodes.
 
 
-## Digital Twin Integration Testing
-
-To run integration testing of the whole system, follow the [nautilus-dave](https://github.com/Nautilus-UUV/nautilus-dave/tree/dev) repository Installation instructions, then drive the controller nodes (`bcu`, `acu`, `pid`) directly against the HAL bridge.
-
 ## Testing
 
 Tests live in `src/py_pkg/test/`, organised in four tiers of increasing realism and cost:
@@ -29,7 +25,7 @@ Tests live in `src/py_pkg/test/`, organised in four tiers of increasing realism 
 |---|---|---|---|
 | 1 — unit | `test/unit/` | pure logic: PID, depth/ACU control system, physics, math | nothing |
 | 2 — node | `test/node/` | in-process `rclpy` nodes with stubbed I/O via a `NodeHarness` | `rclpy` only |
-| 3 — sim | `test/sim/` | end-to-end through the HAL into Gazebo, via `launch_testing`. Currently covers BCU bladder filling, ACU pitch/roll joints, and the IMU → prefilter → EKF pose pipeline | full DAVE workspace built |
+| 3 — sim | `test/sim/` | end-to-end through the HAL into Gazebo, via `launch_testing`. Covers BCU bladder filling, ACU pitch/roll joints, the IMU → prefilter → EKF pose pipeline, and the full closed-loop TRIM mission (both with the EKF in the loop and with a sim-only ground-truth pose bridge swapped in for it) | full DAVE workspace built |
 | 4 — HIL | `test/hil/` *(planned)* | same node code as Tier 2 against the real STM driver | bench hardware |
 
 Tiers 3 and 4 are marker-gated (`@pytest.mark.sim`, `@pytest.mark.hil`) and excluded from default runs by `pytest.ini`.
@@ -44,7 +40,12 @@ pytest test/                  # Tier 1 + 2 (sim/hil filtered out)
 pytest -m sim test/sim/ -v    # Tier 3 — requires built DAVE workspace
 ```
 
-### Tier 3 sim tests — running with the GUI
+### Digital Twin Integration Testing
+
+To run integration testing of the whole system, follow the [nautilus-dave](https://github.com/Nautilus-UUV/nautilus-dave/tree/dev) repository Installation instructions, then drive the controller nodes (`bcu`, `acu`, `pid`) directly against the HAL bridge.
+
+
+### [Tier 3 sim tests — running with the GUI](docs/running_sim.md)
 
 Tier 3 tests default to **headless** Gazebo (no window) so they run fast and don't need a display. To watch the world while a test runs, set the per-test env var and add `-s` (so pytest doesn't capture launch output):
 
@@ -52,11 +53,15 @@ Tier 3 tests default to **headless** Gazebo (no window) so they run fast and don
 source /opt/ros/jazzy/setup.bash
 source /home/girji/dave_ws/install/setup.bash    # nautilus_hal + dave_demos
 
-BCU_SIM_GUI=1 pytest -m sim test/sim/test_bcu_sim.py            -v -s
-ACU_SIM_GUI=1 pytest -m sim test/sim/test_acu_pitch_sim.py      -v -s
-ACU_SIM_GUI=1 pytest -m sim test/sim/test_acu_roll_sim.py       -v -s
-EKF_SIM_GUI=1 pytest -m sim test/sim/test_ekf_pipeline_sim.py   -v -s
+BCU_SIM_GUI=1     pytest -m sim test/sim/test_bcu_sim.py              -v -s
+ACU_SIM_GUI=1     pytest -m sim test/sim/test_acu_pitch_sim.py        -v -s
+ACU_SIM_GUI=1     pytest -m sim test/sim/test_acu_roll_sim.py         -v -s
+EKF_SIM_GUI=1     pytest -m sim test/sim/test_ekf_pipeline_sim.py     -v -s
+TRIM_SIM_GUI=1    pytest -m sim test/sim/test_trim_neutral_sim.py     -v -s
+TRIM_GT_SIM_GUI=1 pytest -m sim test/sim/test_trim_neutral_sim_gt.py  -v -s
 ```
+
+see [docs/running_sim.md](docs/running_sim.md).
 
 `pytest --collect-only -m sim test/sim/` only enumerates the tests.
 

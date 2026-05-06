@@ -5,6 +5,7 @@
 import rclpy
 from geometry_msgs.msg import Pose
 from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from std_msgs.msg import Int16, UInt8
 
@@ -68,7 +69,8 @@ class DepthControlNode(Node):
 
         self.control_output = 0.0
         self.motor_rpm = 0.0
-        self.target_pressure_pa = 0.0
+        # Held None until the first POSITION_TARGET arrives
+        self.target_pressure_pa: float | None = None
         self.current_pressure_pa = 0.0
 
         self.bcu_controller_rpm_publisher = create_publisher_for_topic(
@@ -118,6 +120,17 @@ class DepthControlNode(Node):
         )
 
     def control_loop(self):
+        if self.target_pressure_pa is None:
+            # No target yet — emit a zero-RPM hold so the BCU bridge
+            # doesn't drift, and skip the cascaded controller work.
+            zero_msg = Int16()
+            zero_msg.data = 0
+            self.bcu_controller_rpm_publisher.publish(zero_msg)
+            valves_off = UInt8()
+            valves_off.data = 0
+            self.bcu_valves_publisher.publish(valves_off)
+            return
+
         self.current_time = self.get_clock().now().nanoseconds / 1e9
         current_position = SimMath.Vector(0.0, 0.0, self.current_pressure_pa)
         self.control_output = self.control_system.calc_acc(
@@ -142,9 +155,6 @@ class DepthControlNode(Node):
         # delivered as a negative RPM command on the BCU bus.
         pump_rpm = int(-1 * self.motor_rpm)
 
-        # Pre-deadband q is the descent intent: a tiny sink command still
-        # opens valve 2 below the deep threshold, even when the pump RPM
-        # has been zeroed by the deadband.
         pump_rpm, valve1_open, valve2_open = select_pump_and_valves(
             self.current_pressure_pa,
             self.control_output,
@@ -169,13 +179,17 @@ class DepthControlNode(Node):
 
 
 def main(args=None):
+    # Catch SIGINT/SIGTERM so the process exits 0 instead of 1 on Ctrl-C —
+    # otherwise launch_testing's exit-code check intermittently fails.
     rclpy.init(args=args)
     depth_control_node = DepthControlNode()
     try:
         rclpy.spin(depth_control_node)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass
     finally:
         depth_control_node.destroy_node()
-        rclpy.shutdown()
+        rclpy.try_shutdown()
 
 
 if __name__ == "__main__":

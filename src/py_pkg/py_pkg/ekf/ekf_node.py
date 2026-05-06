@@ -33,6 +33,12 @@ class EKFNode(Node):
         self._last_stamp = None  # tracks previous message timestamp
         self._initialized = False  # whether initial orientation has been set
 
+        # Log throttle: emit the position line every Nth callback so the
+        # ~50 Hz IMU stream doesn't flood the console (and CPU on the Pi).
+        # 50 ≈ 1 Hz given the SDF's IMU `<update_rate>50.0</update_rate>`.
+        self._log_every_n = 50
+        self._cb_count = 0
+
         self.sub = create_subscription_for_topic(
             self, UUVTopics.IMU_FILTERED_LEFT, self.imu_callback
         )
@@ -99,10 +105,12 @@ class EKFNode(Node):
         pose_msg.orientation.w = est_state[9]
         self.pub.publish(pose_msg)
 
-        self.get_logger().info(
-            f"Current position [x,y,z]: "
-            f"[{est_state[0]:.3f}, {est_state[1]:.3f}, {est_state[2]:.3f}] m"
-        )
+        self._cb_count += 1
+        if self._cb_count % self._log_every_n == 0:
+            self.get_logger().info(
+                f"Current position [x,y,z]: "
+                f"[{est_state[0]:.3f}, {est_state[1]:.3f}, {est_state[2]:.3f}] m"
+            )
 
 
 def main(args=None):

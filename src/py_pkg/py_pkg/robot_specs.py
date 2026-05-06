@@ -26,9 +26,12 @@ PUMP_EFFICIENCY = 0.93
 # Nominal bladder volume used by the depth controller's flow-rate model.
 BLADDER_VOLUME_M3 = 0.002275
 
-# Mechanical stroke limits of the bladder.
-BLADDER_MAX_VOLUME_M3 = 0.0025
-BLADDER_MIN_VOLUME_M3 = 0.0010
+# Mechanical stroke limits of the bladder. The Gazebo BuoyancyEngine plugin
+# allows 0–2500 mL on the glider_nautilus model; here we leave 10% headroom
+# at each end (250 mL / 2250 mL), giving a 2.0 L operating range that the
+# control loop can swing through without ever pinning the clamp.
+BLADDER_MAX_VOLUME_M3 = 0.00225
+BLADDER_MIN_VOLUME_M3 = 0.00025
 
 # ---------------------------------------------------------------------------
 # BCU motor (Maxon EPOS4)

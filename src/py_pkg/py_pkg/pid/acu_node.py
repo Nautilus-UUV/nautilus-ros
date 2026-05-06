@@ -14,6 +14,7 @@ import math
 import rclpy
 from geometry_msgs.msg import Pose
 from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from std_msgs.msg import Int16
 
@@ -125,13 +126,17 @@ class ACUControlNode(Node):
 
 
 def main(args=None):
+    # Catch SIGINT/SIGTERM so the process exits 0 instead of 1 on Ctrl-C —
+    # otherwise launch_testing's exit-code check intermittently fails.
     rclpy.init(args=args)
     node = ACUControlNode()
     try:
         rclpy.spin(node)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        rclpy.try_shutdown()
 
 
 if __name__ == "__main__":
