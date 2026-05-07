@@ -1,10 +1,17 @@
-"""
-Author: Lisa Lustenberger
-Date: November 2025
-Description:    Node that controls ACU motors.
-                Input: UUVTopics.ACU_ROLL, UUVTopics.ACU_PITCH -> target motor positions for roll (angle) and pitch (mm) for the ACU motors.
-                Output: MotorController position commands.
-Background: Copied from bcu_controller_node.py and modified for ACU control.
+"""Inner-loop ACU node — drives the physical roll and pitch motors.
+
+This is the half of the attitude stack that actually talks to the
+hardware. It listens for target positions on ACU_ROLL (angle) and
+ACU_PITCH (linear stroke, mm) and forwards them to two EPOS
+``MotorController`` instances over USB. The outer-loop PID that
+decides what those target positions should be lives in
+``pid/acu_node.py``.
+
+Note: this file was copied from the BCU controller node and adapted
+for two axes. There's still some BCU-shaped scaffolding left over —
+the ``_tankPressure`` field and the velocity-mode safety check in
+``timer_callback`` were inherited from the BCU and don't quite fit
+the ACU yet.
 """
 
 import rclpy

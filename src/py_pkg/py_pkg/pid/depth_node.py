@@ -1,5 +1,3 @@
-# Copied from divetest files: depth_control_node.py
-
 #!/usr/bin/env python3
 
 import rclpy
@@ -9,14 +7,13 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from std_msgs.msg import Int16, UInt8
 
-from py_pkg import math_utils as SimMath
+from py_pkg.math_utils import clamp
 from py_pkg.physics import gauge_pressure_pa, q_to_rpm
 from py_pkg.pid import depth_control_system as ControlSystem
 from py_pkg.pid.depth_config import (
     init_buoyancy_engine,
     init_control,
     init_motor,
-    init_pos,
 )
 from py_pkg.robot_specs import BCU_DEEP_THRESHOLD_PA
 from py_pkg.uuv_ros_core import (
@@ -32,13 +29,19 @@ def select_pump_and_valves(
     pump_rpm: int,
     deep_threshold_pa: float,
 ) -> tuple[int, int, int]:
-    """Decide pump RPM and valve bitmask from gauge pressure + descent intent.
+    """Decide what the pump and valves should do for the next control step.
 
-    Below ``deep_threshold_pa`` (Z-positive-down: ``current_pressure_pa
-    > threshold``), a descent intent (q > 0) is satisfied passively:
-    the pump is forced off and valve 2 vents the bladder. Otherwise
-    valve 1 carries the pumped flow when the command is non-zero;
-    both valves stay closed when the pump is idle.
+    There's one special case worth pulling out: if we're already deep
+    enough that the surrounding water pressure is above
+    ``deep_threshold_pa`` AND the controller is asking to go deeper
+    still (``q > 0``), we don't run the pump at all. We just open
+    valve 2 and let ambient water pressure passively push water into
+    the bladder. The bladder fills, the glider gets denser, and we
+    sink — without spending any pump energy.
+
+    Otherwise the rule is simple: when the pump is actually running,
+    valve 1 is open to carry the flow; when the pump is idle, both
+    valves stay shut so the bladder holds whatever volume it has.
 
     Returns ``(pump_rpm, valve1_open, valve2_open)``.
     """
@@ -60,9 +63,6 @@ class DepthControlNode(Node):
         self.callback_group = ReentrantCallbackGroup()
 
         self.control_system = ControlSystem.DepthControlSystem(init_control)
-        self.current_position = SimMath.Vector(
-            init_pos.get("x"), init_pos.get("y"), init_pos.get("z")
-        )
         self.current_bladder_level = init_buoyancy_engine.get("initial_proportion_full")
         self.bladder_volume = init_buoyancy_engine.get("tank_volume")
         self.current_time = self.get_clock().now().nanoseconds / 1e9
@@ -132,11 +132,8 @@ class DepthControlNode(Node):
             return
 
         self.current_time = self.get_clock().now().nanoseconds / 1e9
-        current_position = SimMath.Vector(0.0, 0.0, self.current_pressure_pa)
         self.control_output = self.control_system.calc_acc(
-            current_position,
-            0.0,
-            self.current_time,
+            self.current_pressure_pa, self.current_time
         )
 
         msg = Int16()
@@ -148,9 +145,9 @@ class DepthControlNode(Node):
             # instead of slamming to +/-min_rpm (which would limit-cycle the setpoint).
             self.motor_rpm = 0.0
         elif self.motor_rpm > 0:
-            self.motor_rpm = SimMath.clamp(self.motor_rpm, min_rpm, max_rpm)
+            self.motor_rpm = clamp(self.motor_rpm, min_rpm, max_rpm)
         else:
-            self.motor_rpm = SimMath.clamp(self.motor_rpm, -max_rpm, -min_rpm)
+            self.motor_rpm = clamp(self.motor_rpm, -max_rpm, -min_rpm)
         # Pump wiring inverts direction: positive q (fill bladder → sink) is
         # delivered as a negative RPM command on the BCU bus.
         pump_rpm = int(-1 * self.motor_rpm)

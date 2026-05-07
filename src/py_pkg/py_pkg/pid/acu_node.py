@@ -1,12 +1,34 @@
 #!/usr/bin/env python3
-"""ACU control node.
+"""Outer-loop attitude control node — turns desired roll/pitch into motor commands.
 
-Roll: AxisController (deg in, deg out). Pitch: MassShifterController
-(deg in, m out). Reads roll/pitch from POSITION_ESTIMATION/TARGET
-quaternions; publishes ACU_ROLL (Int16 centidegrees, scale =
-ACU_ROLL_CDEG_PER_DEG) and ACU_PITCH (Int16 mm) — the wire format the
-HAL bridge and EPOS driver expect. Step conversion lives at the EPOS
-driver, not here.
+This is the ACU's outer loop. It looks at the desired vehicle attitude
+(roll and pitch, extracted from the quaternion on POSITION_TARGET) and
+the current attitude (same idea, from POSITION_ESTIMATION), runs each
+axis through its own controller, and publishes the resulting motor
+commands at 10 Hz.
+
+Each axis has a different actuator, so each gets a different controller:
+
+- Roll uses an `AxisController`: rotation in, rotation out. The roll
+  motor is itself an angular position, so it makes sense to keep
+  everything in the same unit (degrees) and treat the controller's
+  output as an incremental adjustment.
+- Pitch uses a `MassShifterController`: pitch error in, mass-shifter
+  stroke out. Pitch is changed by sliding a weight forward or
+  backward, so the controller works in metres at the output even
+  though the error is in degrees.
+
+Wire formats on the way out are integers in fixed units the HAL bridge
+and EPOS driver already understand:
+
+- `ACU_ROLL` is an `Int16` in centidegrees (degrees * 100, via
+  `ACU_ROLL_CDEG_PER_DEG`).
+- `ACU_PITCH` is an `Int16` in millimetres.
+
+We deliberately stop at "degrees and millimetres" here. Converting
+those into the raw encoder counts the motors actually take is the EPOS
+driver's job, not ours — keeping that separation means tuning gains in
+this file is done in human-meaningful units.
 """
 
 import math
@@ -109,8 +131,11 @@ class ACUControlNode(Node):
         self.pitch_axis.update_sensor(self.current_pitch_deg)
         self.roll_axis.update_sensor(self.current_roll_deg)
 
-        pitch_cmd = self.pitch_axis.update(self.target_pitch_deg)
-        roll_cmd = self.roll_axis.update(self.target_roll_deg)
+        # Real wallclock seconds: Ki/Kd stay in per-second units regardless
+        # of loop rate or executor jitter.
+        now = self.get_clock().now().nanoseconds / 1e9
+        pitch_cmd = self.pitch_axis.update(self.target_pitch_deg, now)
+        roll_cmd = self.roll_axis.update(self.target_roll_deg, now)
 
         if pitch_cmd is not None:
             msg = Int16()

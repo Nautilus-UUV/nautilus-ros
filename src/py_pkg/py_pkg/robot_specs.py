@@ -38,13 +38,18 @@ BLADDER_MIN_VOLUME_M3 = 0.00025
 # ---------------------------------------------------------------------------
 
 BCU_MOTOR_MAX_RPM = 4000
-BCU_MOTOR_MIN_RPM = 1000
+BCU_MOTOR_MIN_RPM = 0
 
-# Gauge pressure past which the pump can no longer overcome ambient
-# hydrostatic pressure to fill the bladder. Below this we must descend
-# passively (valve 2 vents, pump off); above it the pump drives both
-# directions through valve 1. Set by the pump's max differential
-# pressure against the bladder, not a tuning knob. ~30 m in salt water.
+# Gauge pressure above which the pump can no longer push water into the
+# bladder against the surrounding water. When we are deeper than this
+# AND the controller wants to descend further, we skip the pump entirely
+# — open valve 2 and let the high external pressure passively fill the
+# bladder for us, free of pump energy. At shallower depths, the pump can
+# still drive flow in either direction through valve 1, so no
+# special-casing is needed.
+#
+# Set by the pump's mechanical max differential pressure, not a tuning
+# knob. Roughly 30 m in salt water.
 BCU_DEEP_THRESHOLD_PA = 301_534.5  # = 30 m * 1025 kg/m^3 * 9.806 m/s^2
 
 # ---------------------------------------------------------------------------

@@ -4,10 +4,33 @@ Covers AxisController (roll: degrees-in / degrees-out, slewed) and
 MassShifterController (pitch: degrees-in / metres-out, error-direct).
 Both: PIDController-backed correction + state-machine + deadband +
 motor-frame output clamp.
+
+Time is supplied explicitly to every step. Tests prime each axis at
+t=0.0 (PIDController returns 0 on its first call to initialise prev_time)
+and assert behaviour at t>=0.1, the same cadence the 10 Hz node uses.
 """
 
 import pytest
 from py_pkg.pid.acu_axis_controller import AxisController, MassShifterController
+
+
+# Prime the PID at t=0 then step at fixed dt; the node sees the same
+# pattern (first 10 Hz tick after startup returns 0, subsequent ticks
+# carry real PID output).
+PRIME_TIME = 0.0
+DT = 0.1
+
+
+def _t(step: int) -> float:
+    """Test clock: 10 Hz monotonic, t=0 reserved for the prime call."""
+    return PRIME_TIME + DT * step
+
+
+def _prime(axis: AxisController, current_pos: float = 0.0) -> None:
+    """First update() returns 0 from PIDController; consume it here so
+    follow-up assertions exercise the steady-state PID path."""
+    axis.update_sensor(current_pos)
+    axis.update(desired_value=current_pos, time=PRIME_TIME)
 
 
 def make_axis(Kp=0.5, position_tolerance=1.0, command_tolerance=0.5):
@@ -24,25 +47,25 @@ class TestComputeControl:
 
     def test_proportional_step_toward_target(self):
         axis = make_axis(Kp=0.5)
-        axis.update_sensor(0.0)
+        _prime(axis, current_pos=0.0)
         # error = 10, correction = 5, new_target = 5
-        assert axis.compute_control(10.0) == pytest.approx(5.0)
+        assert axis.compute_control(10.0, _t(1)) == pytest.approx(5.0)
 
     def test_zero_error_no_movement(self):
         axis = make_axis(Kp=0.5)
-        axis.update_sensor(5.0)
-        assert axis.compute_control(5.0) == pytest.approx(5.0)
+        _prime(axis, current_pos=5.0)
+        assert axis.compute_control(5.0, _t(1)) == pytest.approx(5.0)
 
     def test_negative_error_steps_backward(self):
         axis = make_axis(Kp=0.5)
-        axis.update_sensor(10.0)
+        _prime(axis, current_pos=10.0)
         # error = -10, correction = -5, new_target = 5
-        assert axis.compute_control(0.0) == pytest.approx(5.0)
+        assert axis.compute_control(0.0, _t(1)) == pytest.approx(5.0)
 
     def test_kp_one_jumps_to_target(self):
         axis = make_axis(Kp=1.0)
-        axis.update_sensor(0.0)
-        assert axis.compute_control(10.0) == pytest.approx(10.0)
+        _prime(axis, current_pos=0.0)
+        assert axis.compute_control(10.0, _t(1)) == pytest.approx(10.0)
 
 
 class TestStateMachine:
@@ -54,25 +77,25 @@ class TestStateMachine:
 
     def test_steady_stays_steady_when_error_small(self):
         axis = make_axis(position_tolerance=1.0)
-        axis.update_sensor(0.0)
-        axis.update(desired_value=0.5)  # |error| = 0.5 < 1.0
+        _prime(axis, current_pos=0.0)
+        axis.update(desired_value=0.5, time=_t(1))  # |error| = 0.5 < 1.0
         assert axis.state == AxisController.State.STEADY
 
     def test_steady_transitions_to_shifting_on_large_error(self):
         axis = make_axis(position_tolerance=1.0)
-        axis.update_sensor(0.0)
-        cmd = axis.update(desired_value=10.0)  # |error| = 10 > 1
+        _prime(axis, current_pos=0.0)
+        cmd = axis.update(desired_value=10.0, time=_t(1))  # |error| = 10 > 1
         assert axis.state == AxisController.State.SHIFTING
         assert cmd is not None
 
     def test_shifting_returns_to_steady_when_error_drops(self):
         axis = make_axis(position_tolerance=1.0)
-        axis.update_sensor(0.0)
-        axis.update(desired_value=10.0)  # → SHIFTING
+        _prime(axis, current_pos=0.0)
+        axis.update(desired_value=10.0, time=_t(1))  # → SHIFTING
         assert axis.state == AxisController.State.SHIFTING
 
         axis.update_sensor(9.5)  # |error| = 0.5, within tolerance
-        axis.update(desired_value=10.0)
+        axis.update(desired_value=10.0, time=_t(2))
         assert axis.state == AxisController.State.STEADY
 
 
@@ -86,21 +109,21 @@ class TestCommandDeadband:
 
     def test_first_large_error_emits_command(self):
         axis = make_axis(position_tolerance=1.0, command_tolerance=0.5)
-        axis.update_sensor(0.0)
-        cmd = axis.update(desired_value=10.0)
+        _prime(axis, current_pos=0.0)
+        cmd = axis.update(desired_value=10.0, time=_t(1))
         assert cmd is not None
 
     def test_shifting_emits_until_target_stops_moving(self):
         axis = make_axis(Kp=0.5, position_tolerance=1.0, command_tolerance=0.5)
-        axis.update_sensor(0.0)
+        _prime(axis, current_pos=0.0)
 
         # Call 1: STEADY→SHIFTING, returns target_pos=5, last_commanded=0
-        cmd1 = axis.update(desired_value=10.0)
+        cmd1 = axis.update(desired_value=10.0, time=_t(1))
         # Call 2: SHIFTING, target still 5 (current=0, desired=10 unchanged),
         #         bottom path: |5-0|=5 > 0.5, emits and sets last_commanded=5
-        cmd2 = axis.update(desired_value=10.0)
+        cmd2 = axis.update(desired_value=10.0, time=_t(2))
         # Call 3: SHIFTING, target still 5, |5-5|=0 ≤ 0.5, returns None
-        cmd3 = axis.update(desired_value=10.0)
+        cmd3 = axis.update(desired_value=10.0, time=_t(3))
 
         assert cmd1 == pytest.approx(5.0)
         assert cmd2 == pytest.approx(5.0)
@@ -110,18 +133,18 @@ class TestCommandDeadband:
         # Stay in STEADY (error within position_tolerance), so we exercise the
         # bottom path directly without going through the SHIFTING quirk.
         axis = make_axis(Kp=0.5, position_tolerance=2.0, command_tolerance=1.0)
-        axis.update_sensor(0.0)
+        _prime(axis, current_pos=0.0)
         # error = 1 < position_tolerance, target = 0 + 0.5*1 = 0.5,
         # |0.5 - 0| = 0.5 < command_tolerance=1.0 → None
-        cmd = axis.update(desired_value=1.0)
+        cmd = axis.update(desired_value=1.0, time=_t(1))
         assert cmd is None
         assert axis.state == AxisController.State.STEADY
 
     def test_steady_target_change_above_deadband_emits(self):
         axis = make_axis(Kp=0.5, position_tolerance=2.0, command_tolerance=0.1)
-        axis.update_sensor(0.0)
+        _prime(axis, current_pos=0.0)
         # error = 1, target = 0.5, |0.5-0| = 0.5 > 0.1 → emits 0.5
-        cmd = axis.update(desired_value=1.0)
+        cmd = axis.update(desired_value=1.0, time=_t(1))
         assert cmd == pytest.approx(0.5)
 
 
@@ -144,16 +167,14 @@ class TestPIDPathWired:
             integral_limits=(-1000.0, 1000.0),
             output_limits=(-1000.0, 1000.0),
         )
-        axis.update_sensor(0.0)
-
-        # Fresh axis is in STEADY; first call w/ error > tol triggers
-        # SHIFTING and returns target_pos. With Kp=0, only Ki contributes.
-        cmd1 = axis.update(desired_value=10.0)
-        cmd2 = axis.update(desired_value=10.0)
-        cmd3 = axis.update(desired_value=10.0)
+        _prime(axis, current_pos=0.0)
 
         # Each successive tick the integral grows -> the correction grows
         # -> target_pos grows.
+        cmd1 = axis.update(desired_value=10.0, time=_t(1))
+        cmd2 = axis.update(desired_value=10.0, time=_t(2))
+        cmd3 = axis.update(desired_value=10.0, time=_t(3))
+
         assert cmd1 is not None and cmd2 is not None and cmd3 is not None
         assert cmd2 > cmd1
         assert cmd3 > cmd2
@@ -173,22 +194,22 @@ class TestMotorFrameOutputClamp:
 
     def test_large_positive_error_clamped_to_positive_limit(self):
         axis = self._make()
-        axis.update_sensor(0.0)
+        _prime(axis, current_pos=0.0)
         # Error = 100°. Unclamped new_target = 0 + 0.5*100 = 50 — clamped to +25.
-        cmd = axis.update(desired_value=100.0)
+        cmd = axis.update(desired_value=100.0, time=_t(1))
         assert cmd == pytest.approx(25.0)
 
     def test_large_negative_error_clamped_to_negative_limit(self):
         axis = self._make()
-        axis.update_sensor(0.0)
-        cmd = axis.update(desired_value=-100.0)
+        _prime(axis, current_pos=0.0)
+        cmd = axis.update(desired_value=-100.0, time=_t(1))
         assert cmd == pytest.approx(-25.0)
 
     def test_small_error_below_clamp_passes_through(self):
         axis = self._make(position_tolerance=0.01)
-        axis.update_sensor(0.0)
+        _prime(axis, current_pos=0.0)
         # Error = 4°, new_target = 0 + 0.5*4 = 2 — well within ±25.
-        cmd = axis.update(desired_value=4.0)
+        cmd = axis.update(desired_value=4.0, time=_t(1))
         assert cmd == pytest.approx(2.0)
 
 
@@ -212,32 +233,32 @@ class TestMassShifterController:
     def test_zero_error_returns_zero_correction(self):
         # Distinguishes from base AxisController, which would return current_pos.
         axis = self._make()
-        axis.update_sensor(5.0)
-        assert axis.compute_control(5.0) == pytest.approx(0.0)
+        _prime(axis, current_pos=5.0)
+        assert axis.compute_control(5.0, _t(1)) == pytest.approx(0.0)
 
     def test_positive_error_returns_positive_correction(self):
         axis = self._make()
-        axis.update_sensor(0.0)
+        _prime(axis, current_pos=0.0)
         # error = 10°, Kp = 0.5 m/deg → 5 m
-        assert axis.compute_control(10.0) == pytest.approx(5.0)
+        assert axis.compute_control(10.0, _t(1)) == pytest.approx(5.0)
 
     def test_negative_error_returns_negative_correction(self):
         axis = self._make()
-        axis.update_sensor(10.0)
+        _prime(axis, current_pos=10.0)
         # error = -10° → -5 m
-        assert axis.compute_control(0.0) == pytest.approx(-5.0)
+        assert axis.compute_control(0.0, _t(1)) == pytest.approx(-5.0)
 
     def test_clamped_at_positive_limit(self):
         axis = self._make()
-        axis.update_sensor(0.0)
+        _prime(axis, current_pos=0.0)
         # 0.5 * 35 = 17.5 m; clamp to +0.07.
-        cmd = axis.update(desired_value=35.0)
+        cmd = axis.update(desired_value=35.0, time=_t(1))
         assert cmd == pytest.approx(0.07)
 
     def test_clamped_at_negative_limit(self):
         axis = self._make()
-        axis.update_sensor(0.0)
-        cmd = axis.update(desired_value=-35.0)
+        _prime(axis, current_pos=0.0)
+        cmd = axis.update(desired_value=-35.0, time=_t(1))
         assert cmd == pytest.approx(-0.07)
 
     def test_proportional_region_below_clamp(self):
@@ -245,7 +266,7 @@ class TestMassShifterController:
         # Pre-fix, the bogus 'current_deg + correction_deg' branch saturated
         # the clamp at any |err| > 0.14° regardless of the proportional region.
         axis = self._make(position_tolerance=0.01)
-        axis.update_sensor(0.0)
-        cmd = axis.update(desired_value=0.1)
+        _prime(axis, current_pos=0.0)
+        cmd = axis.update(desired_value=0.1, time=_t(1))
         # 0.5 * 0.1 = 0.05 m, well within ±0.07.
         assert cmd == pytest.approx(0.05)

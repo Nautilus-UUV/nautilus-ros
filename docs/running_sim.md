@@ -1,18 +1,14 @@
 # Running the Nautilus simulation
 
 Two ways to bring the glider up against the DAVE simulator: as a **Tier 3
-pytest test** (bounded, marker-gated, asserts state at the end) or as an
-**unbounded interactive launch** (Gazebo GUI on, runs until you Ctrl-C).
-The interactive launch is the right tool for tuning, debugging, and
-visually validating controller changes; the tests are the gate before
-the change ships.
+pytest test** or as an **unbounded interactive launch** (Gazebo GUI on, runs until you Ctrl-C).
 
 Both paths assume the workspace has been built and sourced:
 
 ```bash
-cd /home/girji/dave_ws
+cd /home/$USER/dave_ws
 source /opt/ros/jazzy/setup.bash
-colcon build --packages-select py_pkg nautilus_hal
+colcon build --symlink-install
 source install/setup.bash
 ```
 
@@ -32,20 +28,15 @@ ros2 launch nautilus_hal trim_sim.launch.py \
 ```
 
 - `headless:=false` opens the Gazebo GUI; leave at its default `true` for
-  faster CPU-only runs without a window. (`gui:=true` is the DAVE
-  convention regardless — `headless` is the actual display switch.)
+  faster CPU-only runs without a window.
 - `mission_autostart:=true` publishes `MissionCommand{mission_id=0,
-  target_pressure_pa=…}` and `/command:start` after an 8/10 s delay,
-  so the glider starts diving without you doing anything else.
+  target_pressure_pa=…}` and `/command:start` after an 8/10 s
 - `target_pressure_pa` is the depth setpoint in **gauge Pa**:
   - 60 295 ≈ 6 m
   - **65 332 ≈ 6.5 m  ← what `test_trim_neutral_sim*` aims at**
   - 75 383 ≈ 7.5 m
 
-Spawn is z=−5 (≈ 5 m). The 6.5 m default is the depth the BCU plant
-naturally settles at given the current SDF mass / hull-collision balance
-and `BLADDER_MIN_VOLUME_M3 = 0.00025` clamp; deeper targets sit outside
-the achievable envelope until the SDF mass model widens it.
+
 
 ### Inspecting state in another terminal
 
@@ -66,16 +57,8 @@ ros2 topic echo /bcu/volume
 ros2 topic echo /position/estimation
 ```
 
-If `/position/estimation` is drifting wildly (z ≈ −9 km, |q| ≠ 1) but
-`/external/pressure` is converging, the BCU/depth controller is fine
-and the EKF is the problem — see `docs/ekf_node_issues.md` and the
-`test_trim_neutral_sim_gt` mirror test that bypasses the EKF entirely.
-
 ### Retargeting mid-run
 
-`/path` and `/command` are `UUVQoS.COMMAND` (RELIABLE +
-TRANSIENT_LOCAL), so `ros2 topic pub` must request `transient_local`
-durability or the subscription rejects on a mismatch.
 
 ```bash
 ros2 topic pub --once \
@@ -88,19 +71,6 @@ ros2 topic pub --once \
     /command std_msgs/msg/String "{data: start}"
 ```
 
-### Physical envelope reminders
-
-When a setpoint isn't tracking, suspect the plant before the controller:
-
-- `BCU_MOTOR_MAX_RPM = 4000` (≈ ±21 mL/s pump rate at full speed).
-- `BLADDER_MAX_VOLUME_M3 = 0.00225` (2.25 L) /
-  `BLADDER_MIN_VOLUME_M3 = 0.00025` (250 mL) — the bridge clamps cumulative
-  bladder volume to this range.
-- `BCU_DEEP_THRESHOLD_PA ≈ 30 m` — below it, descent intent is satisfied
-  passively (valve 2 vents, pump off).
-- The SDF's `glider_nautilus` mass + 0.0544 m³ hull-collision balance
-  is approximately neutral with the bladder near 1.27 L; deeper holds
-  require the bladder below that, which the pump rate-limits.
 
 ## Tier 3 pytest catalog
 

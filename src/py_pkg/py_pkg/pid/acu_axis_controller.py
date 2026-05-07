@@ -1,16 +1,23 @@
-"""Per-axis PID controller + state machine + deadband for the ACU.
-
-Generates motor-frame target positions for a single axis (roll or pitch).
-The PID acts on UUV-frame angle (degrees) and produces a positional
-correction; the new target is `current + correction`, clamped to the
-physical motor-frame stroke/angle, and gated by a state machine + command
-deadband to avoid unnecessary motor traffic.
-"""
-
 from py_pkg.utils_controls import PIDController
 
 
 class AxisController:
+    """Controls a single axis (roll or pitch) of the vehicle.
+
+    This controller calculates how much the motor needs to move to reach a desired
+    angle. To prevent overworking the motor with tiny, continuous adjustments,
+    it uses a state machine and tolerance checks. It stops sending commands if the
+    vehicle is already close enough to the target angle (`position_tolerance`) or
+    if the required motor movement is very small (`command_tolerance`).
+
+    By default (used for Roll), both the vehicle's angle and the motor's position
+    are measured in degrees. Therefore, the controller calculates an *incremental*
+    adjustment: it adds the required correction to the motor's current position.
+
+    Note: Time is passed in externally in seconds. This ensures the control math
+    (Ki/Kd values) remains consistent regardless of how fast the main program loops.
+    """
+
     class State:
         STEADY = 0
         SHIFTING = 1
@@ -43,23 +50,18 @@ class AxisController:
             output_limits=(-float("inf"), float("inf")),
             derivative_filter=derivative_filter,
         )
-        # Seed the PID so the first user-facing update() produces a
-        # non-zero correction (prev_time gets initialised here).
-        self.pid.update(0.0, 0.0, 0.0)
-        self._tick = 1.0
 
         self.state = AxisController.State.STEADY
         self.current_pos = 0.0
         self.target_pos = 0.0
         self.last_commanded_pos = 0.0
+        self._primed = False
 
     def update_sensor(self, measured_pos):
         self.current_pos = measured_pos
 
-    def _pid_correction(self, desired_value):
-        correction = self.pid.update(desired_value, self.current_pos, self._tick)
-        self._tick += 1.0
-        return correction
+    def _pid_correction(self, desired_value, time):
+        return self.pid.update(desired_value, self.current_pos, time)
 
     def _clamp_motor(self, val):
         lo, hi = self.output_limits
@@ -69,19 +71,22 @@ class AxisController:
             return lo
         return val
 
-    def _compute_new_target(self, desired_value):
-        # Roll-style: slew current_pos toward desired_value in the same frame.
-        # MassShifterController overrides this for pitch (frame change).
-        return self.current_pos + self._pid_correction(desired_value)
+    def _compute_new_target(self, desired_value, time):
+        # By default, the motor and the target angle use the same unit (degrees).
+        # We calculate the relative correction and add it to our current position.
+        return self.current_pos + self._pid_correction(desired_value, time)
 
-    def compute_control(self, desired_value):
-        """new_target_pre_clamp from the configured controller law."""
-        return self._compute_new_target(desired_value)
+    def compute_control(self, desired_value, time):
+        """Calculates the raw target position before safety limits are applied."""
+        return self._compute_new_target(desired_value, time)
 
-    def update(self, desired_value):
-        """Run the state machine and return a motor-frame command, or None."""
-        new_target = self._compute_new_target(desired_value)
+    def update(self, desired_value, time):
+        """Evaluates whether to move the motor based on current tolerances, returning a command or None."""
+        new_target = self._compute_new_target(desired_value, time)
         self.target_pos = self._clamp_motor(new_target)
+        if not self._primed:
+            self._primed = True
+            return None
         error = abs(desired_value - self.current_pos)
 
         if self.state == AxisController.State.STEADY:
@@ -102,13 +107,16 @@ class AxisController:
 
 
 class MassShifterController(AxisController):
-    """Pitch-axis variant: PID error -> absolute mass-shifter stroke (m).
+    """Controls the pitch axis by linearly moving a weight (a mass-shifter).
 
-    Roll's actuator is itself an angular position with feedback, so the
-    base controller slews `current_pos` toward `desired_value` in the same
-    frame. Pitch's actuator is a mass-shifter whose stroke is set directly
-    from pitch error. Kp's units are m/deg.
+    Unlike the roll axis, this motor moves in meters (linear stroke) to change
+    an angle measured in degrees. The tuning parameter (Kp) acts as the conversion
+    factor between meters and degrees.
+
+    Because of this physical difference, the mathematical output is the *exact
+    absolute position* (in meters) the weight needs to move to. We do not add
+    this to the current position, as that would apply the correction twice.
     """
 
-    def _compute_new_target(self, desired_value):
-        return self._pid_correction(desired_value)
+    def _compute_new_target(self, desired_value, time):
+        return self._pid_correction(desired_value, time)
