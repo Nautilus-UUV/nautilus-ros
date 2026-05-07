@@ -53,7 +53,47 @@ ros2 topic pub --once \
 ```
 
 
-### 2. Surface Mission Profile
+### 2. Sawtooth Mission Profile
+---
+
+The same closed-loop stack as TRIM, but driving the SAWTOOTH mission:
+the glider dives at `-angle_rad` to `target_pressure_pa`, then ascends
+at `+angle_rad` back to the surface, and repeats for `n_resurfaces`
+cycles before self-terminating. Gazebo and the controllers stay up
+after termination, so you can fire another mission.
+
+```bash
+ros2 launch nautilus_hal sawtooth_sim.launch.py \
+    headless:=false \
+    mission_autostart:=true \
+    target_pressure_pa:=147150.0 \
+    angle_rad:=0.6109 \
+    n_resurfaces:=1
+```
+
+- `target_pressure_pa` is the deep extremum in **gauge Pa**:
+  - 147 150 ≈ 15 m
+- `angle_rad` is the glide pitch magnitude in radians (alternates sign
+  each leg). 0.6109 ≈ 35 °.
+- `n_resurfaces` controls how many full descend → ascend cycles run
+  before the mission terminates.
+
+
+#### Re-firing mid-run
+
+```bash
+ros2 topic pub --once \
+    --qos-reliability reliable --qos-durability transient_local \
+    /path nautilus_msgs/msg/MissionCommand \
+    "{mission_id: 1, target_pressure_pa: 147150.0, angle_rad: 0.6109, n_resurfaces: 2}"
+
+ros2 topic pub --once \
+    --qos-reliability reliable --qos-durability transient_local \
+    /command std_msgs/msg/String "{data: start}"
+```
+
+
+### 3. Surface Mission Profile
 ---
 
 The same closed-loop stack as above, but with the SURFACE mission
@@ -104,6 +144,8 @@ ros2 topic echo /position/target
 ros2 topic echo /external/pressure
 ros2 topic echo /bcu/rpm
 ros2 topic echo /bcu/volume
+ros2 topic echo /acu/pitch
+ros2 topic echo /acu/roll
 
 # What the (currently-fragile) EKF reports:
 ros2 topic echo /position/estimation
@@ -113,8 +155,10 @@ ros2 topic echo /position/estimation
 ## Tier 3 pytest catalog
 
 All sim tests are marker-gated `@pytest.mark.sim` and excluded from the
-default `pytest test/` / `colcon test` run. Opt in with `-m sim`. Each
-takes 30 s – 3 min on CPU-only software rendering.
+default `pytest test/` / `colcon test` run. Opt in with `-m sim`. Most
+take 30 s – 3 min on CPU-only software rendering; the sawtooth pair
+runs ~5 min each because they exercise a full descend → ascend cycle
+through 10 m of water.
 
 ```bash
 # Just one test:
@@ -136,6 +180,8 @@ typically lacks pytest.
 | `test_ekf_pipeline_sim` | IMU → prefilter → EKF pose well-formedness | `EKF_SIM_GUI=1` |
 | `test_trim_neutral_sim` | Full closed-loop TRIM, EKF in the loop | `TRIM_SIM_GUI=1` |
 | `test_trim_neutral_sim_gt` | Full closed-loop TRIM, EKF replaced by ground truth | `TRIM_GT_SIM_GUI=1` |
+| `test_sawtooth_sim` | Full closed-loop SAWTOOTH cycle, EKF in the loop (allowed to fail) | `SAWTOOTH_SIM_GUI=1` |
+| `test_sawtooth_sim_gt` | Full closed-loop SAWTOOTH cycle, EKF replaced by ground truth | `SAWTOOTH_GT_SIM_GUI=1` |
 | `test_surface_sim` | Mission-driven ascent to surface + self-termination, EKF in the loop | `SURFACE_SIM_GUI=1` |
 
 Set the env-var to enable the Gazebo GUI for that test:
