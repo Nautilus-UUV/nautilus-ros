@@ -12,7 +12,10 @@ colcon build --symlink-install
 source install/setup.bash
 ```
 
-## Unbounded interactive run with the GUI (the day-to-day path)
+## Unbounded interactive run with the GUI
+
+### 1. Targeted Trim and Neutral Mission Profile
+---
 
 The full closed-loop trim demo: HAL bridges + Gazebo + glider model +
 the entire control stack (`ekf_prefilter`, `ekf_node`, `depth_node`,
@@ -32,13 +35,62 @@ ros2 launch nautilus_hal trim_sim.launch.py \
 - `mission_autostart:=true` publishes `MissionCommand{mission_id=0,
   target_pressure_pa=…}` and `/command:start` after an 8/10 s
 - `target_pressure_pa` is the depth setpoint in **gauge Pa**:
-  - 60 295 ≈ 6 m
-  - **65 332 ≈ 6.5 m  ← what `test_trim_neutral_sim*` aims at**
-  - 75 383 ≈ 7.5 m
+  - 65 332 ≈ 6.5 m
 
 
+#### Re-firing mid-run
 
-### Inspecting state in another terminal
+
+```bash
+ros2 topic pub --once \
+    --qos-reliability reliable --qos-durability transient_local \
+    /path nautilus_msgs/msg/MissionCommand \
+    "{mission_id: 0, target_pressure_pa: 60295.0, angle_rad: 0.0, n_resurfaces: 0}"
+
+ros2 topic pub --once \
+    --qos-reliability reliable --qos-durability transient_local \
+    /command std_msgs/msg/String "{data: start}"
+```
+
+
+### 2. Surface Mission Profile
+---
+
+The same closed-loop stack as above, but with the SURFACE mission
+auto-fired instead of TRIM: the glider ascends to gauge pressure 0 and
+the mission self-terminates after ~10 s of continuous dwell at the
+surface (gauge ≤ 5 kPa, ~0.5 m). Gazebo and the controllers stay up
+after self-termination, so you can observe the resting state or fire
+another mission.
+
+```bash
+ros2 launch nautilus_hal surface_sim.launch.py \
+    headless:=false \
+    mission_autostart:=true
+```
+
+- Spawn is at z=-10 (~10 m), so there's a meaningful ascent to watch.
+- `mission_autostart:=true` publishes `MissionCommand{mission_id=2,
+  target_pressure_pa=0.0, …}` and `/command:start` after an 8/10 s
+  delay.
+- SURFACE has no operator-tunable parameters — `target_pressure_pa`,
+  `angle_rad`, and `n_resurfaces` are all ignored.
+
+
+#### Re-firing mid-run
+
+```bash
+ros2 topic pub --once \
+    --qos-reliability reliable --qos-durability transient_local \
+    /path nautilus_msgs/msg/MissionCommand \
+    "{mission_id: 2, target_pressure_pa: 0.0, angle_rad: 0.0, n_resurfaces: 0}"
+
+ros2 topic pub --once \
+    --qos-reliability reliable --qos-durability transient_local \
+    /command std_msgs/msg/String "{data: start}"
+```
+
+### Inspecting state
 
 ```bash
 source install/setup.bash
@@ -55,20 +107,6 @@ ros2 topic echo /bcu/volume
 
 # What the (currently-fragile) EKF reports:
 ros2 topic echo /position/estimation
-```
-
-### Retargeting mid-run
-
-
-```bash
-ros2 topic pub --once \
-    --qos-reliability reliable --qos-durability transient_local \
-    /path nautilus_msgs/msg/MissionCommand \
-    "{mission_id: 0, target_pressure_pa: 60295.0, angle_rad: 0.0, n_resurfaces: 0}"
-
-ros2 topic pub --once \
-    --qos-reliability reliable --qos-durability transient_local \
-    /command std_msgs/msg/String "{data: start}"
 ```
 
 
@@ -98,6 +136,7 @@ typically lacks pytest.
 | `test_ekf_pipeline_sim` | IMU → prefilter → EKF pose well-formedness | `EKF_SIM_GUI=1` |
 | `test_trim_neutral_sim` | Full closed-loop TRIM, EKF in the loop | `TRIM_SIM_GUI=1` |
 | `test_trim_neutral_sim_gt` | Full closed-loop TRIM, EKF replaced by ground truth | `TRIM_GT_SIM_GUI=1` |
+| `test_surface_sim` | Mission-driven ascent to surface + self-termination, EKF in the loop | `SURFACE_SIM_GUI=1` |
 
 Set the env-var to enable the Gazebo GUI for that test:
 

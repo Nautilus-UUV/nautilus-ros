@@ -30,8 +30,8 @@ from py_pkg.math_utils import rpy_to_quaternion
 
 from .profile import MissionState
 
-SURFACE_THRESHOLD_PA = 5_000.0    # ~0.5 m water column
-DESCEND_TOLERANCE_PA = 5_000.0    # ~0.5 m above the target
+SURFACE_THRESHOLD_PA = 5_000.0  # ~0.5 m water column
+DESCEND_TOLERANCE_PA = 5_000.0  # ~0.5 m above the target
 
 
 class SawtoothMission:

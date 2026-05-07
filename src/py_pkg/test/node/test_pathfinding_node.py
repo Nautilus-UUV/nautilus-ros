@@ -6,17 +6,23 @@ now a thin mission dispatcher — the planner is gone, and per-mission
 setpoint generation lives in `path/missions/`.
 """
 
+import time
+
 import pytest
 
 from py_pkg.path.missions import MissionId
+from py_pkg.path.missions import surface as surface_mod
 
 
 # Mission ids used by the tests below.
 SAWTOOTH = int(MissionId.SAWTOOTH)
 TRIM = int(MissionId.TRIM_AND_NEUTRAL_BUOYANCY)
+SURFACE = int(MissionId.SURFACE)
 
 # Surface absolute pressure (Pa). gauge_pressure_pa() yields ~0 -> "at surface".
 PRESSURE_AT_SURFACE_PA = 101_325
+# Deep absolute pressure (Pa) -> ~6 m gauge, well above SURFACE_THRESHOLD_PA.
+PRESSURE_AT_DEPTH_PA = 161_325
 
 
 class TestWiringSmoke:
@@ -185,6 +191,88 @@ class TestAbortCommand:
         assert resurface.orientation.x == pytest.approx(0.0, abs=1e-9)
         assert resurface.orientation.y == pytest.approx(0.0, abs=1e-9)
         assert resurface.orientation.z == pytest.approx(0.0, abs=1e-9)
+
+
+class TestSurfaceMission:
+    """SURFACE drives Pose(z=0, identity) and self-terminates after a
+    surface dwell. Tests shrink DWELL_AT_SURFACE_S so they stay fast —
+    the dwell semantics are pinned in test_surface_mission.py (Tier 1)."""
+
+    def test_running_target_is_z_zero_identity(self, pathfinding_node_harness):
+        h = pathfinding_node_harness
+        # Stay below the surface threshold so the mission doesn't immediately
+        # self-terminate before the test can assert on emissions.
+        h.publish_mission_command(SURFACE)
+        h.publish_external_pressure(PRESSURE_AT_DEPTH_PA)
+        h.spin_until(
+            lambda: h.node._mode == "LOADED"
+            and h.node._current_pressure_pa is not None,
+            timeout=1.0,
+        )
+        h.publish_command("start")
+        h.spin_until(lambda: len(h.received_targets) >= 1, timeout=1.0)
+        first = h.received_targets[0]
+        assert first.position.z == pytest.approx(0.0, abs=1e-9)
+        assert first.orientation.w == pytest.approx(1.0, abs=1e-9)
+        assert first.orientation.x == pytest.approx(0.0, abs=1e-9)
+        assert first.orientation.y == pytest.approx(0.0, abs=1e-9)
+        assert first.orientation.z == pytest.approx(0.0, abs=1e-9)
+
+    def test_self_terminates_after_surface_dwell(
+        self, pathfinding_node_harness, monkeypatch
+    ):
+        # Shrink the dwell so we don't sleep 10 wall-clock seconds.
+        monkeypatch.setattr(surface_mod, "DWELL_AT_SURFACE_S", 0.3)
+
+        h = pathfinding_node_harness
+        h.publish_mission_command(SURFACE)
+        h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
+        h.spin_until(
+            lambda: h.node._mode == "LOADED"
+            and h.node._current_pressure_pa is not None,
+            timeout=1.0,
+        )
+        h.publish_command("start")
+        h.spin_until(lambda: h.node._mode == "RUNNING", timeout=1.0)
+        # Keep feeding "at surface" pressure across the dwell window.
+        deadline = time.monotonic() + 1.5
+        while time.monotonic() < deadline and h.node._mode == "RUNNING":
+            h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
+            h.spin_for(0.05)
+        # After the dwell, pathfinding_node returns to IDLE and clears state.
+        h.spin_until(lambda: h.node._mode == "IDLE", timeout=1.0)
+        assert h.node._mission is None
+        assert h.node._mission_cmd is None
+
+        # Drain in-flight emissions, then confirm the timer is quiescent.
+        h.spin_for(0.4)
+        idle_count = len(h.received_targets)
+        h.spin_for(0.6)
+        assert len(h.received_targets) == idle_count
+
+    def test_does_not_terminate_below_surface(
+        self, pathfinding_node_harness, monkeypatch
+    ):
+        monkeypatch.setattr(surface_mod, "DWELL_AT_SURFACE_S", 0.3)
+
+        h = pathfinding_node_harness
+        h.publish_mission_command(SURFACE)
+        h.publish_external_pressure(PRESSURE_AT_DEPTH_PA)
+        h.spin_until(
+            lambda: h.node._mode == "LOADED"
+            and h.node._current_pressure_pa is not None,
+            timeout=1.0,
+        )
+        h.publish_command("start")
+        h.spin_until(lambda: h.node._mode == "RUNNING", timeout=1.0)
+        # Pump deep-pressure samples for several dwell-windows; mission must
+        # stay RUNNING and keep emitting setpoints.
+        deadline = time.monotonic() + 1.5
+        while time.monotonic() < deadline:
+            h.publish_external_pressure(PRESSURE_AT_DEPTH_PA)
+            h.spin_for(0.05)
+        assert h.node._mode == "RUNNING"
+        assert len(h.received_targets) >= 5
 
 
 class TestTickGating:

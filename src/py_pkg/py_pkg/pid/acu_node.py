@@ -83,6 +83,10 @@ class ACUControlNode(Node):
         self.current_roll_deg = 0.0
         self.current_pitch_deg = 0.0
 
+        # Log throttle
+        self._target_log_every_n = 10
+        self._target_cb_count = 0
+
         self.pitch_pub = create_publisher_for_topic(
             self, UUVTopics.ACU_PITCH, callback_group=self.callback_group
         )
@@ -116,10 +120,12 @@ class ACUControlNode(Node):
         roll, pitch = quaternion_to_roll_pitch(q.x, q.y, q.z, q.w)
         self.target_roll_deg = math.degrees(roll)
         self.target_pitch_deg = math.degrees(pitch)
-        self.get_logger().info(
-            f"Updated target: roll={self.target_roll_deg:.2f}°, "
-            f"pitch={self.target_pitch_deg:.2f}°"
-        )
+        self._target_cb_count += 1
+        if self._target_cb_count % self._target_log_every_n == 0:
+            self.get_logger().info(
+                f"Updated target: roll={self.target_roll_deg:.2f}°, "
+                f"pitch={self.target_pitch_deg:.2f}°"
+            )
 
     def current_pose_callback(self, msg: Pose):
         q = msg.orientation

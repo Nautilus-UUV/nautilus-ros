@@ -9,6 +9,7 @@ contract); `orientation` is consumed by the ACU as roll/pitch.
 from .factory import MissionId, create_mission
 from .profile import MissionProfile, MissionState
 from .sawtooth import SawtoothMission
+from .surface import SurfaceMission
 from .trim_and_neutral import TrimAndNeutralBuoyancyMission
 
 __all__ = [
@@ -16,6 +17,7 @@ __all__ = [
     "MissionProfile",
     "MissionState",
     "SawtoothMission",
+    "SurfaceMission",
     "TrimAndNeutralBuoyancyMission",
     "create_mission",
 ]

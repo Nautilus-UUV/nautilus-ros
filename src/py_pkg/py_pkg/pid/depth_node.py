@@ -73,6 +73,10 @@ class DepthControlNode(Node):
         self.target_pressure_pa: float | None = None
         self.current_pressure_pa = 0.0
 
+        # Log throttle
+        self._target_log_every_n = 10
+        self._target_cb_count = 0
+
         self.bcu_controller_rpm_publisher = create_publisher_for_topic(
             self, UUVTopics.BCU_RPM, callback_group=self.callback_group
         )
@@ -110,7 +114,11 @@ class DepthControlNode(Node):
     def target_pose_callback(self, msg: Pose):
         self.target_pressure_pa = float(msg.position.z)
         self.control_system.target_pressure_pa = self.target_pressure_pa
-        self.get_logger().info(f"Updated target pressure: {self.target_pressure_pa} Pa")
+        self._target_cb_count += 1
+        if self._target_cb_count % self._target_log_every_n == 0:
+            self.get_logger().info(
+                f"Updated target pressure: {self.target_pressure_pa} Pa"
+            )
 
     def current_pressure_callback(self, msg):
         # EXTERNAL_PRESSURE is absolute Pa; the controller works in gauge.
