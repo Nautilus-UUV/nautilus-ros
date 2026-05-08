@@ -61,7 +61,6 @@ def _build_axis(cls, cfg):
         Kp=cfg["Kp"],
         Ki=cfg["Ki"],
         Kd=cfg["Kd"],
-        position_tolerance=cfg["position_tolerance"],
         command_tolerance=cfg["command_tolerance"],
         integral_limits=cfg["integral_limits"],
         output_limits=cfg["output_limits"],

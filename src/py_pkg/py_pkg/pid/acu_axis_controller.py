@@ -4,29 +4,28 @@ from py_pkg.utils_controls import PIDController
 class AxisController:
     """Controls a single axis (roll or pitch) of the vehicle.
 
-    This controller calculates how much the motor needs to move to reach a desired
-    angle. To prevent overworking the motor with tiny, continuous adjustments,
-    it uses a state machine and tolerance checks. It stops sending commands if the
-    vehicle is already close enough to the target angle (`position_tolerance`) or
-    if the required motor movement is very small (`command_tolerance`).
+    A PID inside, an output clamp at the motor frame, and a
+    redundant-publish guard at the back. The guard is what keeps the
+    EPOS bus quiet when the axis is sitting saturated against its clamp:
+    if the motor-frame target hasn't moved by more than `command_tolerance`
+    since we last published, we just don't republish.
 
-    By default (used for Roll), both the vehicle's angle and the motor's position
-    are measured in degrees. Therefore, the controller calculates an *incremental*
-    adjustment: it adds the required correction to the motor's current position.
+    By default (used for Roll), both the vehicle's angle and the motor's
+    position are measured in degrees. Therefore, the controller
+    calculates an *incremental* adjustment: it adds the required
+    correction to the motor's current position. `MassShifterController`
+    overrides this for the pitch axis, where the motor frame (m) is
+    different from the sensor frame (deg).
 
-    Note: Time is passed in externally in seconds. This ensures the control math
-    (Ki/Kd values) remains consistent regardless of how fast the main program loops.
+    Time is passed in externally in seconds. This ensures the control
+    math (Ki/Kd values) remains consistent regardless of how fast the
+    main program loops.
     """
-
-    class State:
-        STEADY = 0
-        SHIFTING = 1
 
     def __init__(
         self,
         name,
         Kp,
-        position_tolerance,
         command_tolerance,
         Ki=0.0,
         Kd=0.0,
@@ -38,7 +37,6 @@ class AxisController:
         self.Kp = Kp
         self.Ki = Ki
         self.Kd = Kd
-        self.position_tolerance = position_tolerance
         self.command_tolerance = command_tolerance
         self.output_limits = output_limits
 
@@ -51,10 +49,14 @@ class AxisController:
             derivative_filter=derivative_filter,
         )
 
-        self.state = AxisController.State.STEADY
         self.current_pos = 0.0
         self.target_pos = 0.0
-        self.last_commanded_pos = 0.0
+        # `None` = "we have never published anything yet", which forces
+        # the first post-prime call to emit. Without this, an axis whose
+        # prime-call target happens to equal its first-real-call target
+        # (asymmetric clamps where clamp(0) ≠ 0, saturated targets, etc.)
+        # would never publish.
+        self.last_commanded_pos: float | None = None
         self._primed = False
 
     def update_sensor(self, measured_pos):
@@ -81,25 +83,20 @@ class AxisController:
         return self._compute_new_target(desired_value, time)
 
     def update(self, desired_value, time):
-        """Evaluates whether to move the motor based on current tolerances, returning a command or None."""
-        new_target = self._compute_new_target(desired_value, time)
-        self.target_pos = self._clamp_motor(new_target)
+        """Returns a motor-frame command, or None if the redundant-publish
+        guard determines the bus has nothing new to hear."""
+        self.target_pos = self._clamp_motor(self._compute_new_target(desired_value, time))
+
+        # Prime: PID's first call returns 0 to seed prev_time, which would
+        # show up as a phantom "go to zero" command. Swallow it.
         if not self._primed:
             self._primed = True
             return None
-        error = abs(desired_value - self.current_pos)
 
-        if self.state == AxisController.State.STEADY:
-            if error > self.position_tolerance:
-                self.state = AxisController.State.SHIFTING
-                self.last_commanded_pos = self.current_pos
-                return self.target_pos
-
-        elif self.state == AxisController.State.SHIFTING:
-            if error <= self.position_tolerance:
-                self.state = AxisController.State.STEADY
-
-        if abs(self.target_pos - self.last_commanded_pos) > self.command_tolerance:
+        if (
+            self.last_commanded_pos is None
+            or abs(self.target_pos - self.last_commanded_pos) > self.command_tolerance
+        ):
             self.last_commanded_pos = self.target_pos
             return self.target_pos
 

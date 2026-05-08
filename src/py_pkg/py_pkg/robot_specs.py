@@ -64,12 +64,12 @@ BCU_DEEP_THRESHOLD_PA = 301_534.5  # = 30 m * 1025 kg/m^3 * 9.806 m/s^2
 # SDF limit: lower=0, upper=-0.1195 (m) → travel = 0.1195 m.
 ACU_PITCH_MASS_KG = 1.83
 ACU_PITCH_MAX_TRAVEL_M = 0.1195
-ACU_PITCH_MAX_VELOCITY_M_S = 0.5
+ACU_PITCH_MAX_VELOCITY_M_S = 0.011
 ACU_PITCH_MAX_EFFORT_N = 10.0
 
 # Soft saturation used by the pitch axis controller (clamped-P output).
 # Must satisfy ACU_PITCH_OUTPUT_LIMIT_M <= ACU_PITCH_MAX_TRAVEL_M.
-ACU_PITCH_OUTPUT_LIMIT_M = 0.07
+ACU_PITCH_OUTPUT_LIMITS_M = (-0.11, -0.01)
 
 # Roll — acu_roll_joint, revolute, axis = +x in body frame.
 # SDF limit: lower=-0.5236, upper=0.5236 (rad) = ±30°.
