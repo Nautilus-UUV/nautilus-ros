@@ -24,10 +24,7 @@ holds the glider at the requested target depth. Runs forever until
 Ctrl-C.
 
 ```bash
-ros2 launch nautilus_hal trim_sim.launch.py \
-    headless:=false \
-    mission_autostart:=true \
-    target_pressure_pa:=65332.0
+S
 ```
 
 - `headless:=false` opens the Gazebo GUI; leave at its default `true` for
@@ -156,9 +153,9 @@ ros2 topic echo /position/estimation
 
 All sim tests are marker-gated `@pytest.mark.sim` and excluded from the
 default `pytest test/` / `colcon test` run. Opt in with `-m sim`. Most
-take 30 s – 3 min on CPU-only software rendering; the sawtooth pair
-runs ~5 min each because they exercise a full descend → ascend cycle
-through 10 m of water.
+take 30 s – 3 min on CPU-only software rendering; `test_sawtooth_sim`
+runs ~5 min because it exercises a full descend → ascend cycle to
+~7.5 m and back to the surface.
 
 ```bash
 # Just one test:
@@ -180,8 +177,7 @@ typically lacks pytest.
 | `test_ekf_pipeline_sim` | IMU → prefilter → EKF pose well-formedness | `EKF_SIM_GUI=1` |
 | `test_trim_neutral_sim` | Full closed-loop TRIM, EKF in the loop | `TRIM_SIM_GUI=1` |
 | `test_trim_neutral_sim_gt` | Full closed-loop TRIM, EKF replaced by ground truth | `TRIM_GT_SIM_GUI=1` |
-| `test_sawtooth_sim` | Full closed-loop SAWTOOTH cycle, EKF in the loop (allowed to fail) | `SAWTOOTH_SIM_GUI=1` |
-| `test_sawtooth_sim_gt` | Full closed-loop SAWTOOTH cycle, EKF replaced by ground truth | `SAWTOOTH_GT_SIM_GUI=1` |
+| `test_sawtooth_sim` | Full closed-loop SAWTOOTH cycle; bang-bang ACU pitch reaches both stroke endpoints in the right legs | `SAWTOOTH_SIM_GUI=1` |
 | `test_surface_sim` | Mission-driven ascent to surface + self-termination, EKF in the loop | `SURFACE_SIM_GUI=1` |
 
 Set the env-var to enable the Gazebo GUI for that test:

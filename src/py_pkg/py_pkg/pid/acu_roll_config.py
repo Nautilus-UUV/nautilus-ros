@@ -3,11 +3,10 @@
 Output is degrees of ring rotation, clamped to ±ACU_ROLL_MAX_ANGLE_DEG.
 ACUControlNode converts deg -> centidegrees at the publish site.
 
-Full PID. Same rationale as the pitch axis (acu_pitch_config.py): I
-cancels the steady-state offset under any constant rolling moment
-(asymmetric drag during a glide, residual rolling momentum from a
-SAWTOOTH leg flip), D damps fast transitions. Kept conservative so the
-roll axis doesn't induce coupling into the pitch dynamics.
+Full PID. I cancels the steady-state offset under any constant rolling
+moment (asymmetric drag during a glide, residual rolling momentum from
+a leg flip), D damps fast transitions. Kept conservative so the roll
+axis doesn't induce coupling into the pitch dynamics.
 
 `command_tolerance` is the sole publish deadband. 0.5° sits above the
 EKF's typical roll-orientation noise (~0.5°) so steady-state sensor
