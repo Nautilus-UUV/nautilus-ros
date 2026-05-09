@@ -225,6 +225,9 @@ colcon test --packages-select cpp_pkg
 colcon test-result --verbose
 ```
 
+For the Tier 3 simulation tests and the unbounded `trim_sim.launch.py`
+GUI workflow, see [`running_sim.md`](running_sim.md).
+
 ## Debugging
 
 **List available topics:**

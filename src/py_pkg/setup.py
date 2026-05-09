@@ -1,3 +1,6 @@
+import os
+from glob import glob
+
 from setuptools import find_packages, setup
 
 package_name = "py_pkg"
@@ -9,6 +12,7 @@ setup(
     data_files=[
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),
+        (os.path.join("share", package_name, "launch"), glob("launch/*.launch.py")),
     ],
     install_requires=["setuptools"],
     zip_safe=True,
@@ -26,11 +30,9 @@ setup(
             "pathfinding_node = py_pkg.path.pathfinding:main",
             "ekf_prefilter = py_pkg.ekf_prefilter.ekf_prefilter:main",
             "ekf_node = py_pkg.ekf.ekf_node:main",
-            "bcu_oscillator = py_pkg.integration.bcu_oscillator:main",
-            "acu_oscillator = py_pkg.integration.acu_oscillator:main",
-            "neutral_buoyancy_test = py_pkg.integration.neutral_buoyancy_test:main",
-            "trim_and_buoyancy_test = py_pkg.integration.trim_and_buoyancy_test:main",
-            "dive_test_for_ekf = py_pkg.integration.dive_test_for_ekf:main",
+            "mqtt_bridge_node = py_pkg.mqtt.mqtt_bridge_node:main",
+            "depth_node = py_pkg.pid.depth_node:main",
+            "acu_node = py_pkg.pid.acu_node:main",
         ],
     },
 )

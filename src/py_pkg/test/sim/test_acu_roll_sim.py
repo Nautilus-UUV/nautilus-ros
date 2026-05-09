@@ -4,8 +4,8 @@ Drives ACU_ROLL (Int16 centidegrees) and reads the bridge's
 /sim/.../roll_position_rad feedback. Asserts the simulated
 acu_roll_joint rotates in the commanded direction. Bridge converts
 cdeg -> deg -> rad before forwarding to Gazebo; SDF range is symmetric
-(±0.5236 rad), we pick positive. Composed lean (no oscillator) so we
-don't race acu_oscillator for ACU_ROLL.
+(±0.5236 rad), we pick positive. Composed lean (no controller) so the
+test owns ACU_ROLL exclusively.
 """
 
 import os

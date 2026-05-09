@@ -14,11 +14,9 @@ estimates"; we don't pin filter cutoff, drift rate, or absolute pose
 (those are SDF / numerics dependent and belong in Tier 1).
 
 Composed lean: bridges + Gazebo + robot + the two EKF nodes added
-explicitly (no launch wrapper exists for the EKF stack, and including
-``unified_sim.launch.py`` would also start ``bcu_oscillator`` which we
-don't want here). Marker-gated ``@pytest.mark.sim``; opt in with
-``pytest -m sim test/sim/`` after sourcing the workspace install.
-``EKF_SIM_GUI=1`` shows the Gazebo GUI.
+explicitly (no launch wrapper exists for the EKF stack). Marker-gated
+``@pytest.mark.sim``; opt in with ``pytest -m sim test/sim/`` after
+sourcing the workspace install. ``EKF_SIM_GUI=1`` shows the Gazebo GUI.
 """
 
 import math

@@ -5,12 +5,11 @@ goes positive, BCU_VOLUME (mL) increases monotonically. Verifies the
 RPM -> flow -> volume integration end-to-end through the HAL bridge and
 Gazebo buoyancy plugin; depth-tracking is intentionally out of scope.
 
-Composed lean (bridges + Gazebo + robot, no oscillator) so we don't race
-``unified_sim.launch.py``'s ``bcu_oscillator`` for BCU_RPM. Marker-gated
-``@pytest.mark.sim``; opt in with ``pytest -m sim test/sim/`` after
-sourcing the workspace install. ``BCU_SIM_GUI=1`` shows the Gazebo GUI.
-Don't run alongside any other sim/rclpy process on the host — the
-production topic names overlap.
+Composed lean (bridges + Gazebo + robot, no controller) so the test
+owns BCU_RPM exclusively. Marker-gated ``@pytest.mark.sim``; opt in with
+``pytest -m sim test/sim/`` after sourcing the workspace install.
+``BCU_SIM_GUI=1`` shows the Gazebo GUI. Don't run alongside any other
+sim/rclpy process on the host — the production topic names overlap.
 """
 
 import os

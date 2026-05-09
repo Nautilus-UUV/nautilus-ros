@@ -22,10 +22,7 @@ import time
 import pytest
 import rclpy
 from geometry_msgs.msg import Pose
-from rclpy.executors import SingleThreadedExecutor
-from rclpy.node import Node
-from std_msgs.msg import Float32MultiArray, Int16, Int32, String, UInt8
-
+from nautilus_msgs.msg import MissionCommand
 from py_pkg.path.pathfinding import PathfindingNode
 from py_pkg.pid.acu_node import ACUControlNode
 from py_pkg.pid.depth_node import DepthControlNode
@@ -34,6 +31,9 @@ from py_pkg.uuv_ros_core import (
     create_publisher_for_topic,
     create_subscription_for_topic,
 )
+from rclpy.executors import SingleThreadedExecutor
+from rclpy.node import Node
+from std_msgs.msg import Int16, Int32, String, UInt8
 
 
 def _isolated_ros_domain_id() -> int:
@@ -82,9 +82,7 @@ class NodeHarness:
                 return
             self.executor.spin_once(timeout_sec=slice_s)
         if not predicate():
-            raise TimeoutError(
-                f"predicate did not become true within {timeout}s"
-            )
+            raise TimeoutError(f"predicate did not become true within {timeout}s")
 
     def shutdown(self) -> None:
         try:
@@ -177,20 +175,25 @@ def depth_node_harness():
 # ---------------------------------------------------------------------------
 
 
-def _quat_from_roll_pitch_deg(roll_deg: float, pitch_deg: float):
-    """Quaternion for (roll, pitch, yaw=0). Inverse of
-    math_utils.quaternion_to_roll_pitch."""
+def _quat_from_roll_deg(roll_deg: float):
+    """Roll-only quaternion (pitch=yaw=0). Inverse of
+    math_utils.quaternion_to_roll_pitch — pitch isn't part of the ACU
+    target/estimation surface anymore now that pitch is driven by
+    pressure error rather than a target attitude."""
     r = math.radians(roll_deg) / 2.0
-    p = math.radians(pitch_deg) / 2.0
-    qw = math.cos(r) * math.cos(p)
-    qx = math.sin(r) * math.cos(p)
-    qy = math.cos(r) * math.sin(p)
-    qz = -math.sin(r) * math.sin(p)
-    return qx, qy, qz, qw
+    qw = math.cos(r)
+    qx = math.sin(r)
+    return qx, 0.0, 0.0, qw
 
 
 class _ACUTesterNode(Node):
-    """Drives ACUControlNode and captures ACU_PITCH (Int16 mm) / ACU_ROLL (Int16 rad)."""
+    """Drives ACUControlNode and captures ACU_PITCH (Int16 mm) /
+    ACU_ROLL (Int16 cdeg).
+
+    POSITION_TARGET carries the roll setpoint in its orientation and the
+    *target gauge pressure* on position.z (pathfinding's TRIM
+    convention). EXTERNAL_PRESSURE carries the *absolute* pressure
+    sensor reading the bang-bang pitch loop compares against."""
 
     def __init__(self):
         super().__init__("acu_node_tester")
@@ -202,6 +205,9 @@ class _ACUTesterNode(Node):
         )
         self.estimation_pose_pub = create_publisher_for_topic(
             self, UUVTopics.POSITION_ESTIMATION
+        )
+        self.external_pressure_pub = create_publisher_for_topic(
+            self, UUVTopics.EXTERNAL_PRESSURE
         )
         self.pitch_sub = create_subscription_for_topic(
             self, UUVTopics.ACU_PITCH, self._on_pitch
@@ -217,24 +223,28 @@ class _ACUTesterNode(Node):
         self.received_roll_cdeg.append(int(msg.data))
 
     @staticmethod
-    def _pose_from_roll_pitch(roll_deg: float, pitch_deg: float) -> Pose:
-        qx, qy, qz, qw = _quat_from_roll_pitch_deg(roll_deg, pitch_deg)
+    def _pose(roll_deg: float, target_pressure_pa: float = 0.0) -> Pose:
+        qx, qy, qz, qw = _quat_from_roll_deg(roll_deg)
         msg = Pose()
+        msg.position.z = float(target_pressure_pa)
         msg.orientation.x = float(qx)
         msg.orientation.y = float(qy)
         msg.orientation.z = float(qz)
         msg.orientation.w = float(qw)
         return msg
 
-    def publish_target_attitude(self, roll_deg: float, pitch_deg: float) -> None:
-        self.target_pose_pub.publish(
-            self._pose_from_roll_pitch(roll_deg, pitch_deg)
-        )
+    def publish_target(
+        self, roll_deg: float = 0.0, target_pressure_pa: float = 0.0
+    ) -> None:
+        self.target_pose_pub.publish(self._pose(roll_deg, target_pressure_pa))
 
-    def publish_current_attitude(self, roll_deg: float, pitch_deg: float) -> None:
-        self.estimation_pose_pub.publish(
-            self._pose_from_roll_pitch(roll_deg, pitch_deg)
-        )
+    def publish_current_attitude(self, roll_deg: float = 0.0) -> None:
+        self.estimation_pose_pub.publish(self._pose(roll_deg))
+
+    def publish_external_pressure(self, value_pa: int) -> None:
+        msg = Int32()
+        msg.data = int(value_pa)
+        self.external_pressure_pub.publish(msg)
 
 
 class ACUNodeHarness(NodeHarness):
@@ -251,11 +261,18 @@ class ACUNodeHarness(NodeHarness):
     def received_roll_cdeg(self) -> list[int]:
         return self.tester.received_roll_cdeg
 
-    def publish_target_attitude(self, roll_deg: float, pitch_deg: float) -> None:
-        self.tester.publish_target_attitude(roll_deg, pitch_deg)
+    def publish_target(
+        self, roll_deg: float = 0.0, target_pressure_pa: float = 0.0
+    ) -> None:
+        self.tester.publish_target(
+            roll_deg=roll_deg, target_pressure_pa=target_pressure_pa
+        )
 
-    def publish_current_attitude(self, roll_deg: float, pitch_deg: float) -> None:
-        self.tester.publish_current_attitude(roll_deg, pitch_deg)
+    def publish_current_attitude(self, roll_deg: float = 0.0) -> None:
+        self.tester.publish_current_attitude(roll_deg=roll_deg)
+
+    def publish_external_pressure(self, value_pa: int) -> None:
+        self.tester.publish_external_pressure(value_pa)
 
 
 @pytest.fixture
@@ -283,6 +300,9 @@ class _PathfindingTesterNode(Node):
         self.estimation_pub = create_publisher_for_topic(
             self, UUVTopics.POSITION_ESTIMATION
         )
+        self.external_pressure_pub = create_publisher_for_topic(
+            self, UUVTopics.EXTERNAL_PRESSURE
+        )
         self.command_pub = create_publisher_for_topic(self, UUVTopics.COMMAND)
         self.path_pub = create_publisher_for_topic(self, UUVTopics.PATH)
         self.target_sub = create_subscription_for_topic(
@@ -300,17 +320,29 @@ class _PathfindingTesterNode(Node):
         msg.orientation.w = 1.0
         self.estimation_pub.publish(msg)
 
+    def publish_external_pressure(self, value_pa: int) -> None:
+        # EXTERNAL_PRESSURE is absolute Pa; the node converts to gauge.
+        msg = Int32()
+        msg.data = int(value_pa)
+        self.external_pressure_pub.publish(msg)
+
     def publish_command(self, command: str) -> None:
         msg = String()
         msg.data = command
         self.command_pub.publish(msg)
 
-    def publish_path(self, keypoints) -> None:
-        msg = Float32MultiArray()
-        flat = []
-        for x, y, z in keypoints:
-            flat.extend([float(x), float(y), float(z)])
-        msg.data = flat
+    def publish_mission_command(
+        self,
+        mission_id: int,
+        target_pressure_pa: float = 0.0,
+        angle_rad: float = 0.0,
+        n_resurfaces: int = 0,
+    ) -> None:
+        msg = MissionCommand()
+        msg.mission_id = int(mission_id)
+        msg.target_pressure_pa = float(target_pressure_pa)
+        msg.angle_rad = float(angle_rad)
+        msg.n_resurfaces = int(n_resurfaces)
         self.path_pub.publish(msg)
 
 
@@ -327,11 +359,25 @@ class PathfindingNodeHarness(NodeHarness):
     def publish_pose_estimation(self, x: float, y: float, z: float) -> None:
         self.tester.publish_pose_estimation(x, y, z)
 
+    def publish_external_pressure(self, value_pa: int) -> None:
+        self.tester.publish_external_pressure(value_pa)
+
     def publish_command(self, command: str) -> None:
         self.tester.publish_command(command)
 
-    def publish_path(self, keypoints) -> None:
-        self.tester.publish_path(keypoints)
+    def publish_mission_command(
+        self,
+        mission_id: int,
+        target_pressure_pa: float = 0.0,
+        angle_rad: float = 0.0,
+        n_resurfaces: int = 0,
+    ) -> None:
+        self.tester.publish_mission_command(
+            mission_id,
+            target_pressure_pa=target_pressure_pa,
+            angle_rad=angle_rad,
+            n_resurfaces=n_resurfaces,
+        )
 
 
 @pytest.fixture

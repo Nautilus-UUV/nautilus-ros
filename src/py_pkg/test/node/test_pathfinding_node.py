@@ -1,36 +1,28 @@
 """Tier 2 in-process rclpy tests for PathfindingNode.
 
-Black-box: drive the node via published POSITION_ESTIMATION / COMMAND /
-PATH messages and assert on what it publishes on POSITION_TARGET.
-
-The planner emits the first POSITION_TARGET synchronously inside the
-``start`` command callback (no timer wait), so most happy-path assertions
-resolve in well under a second. Timer-driven advance tests still need
-``timer_dt = 0.5s``-class spin time to see the next emission.
-
-Targets the turn-then-straight (Dubins-style) planner: each segment
-starts with the EKF pose itself (so the first emission is at the start
-position), pitch is ``atan2(dz, horiz)`` (no FLU sign flip), and yaw is
-commanded along the arc + straight portion.
+Black-box: drive the node via PATH (MissionCommand) / EXTERNAL_PRESSURE /
+COMMAND and assert on what it publishes on POSITION_TARGET. The node is
+now a thin mission dispatcher — the planner is gone, and per-mission
+setpoint generation lives in `path/missions/`.
 """
 
-import math
+import time
 
 import pytest
 
-from py_pkg.math_utils import quaternion_to_roll_pitch
+from py_pkg.path.missions import MissionId
+from py_pkg.path.missions import surface as surface_mod
 
 
-def _rp(pose):
-    q = pose.orientation
-    return quaternion_to_roll_pitch(q.x, q.y, q.z, q.w)
+# Mission ids used by the tests below.
+SAWTOOTH = int(MissionId.SAWTOOTH)
+TRIM = int(MissionId.TRIM_AND_NEUTRAL_BUOYANCY)
+SURFACE = int(MissionId.SURFACE)
 
-
-def _yaw(pose):
-    q = pose.orientation
-    siny_cosp = 2.0 * (q.w * q.z + q.x * q.y)
-    cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
-    return math.atan2(siny_cosp, cosy_cosp)
+# Surface absolute pressure (Pa). gauge_pressure_pa() yields ~0 -> "at surface".
+PRESSURE_AT_SURFACE_PA = 101_325
+# Deep absolute pressure (Pa) -> ~6 m gauge, well above SURFACE_THRESHOLD_PA.
+PRESSURE_AT_DEPTH_PA = 161_325
 
 
 class TestWiringSmoke:
@@ -40,6 +32,10 @@ class TestWiringSmoke:
     def test_position_estimation_subscription_present(self, pathfinding_node_harness):
         names = [s.topic_name for s in pathfinding_node_harness.node.subscriptions]
         assert "/position/estimation" in names
+
+    def test_external_pressure_subscription_present(self, pathfinding_node_harness):
+        names = [s.topic_name for s in pathfinding_node_harness.node.subscriptions]
+        assert "/external/pressure" in names
 
     def test_command_subscription_present(self, pathfinding_node_harness):
         names = [s.topic_name for s in pathfinding_node_harness.node.subscriptions]
@@ -54,191 +50,242 @@ class TestWiringSmoke:
         assert "/position/target" in names
 
     def test_initial_mode_is_idle(self, pathfinding_node_harness):
-        assert pathfinding_node_harness.node.mode == "IDLE"
+        assert pathfinding_node_harness.node._mode == "IDLE"
 
 
 class TestPathIngress:
-    def test_path_message_populates_keypoints(self, pathfinding_node_harness):
+    def test_known_mission_id_loads_mission(self, pathfinding_node_harness):
         h = pathfinding_node_harness
-        h.publish_path([(1.0, 2.0, 3.0), (4.0, 5.0, 6.0)])
-        h.spin_until(lambda: len(h.node.keypoints) == 2, timeout=1.0)
-        assert h.node.keypoints == [(1.0, 2.0, 3.0), (4.0, 5.0, 6.0)]
-        assert h.node.current_keypoint_idx == 0
+        h.publish_mission_command(SAWTOOTH, target_pressure_pa=200_000.0,
+                                  angle_rad=0.5, n_resurfaces=2)
+        h.spin_until(lambda: h.node._mode == "LOADED", timeout=1.0)
+        assert h.node._mission is not None
+        assert h.node._mission_cmd is not None
+        assert h.node._mission_cmd.mission_id == SAWTOOTH
+        assert h.node._mission_cmd.target_pressure_pa == pytest.approx(200_000.0)
 
-    def test_path_with_bad_length_is_rejected(self, pathfinding_node_harness):
+    def test_unknown_mission_id_is_rejected(self, pathfinding_node_harness):
         h = pathfinding_node_harness
-        # First load a valid path.
-        h.publish_path([(1.0, 2.0, 3.0)])
-        h.spin_until(lambda: len(h.node.keypoints) == 1, timeout=1.0)
-        # Then send a malformed one (length not a multiple of 3) directly.
-        from std_msgs.msg import Float32MultiArray
-
-        bad = Float32MultiArray()
-        bad.data = [1.0, 2.0]  # length 2 — invalid
-        h.tester.path_pub.publish(bad)
+        # uint8 max -> well outside the registry.
+        h.publish_mission_command(255)
         h.spin_for(0.3)
-        # Keypoints unchanged (still the prior valid path).
-        assert h.node.keypoints == [(1.0, 2.0, 3.0)]
+        assert h.node._mode == "IDLE"
+        assert h.node._mission is None
 
 
-class TestStartCommand:
-    def test_start_without_pose_emits_nothing(self, pathfinding_node_harness):
+class TestStartPreconditions:
+    def test_start_without_mission_emits_nothing(self, pathfinding_node_harness):
         h = pathfinding_node_harness
-        h.publish_path([(10.0, 0.0, 0.0)])
-        h.spin_until(lambda: len(h.node.keypoints) == 1, timeout=1.0)
+        h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
+        h.spin_until(lambda: h.node._current_pressure_pa is not None, timeout=1.0)
         h.publish_command("start")
         h.spin_for(0.5)
         assert h.received_targets == []
-        assert h.node.mode == "IDLE"
+        assert h.node._mode == "IDLE"
 
-    def test_start_without_path_emits_nothing(self, pathfinding_node_harness):
+    def test_start_without_pressure_stays_loaded(self, pathfinding_node_harness):
         h = pathfinding_node_harness
-        h.publish_pose_estimation(0.0, 0.0, 0.0)
-        h.spin_until(lambda: h.node.current_pose is not None, timeout=1.0)
+        h.publish_mission_command(TRIM, target_pressure_pa=50_000.0)
+        h.spin_until(lambda: h.node._mode == "LOADED", timeout=1.0)
         h.publish_command("start")
         h.spin_for(0.5)
+        # Start aborted -> stays LOADED, never RUNNING, no emissions.
+        assert h.node._mode == "LOADED"
         assert h.received_targets == []
-        assert h.node.mode == "IDLE"
 
-    def test_start_happy_path_emits_first_target(self, pathfinding_node_harness):
+
+class TestStartHappyPath:
+    def test_start_emits_at_10hz(self, pathfinding_node_harness):
         h = pathfinding_node_harness
-        h.publish_pose_estimation(0.0, 0.0, 0.0)
-        h.publish_path([(10.0, 0.0, 0.0)])
+        h.publish_mission_command(TRIM, target_pressure_pa=50_000.0)
+        h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
         h.spin_until(
-            lambda: h.node.current_pose is not None and len(h.node.keypoints) == 1,
+            lambda: h.node._mode == "LOADED"
+            and h.node._current_pressure_pa is not None,
+            timeout=1.0,
+        )
+        h.publish_command("start")
+        h.spin_until(lambda: h.node._mode == "RUNNING", timeout=1.0)
+        # 10 Hz timer -> ~5 emissions in 0.5 s; 3 is the slack lower bound.
+        h.spin_until(lambda: len(h.received_targets) >= 3, timeout=1.0)
+        assert h.node._mode == "RUNNING"
+
+    def test_running_target_carries_mission_setpoint(self, pathfinding_node_harness):
+        h = pathfinding_node_harness
+        target_pa = 50_000.0
+        h.publish_mission_command(TRIM, target_pressure_pa=target_pa)
+        h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
+        h.spin_until(
+            lambda: h.node._mode == "LOADED"
+            and h.node._current_pressure_pa is not None,
             timeout=1.0,
         )
         h.publish_command("start")
         h.spin_until(lambda: len(h.received_targets) >= 1, timeout=1.0)
-
+        # TRIM mission -> position.z is the operator-supplied gauge Pa.
         first = h.received_targets[0]
-        # Dubins-style planner emits the start position itself as the first
-        # waypoint (start_yaw=0 already faces the goal -> straight-line case,
-        # whose linspace includes the start point).
-        assert first.position.x == pytest.approx(0.0, abs=1e-6)
-        assert first.position.y == pytest.approx(0.0, abs=1e-6)
-        assert first.position.z == pytest.approx(0.0, abs=1e-6)
-        assert h.node.mode == "RUNNING"
-
-
-class TestPlannedPitchInEmissions:
-    """The pitch baked into the published Pose matches segment geometry."""
-
-    def test_dive_at_35_degrees_round_trips_through_emission(
-        self, pathfinding_node_harness
-    ):
-        h = pathfinding_node_harness
-        horiz = 20.0
-        # World frame is Z-positive-down (dz>0 means dive). The Dubins
-        # planner uses pitch = atan2(dz_total, total_horiz) with no sign
-        # flip, so a 35° dive emits +35° pitch.
-        dz = horiz * math.tan(math.radians(35.0))
-
-        h.publish_pose_estimation(0.0, 0.0, 0.0)
-        h.publish_path([(horiz, 0.0, dz)])
-        h.spin_until(
-            lambda: h.node.current_pose is not None and len(h.node.keypoints) == 1,
-            timeout=1.0,
-        )
-        h.publish_command("start")
-        h.spin_until(lambda: len(h.received_targets) >= 1, timeout=1.0)
-
-        # Goal is straight ahead in XY (y=0), so yaw=0 throughout and
-        # quaternion_to_roll_pitch reads pitch cleanly.
-        roll, pitch = _rp(h.received_targets[0])
-        assert roll == pytest.approx(0.0, abs=1e-9)
-        assert math.degrees(pitch) == pytest.approx(35.0, abs=1e-6)
-
-
-class TestYawCommandedOnDiagonal:
-    """Diagonal segments require a heading change; the planner commands yaw
-    along the arc-then-straight construction."""
-
-    def test_diagonal_segment_emits_nonzero_yaw(self, pathfinding_node_harness):
-        h = pathfinding_node_harness
-        # XY-diagonal segment with non-zero dz: start_yaw=0, goal_yaw=π/4,
-        # so the planner runs the arc branch and emits a yaw-bearing
-        # quaternion on every waypoint past the start.
-        h.publish_pose_estimation(0.0, 0.0, 0.0)
-        h.publish_path([(5.0, 5.0, 3.0)])
-        h.spin_until(
-            lambda: h.node.current_pose is not None and len(h.node.keypoints) == 1,
-            timeout=1.0,
-        )
-        h.publish_command("start")
-        # First emission is the start point with yaw=0; the arc kicks in
-        # from the second waypoint onward.
-        h.spin_until(lambda: len(h.received_targets) >= 2, timeout=2.5)
-
-        yaw_second = _yaw(h.received_targets[1])
-        assert abs(yaw_second) > 1e-3, (
-            f"Expected non-zero yaw after the start point, got {yaw_second}"
-        )
-
-
-class TestEKFAdvance:
-    """When the EKF reports we've reached the current waypoint, the timer advances."""
-
-    def test_reaching_waypoint_emits_next_target(self, pathfinding_node_harness):
-        h = pathfinding_node_harness
-        h.publish_pose_estimation(0.0, 0.0, 0.0)
-        h.publish_path([(10.0, 0.0, 0.0)])
-        h.spin_until(
-            lambda: h.node.current_pose is not None and len(h.node.keypoints) == 1,
-            timeout=1.0,
-        )
-        h.publish_command("start")
-        h.spin_until(lambda: len(h.received_targets) >= 1, timeout=1.0)
-        # First emission is the start point (0,0,0); EKF still claims
-        # (0,0,0), so the next timer tick sees us at the waypoint and
-        # advances to the next sample (dubins_step=2.0 along x).
-        h.spin_until(lambda: len(h.received_targets) >= 2, timeout=2.5)
-
-        second = h.received_targets[1]
-        assert second.position.x == pytest.approx(2.0, abs=1e-6)
+        assert first.position.z == pytest.approx(target_pa, abs=1e-3)
+        assert first.orientation.w == pytest.approx(1.0, abs=1e-9)
 
 
 class TestStopCommand:
-    def test_stop_freezes_mode_no_advance(self, pathfinding_node_harness):
+    def test_stop_freezes_mode_and_halts_emissions(self, pathfinding_node_harness):
         h = pathfinding_node_harness
-        h.publish_pose_estimation(0.0, 0.0, 0.0)
-        h.publish_path([(10.0, 0.0, 0.0)])
+        h.publish_mission_command(TRIM, target_pressure_pa=50_000.0)
+        h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
         h.spin_until(
-            lambda: h.node.current_pose is not None and len(h.node.keypoints) == 1,
+            lambda: h.node._mode == "LOADED"
+            and h.node._current_pressure_pa is not None,
             timeout=1.0,
         )
-        # Issue start + stop back-to-back so no timer tick can sneak an
-        # advance in between (first waypoint is the start point itself,
-        # which the timer would otherwise immediately advance past).
         h.publish_command("start")
+        h.spin_until(lambda: h.node._mode == "RUNNING", timeout=1.0)
+        h.spin_until(lambda: len(h.received_targets) >= 1, timeout=1.0)
+
         h.publish_command("stop")
-        h.spin_until(lambda: h.node.mode == "STOPPED", timeout=1.0)
-        # Drain any in-flight POSITION_TARGET emissions sitting in the
-        # tester's subscription queue before snapshotting; once mode is
-        # STOPPED the timer callback no-ops, so further emissions would
-        # be a real advance.
-        h.spin_for(0.6)
+        h.spin_until(lambda: h.node._mode == "STOPPED", timeout=1.0)
+        # Drain in-flight emissions queued before STOPPED was observed.
+        h.spin_for(0.4)
         emissions_after_stop = len(h.received_targets)
 
-        h.spin_for(1.5)
+        h.spin_for(1.0)
         assert len(h.received_targets) == emissions_after_stop
 
 
 class TestAbortCommand:
-    def test_abort_clears_keypoints_and_trajectory(self, pathfinding_node_harness):
+    def test_abort_resets_state_and_publishes_resurface(self, pathfinding_node_harness):
         h = pathfinding_node_harness
-        h.publish_pose_estimation(0.0, 0.0, 0.0)
-        h.publish_path([(10.0, 0.0, 0.0), (20.0, 0.0, 0.0)])
+        h.publish_mission_command(TRIM, target_pressure_pa=50_000.0)
+        h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
         h.spin_until(
-            lambda: h.node.current_pose is not None and len(h.node.keypoints) == 2,
+            lambda: h.node._mode == "LOADED"
+            and h.node._current_pressure_pa is not None,
+            timeout=1.0,
+        )
+        h.publish_command("start")
+        h.spin_until(lambda: h.node._mode == "RUNNING", timeout=1.0)
+        h.spin_until(lambda: len(h.received_targets) >= 1, timeout=1.0)
+        emissions_before_abort = len(h.received_targets)
+
+        h.publish_command("abort")
+        h.spin_until(lambda: h.node._mode == "IDLE", timeout=1.0)
+        # Abort publishes one resurface Pose synchronously, then the timer
+        # no-ops because mode is now IDLE.
+        h.spin_until(
+            lambda: len(h.received_targets) >= emissions_before_abort + 1,
+            timeout=1.0,
+        )
+        assert h.node._mission is None
+        assert h.node._mission_cmd is None
+
+        # Drain anything still in-flight, then confirm timer is quiescent.
+        h.spin_for(0.4)
+        emissions_after_abort = len(h.received_targets)
+        h.spin_for(0.6)
+        assert len(h.received_targets) == emissions_after_abort
+
+        # The abort emission is the resurface Pose: z=0, identity orientation.
+        resurface = h.received_targets[emissions_before_abort]
+        assert resurface.position.z == pytest.approx(0.0, abs=1e-9)
+        assert resurface.orientation.w == pytest.approx(1.0, abs=1e-9)
+        assert resurface.orientation.x == pytest.approx(0.0, abs=1e-9)
+        assert resurface.orientation.y == pytest.approx(0.0, abs=1e-9)
+        assert resurface.orientation.z == pytest.approx(0.0, abs=1e-9)
+
+
+class TestSurfaceMission:
+    """SURFACE drives Pose(z=0, identity) and self-terminates after a
+    surface dwell. Tests shrink DWELL_AT_SURFACE_S so they stay fast —
+    the dwell semantics are pinned in test_surface_mission.py (Tier 1)."""
+
+    def test_running_target_is_z_zero_identity(self, pathfinding_node_harness):
+        h = pathfinding_node_harness
+        # Stay below the surface threshold so the mission doesn't immediately
+        # self-terminate before the test can assert on emissions.
+        h.publish_mission_command(SURFACE)
+        h.publish_external_pressure(PRESSURE_AT_DEPTH_PA)
+        h.spin_until(
+            lambda: h.node._mode == "LOADED"
+            and h.node._current_pressure_pa is not None,
             timeout=1.0,
         )
         h.publish_command("start")
         h.spin_until(lambda: len(h.received_targets) >= 1, timeout=1.0)
+        first = h.received_targets[0]
+        assert first.position.z == pytest.approx(0.0, abs=1e-9)
+        assert first.orientation.w == pytest.approx(1.0, abs=1e-9)
+        assert first.orientation.x == pytest.approx(0.0, abs=1e-9)
+        assert first.orientation.y == pytest.approx(0.0, abs=1e-9)
+        assert first.orientation.z == pytest.approx(0.0, abs=1e-9)
 
-        h.publish_command("abort")
-        h.spin_until(lambda: h.node.mode == "ABORTED", timeout=1.0)
+    def test_self_terminates_after_surface_dwell(
+        self, pathfinding_node_harness, monkeypatch
+    ):
+        # Shrink the dwell so we don't sleep 10 wall-clock seconds.
+        monkeypatch.setattr(surface_mod, "DWELL_AT_SURFACE_S", 0.3)
 
-        assert h.node.keypoints == []
-        assert h.node.trajectory_poses == []
-        assert h.node.current_keypoint_idx is None
+        h = pathfinding_node_harness
+        h.publish_mission_command(SURFACE)
+        h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
+        h.spin_until(
+            lambda: h.node._mode == "LOADED"
+            and h.node._current_pressure_pa is not None,
+            timeout=1.0,
+        )
+        h.publish_command("start")
+        h.spin_until(lambda: h.node._mode == "RUNNING", timeout=1.0)
+        # Keep feeding "at surface" pressure across the dwell window.
+        deadline = time.monotonic() + 1.5
+        while time.monotonic() < deadline and h.node._mode == "RUNNING":
+            h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
+            h.spin_for(0.05)
+        # After the dwell, pathfinding_node returns to IDLE and clears state.
+        h.spin_until(lambda: h.node._mode == "IDLE", timeout=1.0)
+        assert h.node._mission is None
+        assert h.node._mission_cmd is None
+
+        # Drain in-flight emissions, then confirm the timer is quiescent.
+        h.spin_for(0.4)
+        idle_count = len(h.received_targets)
+        h.spin_for(0.6)
+        assert len(h.received_targets) == idle_count
+
+    def test_does_not_terminate_below_surface(
+        self, pathfinding_node_harness, monkeypatch
+    ):
+        monkeypatch.setattr(surface_mod, "DWELL_AT_SURFACE_S", 0.3)
+
+        h = pathfinding_node_harness
+        h.publish_mission_command(SURFACE)
+        h.publish_external_pressure(PRESSURE_AT_DEPTH_PA)
+        h.spin_until(
+            lambda: h.node._mode == "LOADED"
+            and h.node._current_pressure_pa is not None,
+            timeout=1.0,
+        )
+        h.publish_command("start")
+        h.spin_until(lambda: h.node._mode == "RUNNING", timeout=1.0)
+        # Pump deep-pressure samples for several dwell-windows; mission must
+        # stay RUNNING and keep emitting setpoints.
+        deadline = time.monotonic() + 1.5
+        while time.monotonic() < deadline:
+            h.publish_external_pressure(PRESSURE_AT_DEPTH_PA)
+            h.spin_for(0.05)
+        assert h.node._mode == "RUNNING"
+        assert len(h.received_targets) >= 5
+
+
+class TestTickGating:
+    def test_loaded_does_not_emit(self, pathfinding_node_harness):
+        h = pathfinding_node_harness
+        h.publish_mission_command(TRIM, target_pressure_pa=50_000.0)
+        h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
+        h.spin_until(
+            lambda: h.node._mode == "LOADED"
+            and h.node._current_pressure_pa is not None,
+            timeout=1.0,
+        )
+        # No `start` command -> mode stays LOADED, timer must no-op.
+        h.spin_for(0.7)
+        assert h.received_targets == []
+        assert h.node._mode == "LOADED"

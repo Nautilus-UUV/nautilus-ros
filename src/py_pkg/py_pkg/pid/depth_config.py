@@ -1,7 +1,4 @@
-# Copied from divetest files: depth_control_node_config.py
-
 from py_pkg.physics import (
-    WATER_PRESSURE_GRADIENT_PA_PER_M,
     depth_to_pressure_pa,
     gauge_pressure_pa,
 )
@@ -11,46 +8,55 @@ from py_pkg.robot_specs import (
     BLADDER_VOLUME_M3,
 )
 
-# Hydrostatic gradient (Pa/m) in salt water. Used to translate the
-# legacy depth-domain tuning into pressure-domain gains so the cascade
-# stays numerically equivalent: L1/L2 stages have inputs and outputs
-# both scaled by RHO_G, L3 maps Pa/s^2 -> q so its gains divide by it.
-RHO_G = WATER_PRESSURE_GRADIENT_PA_PER_M
-
 init_control = {}
-# Z-positive-down: shallowest gauge pressure (~20 m), deepest (~70 m).
+
+# Set safe default operating depths (20 meters to 70 meters).
+# The system uses these high/low pressure boundaries until it receives
+# a specific target depth command from the main controller.
 init_control["low_pressure_pa"] = gauge_pressure_pa(depth_to_pressure_pa(20.0))
 init_control["high_pressure_pa"] = gauge_pressure_pa(depth_to_pressure_pa(70.0))
 init_control["frequency"] = 10
+
+# PID Controller Configuration: Calculates how fast to pump fluid into/out of the
+# buoyancy bladder based on the current pressure (depth) error.
+#
+# Kp (Proportional): Drives the main pump speed. It is tuned so that a 2.5-meter
+# error runs the pump at its maximum allowed rate (~4000 RPM).
+#
+# Kd (Derivative) & Filter: Slows the pump down as we get close to the target to
+# prevent overshooting. Because pressure sensors are noisy (jumping between whole
+# numbers), taking the derivative of that noise causes erratic motor commands.
+# The `derivative_filter` smooths this out.
+#
+# Ki (Integral) & Limits: Handles tiny residual buoyancy issues (like hovering).
+# These values are kept intentionally tiny. Why? During a long, deep dive, the
+# sub spends a long time far away from its target. If Ki is too large, it "remembers"
+# all that error, keeps the pump running too long, and causes the sub to blast past
+# the target depth. Keeping limits small lets it fine-tune hovering without ruining
+# long dives.
 init_control["pid_pressure"] = {
-    "kp": 0.1,
-    "ki": 0,
-    "kd": 0,
-    "integral_limits": (-100.0 * RHO_G, 100.0 * RHO_G),
-    "output_limits": (-100.0 * RHO_G, 100.0 * RHO_G),
+    "kp": 4.0e-7,
+    "ki": 1.0e-8,
+    "kd": 1.5e-5,
+    "integral_limits": (-0.0025, 0.0025),
+    "output_limits": (-0.010, 0.010),
+    "derivative_filter": 0.3,
 }
-init_control["pid_p_dot"] = {
-    "kp": 1,
-    "ki": 0,
-    "kd": 0.1,
-    "integral_limits": (-100.0 * RHO_G, 100.0 * RHO_G),
-    "output_limits": (-10.0 * RHO_G, 10.0 * RHO_G),
-}
-init_control["pid_p_ddot"] = {
-    "kp": 0.02 / RHO_G,
-    "ki": 0.00005 / RHO_G,
-    "kd": 0.8 / RHO_G,
-    "integral_limits": (-100.0, 100.0),
-    "output_limits": (-0.010035, 0.010035),
-}
-init_pos = {}
-init_pos["x"] = 0.0
-init_pos["y"] = 0.0
-# z carries the controlled variable (gauge Pa); 0 = surface.
-init_pos["z"] = 0.0
+
 init_buoyancy_engine = {}
 init_buoyancy_engine["tank_volume"] = BLADDER_VOLUME_M3
 init_buoyancy_engine["initial_proportion_full"] = 1.0
+
 init_motor = {}
+
+# Motor Deadband: The smallest RPM command we are allowed to send.
+# We set this to 0 here to allow the math to calculate tiny, precise adjustments
+# needed for perfect hovering. If we ignored small adjustments here, the pump
+# would shut off prematurely as we approached the target, and the sub's momentum
+# would carry it past the desired depth.
+#
+# Note: The physical hardware does have a minimum limit (e.g., the pump physically
+# cannot spin slower than 1000 RPM). That hardware limitation is enforced safely
+# in a downstream hardware controller, not in this control math.
 init_motor["min_rpm"] = BCU_MOTOR_MIN_RPM
 init_motor["max_rpm"] = BCU_MOTOR_MAX_RPM

@@ -26,22 +26,30 @@ PUMP_EFFICIENCY = 0.93
 # Nominal bladder volume used by the depth controller's flow-rate model.
 BLADDER_VOLUME_M3 = 0.002275
 
-# Mechanical stroke limits of the bladder.
-BLADDER_MAX_VOLUME_M3 = 0.0025
-BLADDER_MIN_VOLUME_M3 = 0.0010
+# Mechanical stroke limits of the bladder. The Gazebo BuoyancyEngine plugin
+# allows 0–2500 mL on the glider_nautilus model; here we leave 10% headroom
+# at each end (250 mL / 2250 mL), giving a 2.0 L operating range that the
+# control loop can swing through without ever pinning the clamp.
+BLADDER_MAX_VOLUME_M3 = 0.00225
+BLADDER_MIN_VOLUME_M3 = 0.00025
 
 # ---------------------------------------------------------------------------
 # BCU motor (Maxon EPOS4)
 # ---------------------------------------------------------------------------
 
 BCU_MOTOR_MAX_RPM = 4000
-BCU_MOTOR_MIN_RPM = 1000
+BCU_MOTOR_MIN_RPM = 0
 
-# Gauge pressure past which the pump can no longer overcome ambient
-# hydrostatic pressure to fill the bladder. Below this we must descend
-# passively (valve 2 vents, pump off); above it the pump drives both
-# directions through valve 1. Set by the pump's max differential
-# pressure against the bladder, not a tuning knob. ~30 m in salt water.
+# Gauge pressure above which the pump can no longer push water into the
+# bladder against the surrounding water. When we are deeper than this
+# AND the controller wants to descend further, we skip the pump entirely
+# — open valve 2 and let the high external pressure passively fill the
+# bladder for us, free of pump energy. At shallower depths, the pump can
+# still drive flow in either direction through valve 1, so no
+# special-casing is needed.
+#
+# Set by the pump's mechanical max differential pressure, not a tuning
+# knob. Roughly 30 m in salt water.
 BCU_DEEP_THRESHOLD_PA = 301_534.5  # = 30 m * 1025 kg/m^3 * 9.806 m/s^2
 
 # ---------------------------------------------------------------------------
@@ -56,12 +64,12 @@ BCU_DEEP_THRESHOLD_PA = 301_534.5  # = 30 m * 1025 kg/m^3 * 9.806 m/s^2
 # SDF limit: lower=0, upper=-0.1195 (m) → travel = 0.1195 m.
 ACU_PITCH_MASS_KG = 1.83
 ACU_PITCH_MAX_TRAVEL_M = 0.1195
-ACU_PITCH_MAX_VELOCITY_M_S = 0.5
+ACU_PITCH_MAX_VELOCITY_M_S = 0.011
 ACU_PITCH_MAX_EFFORT_N = 10.0
 
 # Soft saturation used by the pitch axis controller (clamped-P output).
 # Must satisfy ACU_PITCH_OUTPUT_LIMIT_M <= ACU_PITCH_MAX_TRAVEL_M.
-ACU_PITCH_OUTPUT_LIMIT_M = 0.07
+ACU_PITCH_OUTPUT_LIMITS_M = (-0.11, -0.01)
 
 # Roll — acu_roll_joint, revolute, axis = +x in body frame.
 # SDF limit: lower=-0.5236, upper=0.5236 (rad) = ±30°.

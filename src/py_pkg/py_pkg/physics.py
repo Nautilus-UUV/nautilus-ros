@@ -72,9 +72,8 @@ def pressure_to_depth(
 
     depth = (P_abs - P_atm) / (rho * g)
 
-    Kept for log/UI display and for non-control integration scripts
-    that report depth in metres. The depth controller uses
-    :func:`gauge_pressure_pa` instead.
+    Kept for log/UI display where depth is reported in metres. The
+    depth controller uses :func:`gauge_pressure_pa` instead.
     """
     return (pressure_pa - atmospheric_pa) / (density * GRAVITY_M_S2)
 

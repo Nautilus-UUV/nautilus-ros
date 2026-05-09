@@ -1,12 +1,29 @@
 #!/usr/bin/env python3
-"""ACU control node.
+"""Outer-loop attitude control node — bang-bang on pitch, PID on roll.
 
-Roll: AxisController (deg in, deg out). Pitch: MassShifterController
-(deg in, m out). Reads roll/pitch from POSITION_ESTIMATION/TARGET
-quaternions; publishes ACU_ROLL (Int16 centidegrees, scale =
-ACU_ROLL_CDEG_PER_DEG) and ACU_PITCH (Int16 mm) — the wire format the
-HAL bridge and EPOS driver expect. Step conversion lives at the EPOS
-driver, not here.
+The two axes are doing very different jobs and the controllers reflect
+that.
+
+Pitch is bang-bang on pressure error. We don't ask the EKF where the
+nose is pointing; we just look at the external pressure sensor versus
+the pressure setpoint pathfinding put on POSITION_TARGET.position.z. If
+we are shallower than the setpoint we are diving, so we throw the
+pitch mass-shifter all the way back. If we are deeper we are climbing,
+so we throw it all the way front. That's the whole loop. Two values on
+the wire, one comparison per tick. The HAL bridge handles the EPOS-side
+slew rate.
+
+Roll keeps the existing PID. Roll dynamics are well-behaved (the ring
+motor is itself an angular position so the controller is unit-clean),
+the gains were tuned conservatively against EKF noise, and there's no
+analogue of pitch's "just rail it" simplification here — we want a
+quiet ring sitting at zero unless the pose actually rolls off.
+
+Wire formats are unchanged:
+
+- `ACU_PITCH` is `Int16` in millimetres (one of two extremes from
+  `ACU_PITCH_OUTPUT_LIMITS_M`).
+- `ACU_ROLL` is `Int16` in centidegrees (degrees * `ACU_ROLL_CDEG_PER_DEG`).
 """
 
 import math
@@ -14,36 +31,27 @@ import math
 import rclpy
 from geometry_msgs.msg import Pose
 from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from std_msgs.msg import Int16
+from std_msgs.msg import Int16, Int32
 
 from py_pkg.math_utils import quaternion_to_roll_pitch
-from py_pkg.pid.acu_axis_controller import AxisController, MassShifterController
-from py_pkg.pid.acu_pitch_config import init_acu_pitch
+from py_pkg.physics import gauge_pressure_pa
+from py_pkg.pid.acu_axis_controller import AxisController
 from py_pkg.pid.acu_roll_config import init_acu_roll
-from py_pkg.robot_specs import ACU_ROLL_CDEG_PER_DEG
+from py_pkg.robot_specs import ACU_PITCH_OUTPUT_LIMITS_M, ACU_ROLL_CDEG_PER_DEG
 from py_pkg.uuv_ros_core import (
     UUVTopics,
     create_publisher_for_topic,
     create_subscription_for_topic,
 )
 
-# Pitch PID runs in metres (mass-shifter stroke); ACU_PITCH topic is mm.
-_M_TO_MM = 1000.0
-
-
-def _build_axis(cls, cfg):
-    return cls(
-        name=cfg["name"],
-        Kp=cfg["Kp"],
-        Ki=cfg["Ki"],
-        Kd=cfg["Kd"],
-        position_tolerance=cfg["position_tolerance"],
-        command_tolerance=cfg["command_tolerance"],
-        integral_limits=cfg["integral_limits"],
-        output_limits=cfg["output_limits"],
-        derivative_filter=cfg["derivative_filter"],
-    )
+# Bang-bang extremes on the wire. Robot_specs gives us the operational
+# soft-saturation in metres; the wire format is mm. "Front" is the most
+# negative end of the stroke (mass forward), "back" is the least
+# negative (mass aft) — see the ACU section of robot_specs.py.
+_ACU_PITCH_FRONT_MM = int(round(ACU_PITCH_OUTPUT_LIMITS_M[1] * 1000.0))
+_ACU_PITCH_BACK_MM = int(round(ACU_PITCH_OUTPUT_LIMITS_M[0] * 1000.0))
 
 
 class ACUControlNode(Node):
@@ -52,13 +60,26 @@ class ACUControlNode(Node):
 
         self.callback_group = ReentrantCallbackGroup()
 
-        self.pitch_axis = _build_axis(MassShifterController, init_acu_pitch)
-        self.roll_axis = _build_axis(AxisController, init_acu_roll)
+        self.roll_axis = AxisController(
+            name=init_acu_roll["name"],
+            Kp=init_acu_roll["Kp"],
+            Ki=init_acu_roll["Ki"],
+            Kd=init_acu_roll["Kd"],
+            command_tolerance=init_acu_roll["command_tolerance"],
+            integral_limits=init_acu_roll["integral_limits"],
+            output_limits=init_acu_roll["output_limits"],
+            derivative_filter=init_acu_roll["derivative_filter"],
+        )
 
+        # Bang-bang state: gate the first command on having both a
+        # pressure reading and a setpoint, so we don't pick a side from
+        # uninitialized zeros.
+        self.current_pressure_pa: float | None = None
+        self.target_pressure_pa: float | None = None
+
+        # Roll PID state.
         self.target_roll_deg = 0.0
-        self.target_pitch_deg = 0.0
         self.current_roll_deg = 0.0
-        self.current_pitch_deg = 0.0
 
         self.pitch_pub = create_publisher_for_topic(
             self, UUVTopics.ACU_PITCH, callback_group=self.callback_group
@@ -69,14 +90,20 @@ class ACUControlNode(Node):
 
         create_subscription_for_topic(
             self,
-            UUVTopics.POSITION_ESTIMATION,
-            self.current_pose_callback,
+            UUVTopics.EXTERNAL_PRESSURE,
+            self.pressure_callback,
             callback_group=self.callback_group,
         )
         create_subscription_for_topic(
             self,
             UUVTopics.POSITION_TARGET,
             self.target_pose_callback,
+            callback_group=self.callback_group,
+        )
+        create_subscription_for_topic(
+            self,
+            UUVTopics.POSITION_ESTIMATION,
+            self.current_pose_callback,
             callback_group=self.callback_group,
         )
 
@@ -86,52 +113,66 @@ class ACUControlNode(Node):
             callback_group=self.callback_group,
         )
 
-        self.get_logger().info("ACU control node started.")
+        self.get_logger().info("ACU control node started (bang-bang pitch, PID roll).")
+
+    def pressure_callback(self, msg: Int32):
+        # EXTERNAL_PRESSURE is absolute Pa; POSITION_TARGET.position.z is
+        # gauge Pa (pathfinding's mission convention). Same conversion
+        # depth_node.py and pathfinding.py apply at ingress -- without it,
+        # absolute (~101 kPa at the surface) is always above any realistic
+        # gauge target and the bang-bang never flips legs.
+        self.current_pressure_pa = gauge_pressure_pa(float(msg.data))
 
     def target_pose_callback(self, msg: Pose):
+        # POSITION_TARGET.position.z carries the target pressure in Pa
+        # (pathfinding's TRIM convention). Roll comes off the quaternion
+        # the same way as before.
+        self.target_pressure_pa = float(msg.position.z)
         q = msg.orientation
-        roll, pitch = quaternion_to_roll_pitch(q.x, q.y, q.z, q.w)
+        roll, _ = quaternion_to_roll_pitch(q.x, q.y, q.z, q.w)
         self.target_roll_deg = math.degrees(roll)
-        self.target_pitch_deg = math.degrees(pitch)
-        self.get_logger().info(
-            f"Updated target: roll={self.target_roll_deg:.2f}°, "
-            f"pitch={self.target_pitch_deg:.2f}°"
-        )
 
     def current_pose_callback(self, msg: Pose):
+        # Used by the roll PID only — pitch deliberately ignores the
+        # pose estimate.
         q = msg.orientation
-        roll, pitch = quaternion_to_roll_pitch(q.x, q.y, q.z, q.w)
+        roll, _ = quaternion_to_roll_pitch(q.x, q.y, q.z, q.w)
         self.current_roll_deg = math.degrees(roll)
-        self.current_pitch_deg = math.degrees(pitch)
 
     def control_loop(self):
-        self.pitch_axis.update_sensor(self.current_pitch_deg)
+        self._update_pitch()
+        self._update_roll()
+
+    def _update_pitch(self):
+        if self.current_pressure_pa is None or self.target_pressure_pa is None:
+            return
+        diving = self.current_pressure_pa < self.target_pressure_pa
+        msg = Int16()
+        msg.data = _ACU_PITCH_BACK_MM if diving else _ACU_PITCH_FRONT_MM
+        self.pitch_pub.publish(msg)
+
+    def _update_roll(self):
         self.roll_axis.update_sensor(self.current_roll_deg)
-
-        pitch_cmd = self.pitch_axis.update(self.target_pitch_deg)
-        roll_cmd = self.roll_axis.update(self.target_roll_deg)
-
-        if pitch_cmd is not None:
-            msg = Int16()
-            msg.data = int(round(pitch_cmd * _M_TO_MM))
-            self.pitch_pub.publish(msg)
-            self.get_logger().debug(f"Pitch position (mm): {msg.data}")
-
+        now = self.get_clock().now().nanoseconds / 1e9
+        roll_cmd = self.roll_axis.update(self.target_roll_deg, now)
         if roll_cmd is not None:
             msg = Int16()
             msg.data = int(round(roll_cmd * ACU_ROLL_CDEG_PER_DEG))
             self.roll_pub.publish(msg)
-            self.get_logger().debug(f"Roll position (cdeg): {msg.data}")
 
 
 def main(args=None):
+    # Catch SIGINT/SIGTERM so the process exits 0 instead of 1 on Ctrl-C —
+    # otherwise launch_testing's exit-code check intermittently fails.
     rclpy.init(args=args)
     node = ACUControlNode()
     try:
         rclpy.spin(node)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        rclpy.try_shutdown()
 
 
 if __name__ == "__main__":

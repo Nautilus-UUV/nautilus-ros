@@ -33,13 +33,19 @@ legend bottom right
   | dashed grey | stub subpackage (intentional scaffolding) |
   | edge label  | topic : MsgType (QoS) |
   | orange edge | non-ROS hardware link |
+  Only topics defined in uuv_ros_core/topics.py are shown.
+  Message types from message_types.py; QoS from qos_profiles.py.
 endlegend
 
 ' ============================================================================
 ' NODES — declared in rank order (top → bottom).
 ' Two lanes: depth/buoyancy on the LEFT, attitude/pose on the RIGHT.
-' Estimation feeds from the top-left, telemetry collects on the bottom-right.
+' Sensors enter at the top via the HAL/STM ingress; telemetry collects
+' on the bottom-right.
 ' ============================================================================
+
+' Rank -1 — sensor ingress (HAL bridge in sim, STM driver on hardware)
+actor "sensors / HAL ingress\n(STM ↔ Pi or gz bridge)" as SENSORS
 
 ' Rank 0 — ingress / estimation source
 component "ekf_prefilter"   as EKF_PRE <<stub>>
@@ -69,11 +75,19 @@ component "canopen_node"                     as CANNODE <<stub>>
 ' EDGES — every arrow has an explicit direction hint
 ' ============================================================================
 
+' --- Sensor ingress (HAL/STM → control stack) ---
+SENSORS -down-> EKF_PRE         : "/imu/left\nImu (SensorStream)"
+SENSORS -down-> PID_DEPTH       : "/external/pressure\nInt32 (SafetyCritical)"
+
 ' --- Estimation chain (left column, top) ---
-EKF_PRE -down-> EKF             : "/imu/filtered/{L,R}\nImu (Control)"
+' EKF currently consumes only the LEFT filtered IMU; IMU_FILTERED_RIGHT is
+' defined in the registry but not yet wired.
+EKF_PRE -down-> EKF             : "/imu/filtered/left\nImu (Control)"
 
 ' --- Mission ingress (right column, top → down) ---
+' pathfinding subscribes to both /command (one-shot) and /path (waypoint list).
 MQTT -down-> PATH               : "/command\nString (Command)"
+MQTT -down-> PATH               : "/path\nFloat32MultiArray (Command)"
 
 ' --- Estimation → planning / control ---
 EKF -down-> PATH                : "/position/estimation\nPose (Control)"
@@ -86,10 +100,13 @@ PATH -down-> PID_DEPTH          : "/position/target\nPose (Control)"
 PATH -down-> PID_ACU            : "/position/target\nPose (Control)"
 
 ' --- PID → hardware drivers (parallel verticals) ---
-PID_DEPTH -down-> BCU           : "/bcu/rpm\nInt32 (Control)"
-' Combined edge: pitch (Float32 mm) and roll (Float32 rad) on a single arrow —
-' keeps the lane terse; the unit asymmetry is documented on the PID_ACU note.
-PID_ACU   -down-> ACU           : "/acu/{pitch,roll}\nFloat32 (Control)"
+' BCU_RPM is Int16 on the wire (matches STM firmware contract).
+PID_DEPTH -down-> BCU           : "/bcu/rpm\nInt16 (Control)"
+' depth_node also drives the bladder valves (bit 0 = valve 1, bit 1 = valve 2).
+PID_DEPTH -down-> BCU           : "/bcu/valves\nUInt8 (Control)"
+' ACU pitch (Int16 mm of mass-shifter stroke) and roll (Int16 centidegrees,
+' scale = ACU_ROLL_CDEG_PER_DEG) on a single arrow; both are Int16 on the wire.
+PID_ACU   -down-> ACU           : "/acu/{pitch,roll}\nInt16 (Control)"
 
 ' --- Drivers → actuators (orange, hardware) ---
 BCU -[#orange]down-> BCU_HW     : "EPOS set_velocity()"
