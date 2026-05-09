@@ -45,7 +45,9 @@ pytest -m sim test/sim/ -v    # Tier 3 — requires built DAVE workspace
 To run integration testing of the whole system, follow the [nautilus-dave](https://github.com/Nautilus-UUV/nautilus-dave/tree/dev) repository Installation instructions, then drive the controller nodes (`bcu`, `acu`, `pid`) directly against the HAL bridge.
 
 
-### [Tier 3 sim tests — running with the GUI](docs/running_sim.md)
+### Tier 3 sim tests — running with the GUI
+
+See [running_sim.md](docs/running_sim.md) for detailed instructions on different dive profiles.
 
 Tier 3 tests default to **headless** Gazebo (no window) so they run fast and don't need a display. To watch the world while a test runs, set the per-test env var and add `-s` (so pytest doesn't capture launch output):
 

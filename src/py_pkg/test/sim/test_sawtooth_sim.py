@@ -67,14 +67,15 @@ from std_msgs.msg import Int16, String
 from ._sim_helpers import reap_lingering_gz
 
 TARGET_PRESSURE_PA = 73575.0  # ~7.5 m of seawater (gauge); spawn is ~5 m
+# TARGET_PRESSURE_PA = 703575.0
 PITCH_RAD = math.radians(30.0)  # SAWTOOTH glide magnitude
 N_RESURFACES = 1
 
 # Bang-bang ACU pitch endpoints on the wire (Int16 mm). Same derivation
 # as in ``pid/acu_node.py``: the soft-saturation tuple is ordered
 # (front, back) with "front" the most-negative end of stroke.
-ACU_PITCH_FRONT_MM = int(round(ACU_PITCH_OUTPUT_LIMITS_M[0] * 1000.0))
-ACU_PITCH_BACK_MM = int(round(ACU_PITCH_OUTPUT_LIMITS_M[1] * 1000.0))
+ACU_PITCH_FRONT_MM = int(round(ACU_PITCH_OUTPUT_LIMITS_M[1] * 1000.0))
+ACU_PITCH_BACK_MM = int(round(ACU_PITCH_OUTPUT_LIMITS_M[0] * 1000.0))
 
 
 @pytest.mark.launch_test

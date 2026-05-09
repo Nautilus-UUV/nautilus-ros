@@ -50,8 +50,8 @@ from py_pkg.uuv_ros_core import (
 # soft-saturation in metres; the wire format is mm. "Front" is the most
 # negative end of the stroke (mass forward), "back" is the least
 # negative (mass aft) — see the ACU section of robot_specs.py.
-_ACU_PITCH_FRONT_MM = int(round(ACU_PITCH_OUTPUT_LIMITS_M[0] * 1000.0))
-_ACU_PITCH_BACK_MM = int(round(ACU_PITCH_OUTPUT_LIMITS_M[1] * 1000.0))
+_ACU_PITCH_FRONT_MM = int(round(ACU_PITCH_OUTPUT_LIMITS_M[1] * 1000.0))
+_ACU_PITCH_BACK_MM = int(round(ACU_PITCH_OUTPUT_LIMITS_M[0] * 1000.0))
 
 
 class ACUControlNode(Node):
