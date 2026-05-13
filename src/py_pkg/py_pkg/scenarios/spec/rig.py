@@ -10,6 +10,8 @@ nominal mirror to robot_specs.
 
 from __future__ import annotations
 
+from typing import Optional
+
 from pydantic import Field
 
 from py_pkg.robot_specs import (
@@ -99,9 +101,77 @@ class BridgesSpec(StrictModel):
     )
 
 
+class FinAeroSpec(StrictModel):
+    """Lift/drag plugin parameters for one control surface.
+
+    Defaults mirror the three identical `<plugin name="...LiftDrag">`
+    blocks in the live `model.sdf`. `area` differs between fins
+    (0.0725 m^2) and the top rudder (0.0244 m^2), so it has no class
+    default — the parent `HydrodynamicsSpec` supplies it per surface.
+    """
+
+    cla: float = 4.13
+    cla_stall: float = -1.1
+    cda: float = 0.2
+    cda_stall: float = 0.03
+    alpha_stall: float = 0.17
+    a0: float = 0.0
+    area: float
+
+
+class HydrodynamicsSpec(StrictModel):
+    """SDF hydrodynamic coefficients, exposed for sampled parameter sweeps.
+
+    Defaults mirror the current `model.sdf` verbatim so that rendering
+    the Jinja template with `HydrodynamicsSpec()` reproduces the
+    canonical SDF byte-for-byte (locked in by the parity Tier 3 test).
+
+    `RigScenario.hydrodynamics` is `Optional[HydrodynamicsSpec]` —
+    scenarios that omit the block (nominal/baseline) skip the Jinja
+    render entirely and spawn the canonical SDF unchanged. Scenarios
+    that author a block trigger the render path. That's the opt-in
+    switch: sampled sweeps add `rig.hydrodynamics:`; everyday runs
+    don't. Sampling strategy (LHS, Sobol, Halton, plain MC,
+    hand-picked corners) is the orchestrator's call — the spec is the
+    same shape regardless.
+    """
+
+    # base_link <fluid_added_mass> (model.sdf lines 39-46)
+    added_mass_xx: float = 5.30023995
+    added_mass_yy: float = 98.529516
+    added_mass_zz: float = 110.543023
+    added_mass_pp: float = 1.46943124
+    added_mass_qq: float = 20.2676439
+    added_mass_rr: float = 16.1139805
+
+    # gz-sim-hydrodynamics-system linear drag diagonals (model.sdf lines 135-140)
+    drag_xU: float = -108.0
+    drag_yV: float = -8.0
+    drag_zW: float = -162.0
+    drag_kP: float = -13.0
+    drag_mQ: float = -32.0
+    drag_nR: float = -20.0
+
+    # Three gz-sim-lift-drag-system plugins (model.sdf lines 289 / 353 / 462).
+    # Fins share 0.0725 m^2; the top rudder is smaller at 0.0244 m^2.
+    left_fin: FinAeroSpec = Field(
+        default_factory=lambda: FinAeroSpec(area=0.0725)
+    )
+    right_fin: FinAeroSpec = Field(
+        default_factory=lambda: FinAeroSpec(area=0.0725)
+    )
+    top_rudder: FinAeroSpec = Field(
+        default_factory=lambda: FinAeroSpec(area=0.0244)
+    )
+
+
 class RigScenario(StrictModel):
     sim: SimSpec = Field(default_factory=SimSpec)
     plant: PlantSpec = Field(default_factory=PlantSpec)
     faults: FaultsSpec = Field(default_factory=FaultsSpec)
     noise: NoiseSpec = Field(default_factory=NoiseSpec)
     bridges: BridgesSpec = Field(default_factory=BridgesSpec)
+    # Optional by design: when absent, the launch spawns the canonical
+    # `model.sdf` unchanged (no Jinja render). When present, the launch
+    # renders `model.sdf.jinja` with these values.
+    hydrodynamics: Optional[HydrodynamicsSpec] = None
