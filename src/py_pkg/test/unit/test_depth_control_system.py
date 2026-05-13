@@ -2,8 +2,8 @@
 
 The controller is a thin shell around a single PID on gauge pressure
 (Pa) -> bladder flow ratio q (1/s). Pure logic; no ROS context, no
-hardware. Uses init_control from depth_config so the tests track the
-same gains and limits as the real node.
+hardware. Uses a default DepthSpec so the tests track the same gains
+and limits as the real node would see absent a scenario override.
 
 Z-positive-down throughout: target_pressure_pa is gauge Pa at the
 desired hold depth.
@@ -12,8 +12,8 @@ desired hold depth.
 import pytest
 
 from py_pkg.physics import depth_to_pressure_pa, gauge_pressure_pa
-from py_pkg.pid.depth_config import init_control
 from py_pkg.pid.depth_control_system import DepthControlSystem
+from py_pkg.scenarios.spec.control import DepthSpec
 
 
 def _gauge_pa_for_depth(depth_m: float) -> float:
@@ -21,7 +21,7 @@ def _gauge_pa_for_depth(depth_m: float) -> float:
 
 
 def _make_system(target_pressure_pa: float = _gauge_pa_for_depth(70.0)):
-    cs = DepthControlSystem(init_control)
+    cs = DepthControlSystem(DepthSpec())
     cs.target_pressure_pa = target_pressure_pa
     return cs
 

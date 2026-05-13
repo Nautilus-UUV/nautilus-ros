@@ -1,0 +1,55 @@
+"""Tier 1 sanity for the scenarios package.
+
+  - Strict mode: unknown keys raise ValidationError (ValueError).
+  - load_scenario returns a single Scenario with both halves populated.
+  - derive_seed is deterministic across processes (no PYTHONHASHSEED salt).
+"""
+
+from __future__ import annotations
+
+import tempfile
+from pathlib import Path
+
+import pytest
+
+from py_pkg.scenarios import derive_seed, load_scenario
+from py_pkg.scenarios.spec.control import ControlScenario
+from py_pkg.scenarios.spec.rig import RigScenario
+
+
+def _write_yaml(text: str) -> Path:
+    p = Path(tempfile.mkstemp(suffix=".yaml")[1])
+    p.write_text(text)
+    return p
+
+
+def test_empty_yaml_returns_defaults():
+    p = _write_yaml("")
+    s = load_scenario(p)
+    assert s.seed == 0
+    assert s.control == ControlScenario()
+    assert s.rig == RigScenario()
+
+
+def test_unknown_top_level_key_raises():
+    p = _write_yaml("control: {}\nbogus: 42\n")
+    with pytest.raises(ValueError, match="bogus"):
+        load_scenario(p)
+
+
+def test_unknown_nested_key_raises():
+    p = _write_yaml(
+        "control:\n  controllers:\n    depth:\n      typo_field: 1\n"
+    )
+    with pytest.raises(ValueError, match="typo_field"):
+        load_scenario(p)
+
+
+def test_derive_seed_is_deterministic_and_varies():
+    a = derive_seed(0, "bcu_rpm_fault")
+    b = derive_seed(0, "bcu_rpm_fault")
+    c = derive_seed(1, "bcu_rpm_fault")
+    d = derive_seed(0, "acu_pitch_fault")
+    assert a == b
+    assert a != c
+    assert a != d

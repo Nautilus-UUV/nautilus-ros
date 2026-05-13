@@ -92,10 +92,10 @@ def generate_test_description():
             ]
         ),
         # Test publishes the MissionCommand + start itself for deterministic
-        # timing; the launch's autostart path is the CLI-only convenience.
+        # timing; launches default `mission_autostart` to false. The
+        # baseline scenario covers all plant/control fields.
         launch_arguments={
             "headless": "false" if gui_enabled else "true",
-            "mission_autostart": "false",
         }.items(),
     )
 

@@ -16,22 +16,21 @@ live in `physics.py`; controller tuning (PID gains, deadbands) lives in
 # Volumetric displacement per revolution (m^3 / rev).
 VOLUME_PER_REV_M3 = 0.32e-6
 
-# Pump volumetric efficiency between 1000 and 3000 RPM.
-PUMP_EFFICIENCY = 0.93
-
 # ---------------------------------------------------------------------------
 # Bladder (buoyancy engine)
 # ---------------------------------------------------------------------------
 
-# Nominal bladder volume used by the depth controller's flow-rate model.
-BLADDER_VOLUME_M3 = 0.002275
-
-# Mechanical stroke limits of the bladder. The Gazebo BuoyancyEngine plugin
-# allows 0–2500 mL on the glider_nautilus model; here we leave 10% headroom
-# at each end (250 mL / 2250 mL), giving a 2.0 L operating range that the
-# control loop can swing through without ever pinning the clamp.
-BLADDER_MAX_VOLUME_M3 = 0.00225
-BLADDER_MIN_VOLUME_M3 = 0.00025
+# Full mechanical bladder capacity. Matches the Gazebo BuoyancyEngine plugin's
+# <max_volume> on the glider_nautilus SDF (0.0025 m^3 = 2.5 L) and is used by
+# the depth controller as the scaling denominator in q_to_rpm: the PID's
+# normalized output q (1/s) is multiplied by this volume to get a physical
+# flow rate (m^3/s) before inverting through the pump's volume-per-rev.
+#
+# Operating-range clamps (the bladder min/max actually exposed to the control
+# loop, with whatever headroom we want) are tunable from the scenario YAML
+# under rig.plant.bladder_min_m3 / bladder_max_m3 — same pattern as the ACU
+# pitch axis output_limits.
+BLADDER_VOLUME_M3 = 0.0025
 
 # ---------------------------------------------------------------------------
 # BCU motor (Maxon EPOS4)
@@ -47,9 +46,7 @@ BCU_MOTOR_MIN_RPM = 0
 # bladder for us, free of pump energy. At shallower depths, the pump can
 # still drive flow in either direction through valve 1, so no
 # special-casing is needed.
-#
-# Set by the pump's mechanical max differential pressure, not a tuning
-# knob. Roughly 30 m in salt water.
+
 BCU_DEEP_THRESHOLD_PA = 301_534.5  # = 30 m * 1025 kg/m^3 * 9.806 m/s^2
 
 # ---------------------------------------------------------------------------
@@ -66,10 +63,6 @@ ACU_PITCH_MASS_KG = 1.83
 ACU_PITCH_MAX_TRAVEL_M = 0.1195
 ACU_PITCH_MAX_VELOCITY_M_S = 0.011
 ACU_PITCH_MAX_EFFORT_N = 10.0
-
-# Soft saturation used by the pitch axis controller (clamped-P output).
-# Must satisfy ACU_PITCH_OUTPUT_LIMIT_M <= ACU_PITCH_MAX_TRAVEL_M.
-ACU_PITCH_OUTPUT_LIMITS_M = (-0.11, -0.01)
 
 # Roll — acu_roll_joint, revolute, axis = +x in body frame.
 # SDF limit: lower=-0.5236, upper=0.5236 (rad) = ±30°.

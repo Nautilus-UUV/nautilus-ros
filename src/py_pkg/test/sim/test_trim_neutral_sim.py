@@ -17,7 +17,7 @@ closed loop holds depth + comes to a stop. Spawn is at z=-5 (~5 m), so
 the BCU has to descend ~1.5 m by draining the bladder. The target is
 deliberately inside the depth envelope the SDF's mass + 0.0544 m^3
 hull-collision balance allows the BuoyancyEngine plugin to reach with
-the bladder clamp at ``BLADDER_MIN_VOLUME_M3``. Ground truth comes from
+the bladder clamp at ``rig.plant.bladder_min_m3``. Ground truth comes from
 the model's already-bridged ``/model/glider_nautilus/odometry`` topic
 — privileged sim-only info kept *out* of the Nautilus topic registry
 so production controllers can't accidentally depend on it.
@@ -87,6 +87,9 @@ def generate_test_description():
         "on",
     )
 
+    test_scenario = os.path.join(
+        os.path.dirname(__file__), "scenarios", "test_trim_neutral.yaml"
+    )
     trim_sim_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             [
@@ -98,11 +101,12 @@ def generate_test_description():
             ]
         ),
         # Test publishes the MissionCommand + start itself for deterministic
-        # timing; the launch's autostart path is the CLI-only convenience.
+        # timing; the scenario YAML's autostart=false matches that intent
+        # and also pins the target pressure for documentation parity with
+        # TARGET_PRESSURE_PA below.
         launch_arguments={
-            "target_pressure_pa": str(TARGET_PRESSURE_PA),
+            "scenario": test_scenario,
             "headless": "false" if gui_enabled else "true",
-            "mission_autostart": "false",
         }.items(),
     )
 

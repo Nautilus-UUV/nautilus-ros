@@ -1,0 +1,64 @@
+# Nominal scenario: perturbation-free reference for Monte Carlo sweeps.
+#
+# Identical to baseline.yaml except BCU fault injection is disabled
+# (`probability_per_sec: 0.0`). Use this as the deterministic baseline
+# every MC run differs from.
+
+seed: 0
+
+control:
+  controllers:
+    depth:
+      frequency_hz: 10
+      pid_pressure:
+        kp: 4.0e-7
+        ki: 1.0e-8
+        kd: 1.5e-5
+        integral_limits: [-0.0025, 0.0025]
+        output_limits: [-0.010, 0.010]
+        derivative_filter: 0.3
+      plant_model:
+        bladder_nominal_m3: 0.0025
+        initial_proportion_full: 1.0
+        min_rpm: 0
+        max_rpm: 4000
+        pump_efficiency: 0.93
+    acu_pitch:
+      name: pitch
+      output_limits: [-0.11, -0.01]
+    acu_roll:
+      frequency_hz: 10
+      name: roll
+      kp: 0.5
+      ki: 0.005
+      kd: 0.05
+      command_tolerance: 0.5
+      integral_limits: [-30.0, 30.0]
+      output_limits: [-30.0, 30.0]
+      derivative_filter: 0.2
+
+rig:
+  sim:
+    model_name: glider_nautilus
+    world_name: oceans_waves
+  plant:
+    volume_per_rev_m3: 0.32e-6
+    bladder_min_m3: 0.00025
+    bladder_max_m3: 0.00225
+    bladder_nominal_m3: 0.0025
+    bcu_motor_min_rpm: 0
+    bcu_motor_max_rpm: 4000
+  faults:
+    bcu_rpm:
+      # Fault injection disabled — every dt the injector sees probability 0
+      # and never trips. The other fields are kept at baseline values so a
+      # sweep flipping just probability_per_sec back on is a one-line edit.
+      probability_per_sec: 0.0
+      duration_sec: 10.0
+      degraded_factor: 0.5
+      severe_factor: 0.0
+  bridges:
+    bcu:
+      publish_rate_hz: 10
+    external_sensor:
+      publish_rate_hz: 10

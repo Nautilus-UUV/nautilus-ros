@@ -1,10 +1,10 @@
 """Shared utilities for Tier 3 sim tests.
 
-Sim tests aren't safe to run alongside a manual unified_sim — both bind
-the same gz transport bus. ``reap_lingering_gz`` enforces "no concurrent
-simulators of this world" by killing any leftover ``gz sim`` of our
-world. Needed because launch_testing's SIGTERM doesn't reliably reap the
-gz-sim-server child of the Ruby ``gz sim`` wrapper.
+Sim tests aren't safe to run alongside another manual sim launch — both
+bind the same gz transport bus. ``reap_lingering_gz`` enforces "no
+concurrent simulators of this world" by killing any leftover ``gz sim``
+of our world. Needed because launch_testing's SIGTERM doesn't reliably
+reap the gz-sim-server child of the Ruby ``gz sim`` wrapper.
 """
 
 import subprocess

@@ -15,6 +15,7 @@ not here. This file stays at the level of "what should the bladder be
 doing" and leaves the wire-level details to the node that publishes.
 """
 
+from py_pkg.scenarios.spec.control import DepthSpec
 from py_pkg.utils_controls import PIDController
 
 
@@ -39,16 +40,25 @@ class DepthControlSystem:
     step. ``depth_node`` ticks it at 10 Hz.
     """
 
-    def __init__(self, config: dict) -> None:
+    def __init__(self, config: DepthSpec) -> None:
         # Single PID: gauge Pa -> q (1/s). Derivative-on-measurement
         # (Pa/s rate) and a derivative filter handle the 10 Hz +
         # quantized-pressure noise floor.
-        self.pid_pressure = PIDController(**config["pid_pressure"])
+        pp = config.pid_pressure
+        self.pid_pressure = PIDController(
+            kp=pp.kp,
+            ki=pp.ki,
+            kd=pp.kd,
+            integral_limits=pp.integral_limits,
+            output_limits=pp.output_limits,
+            derivative_filter=pp.derivative_filter,
+        )
 
-        # Glide path setpoints, gauge Pa.
-        self.low_pressure_pa: float = config["low_pressure_pa"]
-        self.high_pressure_pa: float = config["high_pressure_pa"]
-        self.target_pressure_pa: float = self.high_pressure_pa
+        # depth_node's control_loop gates calc_acc on its own
+        # target_pressure_pa-is-None check, so this is only ever read
+        # after target_pose_callback has overwritten it. Surface (gauge 0)
+        # is the safe default in case that invariant is ever violated.
+        self.target_pressure_pa: float = 0.0
 
     def calc_acc(self, pressure_pa: float, time: float) -> float:
         """Run one control step and return the bladder flow command q (1/s)."""

@@ -22,7 +22,7 @@ quiet ring sitting at zero unless the pose actually rolls off.
 Wire formats are unchanged:
 
 - `ACU_PITCH` is `Int16` in millimetres (one of two extremes from
-  `ACU_PITCH_OUTPUT_LIMITS_M`).
+  the pitch axis's `output_limits` in `AcuPitchSpec`).
 - `ACU_ROLL` is `Int16` in centidegrees (degrees * `ACU_ROLL_CDEG_PER_DEG`).
 """
 
@@ -38,20 +38,13 @@ from std_msgs.msg import Int16, Int32
 from py_pkg.math_utils import quaternion_to_roll_pitch
 from py_pkg.physics import gauge_pressure_pa
 from py_pkg.pid.acu_axis_controller import AxisController
-from py_pkg.pid.acu_roll_config import init_acu_roll
-from py_pkg.robot_specs import ACU_PITCH_OUTPUT_LIMITS_M, ACU_ROLL_CDEG_PER_DEG
+from py_pkg.robot_specs import ACU_ROLL_CDEG_PER_DEG
+from py_pkg.scenarios.compile import acu_pitch_spec_from_node, acu_roll_spec_from_node
 from py_pkg.uuv_ros_core import (
     UUVTopics,
     create_publisher_for_topic,
     create_subscription_for_topic,
 )
-
-# Bang-bang extremes on the wire. Robot_specs gives us the operational
-# soft-saturation in metres; the wire format is mm. "Front" is the most
-# negative end of the stroke (mass forward), "back" is the least
-# negative (mass aft) — see the ACU section of robot_specs.py.
-_ACU_PITCH_FRONT_MM = int(round(ACU_PITCH_OUTPUT_LIMITS_M[1] * 1000.0))
-_ACU_PITCH_BACK_MM = int(round(ACU_PITCH_OUTPUT_LIMITS_M[0] * 1000.0))
 
 
 class ACUControlNode(Node):
@@ -60,15 +53,24 @@ class ACUControlNode(Node):
 
         self.callback_group = ReentrantCallbackGroup()
 
+        # Bang-bang extremes on the wire. The pitch spec gives us the
+        # operational soft-saturation in metres; the wire format is mm.
+        # "Front" is the most negative end of the stroke (mass forward),
+        # "back" is the least negative (mass aft).
+        pitch_cfg = acu_pitch_spec_from_node(self)
+        self._acu_pitch_back_mm = int(round(pitch_cfg.output_limits[0] * 1000.0))
+        self._acu_pitch_front_mm = int(round(pitch_cfg.output_limits[1] * 1000.0))
+
+        roll_cfg = acu_roll_spec_from_node(self)
         self.roll_axis = AxisController(
-            name=init_acu_roll["name"],
-            Kp=init_acu_roll["Kp"],
-            Ki=init_acu_roll["Ki"],
-            Kd=init_acu_roll["Kd"],
-            command_tolerance=init_acu_roll["command_tolerance"],
-            integral_limits=init_acu_roll["integral_limits"],
-            output_limits=init_acu_roll["output_limits"],
-            derivative_filter=init_acu_roll["derivative_filter"],
+            name=roll_cfg.name,
+            kp=roll_cfg.kp,
+            ki=roll_cfg.ki,
+            kd=roll_cfg.kd,
+            command_tolerance=roll_cfg.command_tolerance,
+            integral_limits=roll_cfg.integral_limits,
+            output_limits=roll_cfg.output_limits,
+            derivative_filter=roll_cfg.derivative_filter,
         )
 
         # Bang-bang state: gate the first command on having both a
@@ -108,7 +110,7 @@ class ACUControlNode(Node):
         )
 
         self.control_timer = self.create_timer(
-            1.0 / 10.0,
+            1.0 / roll_cfg.frequency_hz,
             self.control_loop,
             callback_group=self.callback_group,
         )
@@ -148,7 +150,7 @@ class ACUControlNode(Node):
             return
         diving = self.current_pressure_pa < self.target_pressure_pa
         msg = Int16()
-        msg.data = _ACU_PITCH_BACK_MM if diving else _ACU_PITCH_FRONT_MM
+        msg.data = self._acu_pitch_back_mm if diving else self._acu_pitch_front_mm
         self.pitch_pub.publish(msg)
 
     def _update_roll(self):

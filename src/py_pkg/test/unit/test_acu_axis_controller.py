@@ -30,10 +30,10 @@ def _prime(axis: AxisController, current_pos: float = 0.0) -> None:
     assert axis.update(desired_value=current_pos, time=PRIME_TIME) is None
 
 
-def make_axis(Kp=0.5, command_tolerance=0.0, output_limits=(-1000.0, 1000.0)):
+def make_axis(kp=0.5, command_tolerance=0.0, output_limits=(-1000.0, 1000.0)):
     return AxisController(
         name="test_axis",
-        Kp=Kp,
+        kp=kp,
         command_tolerance=command_tolerance,
         output_limits=output_limits,
     )
@@ -51,39 +51,39 @@ class TestPrimeCall:
     def test_first_real_call_emits_even_when_target_unchanged(self):
         # last_commanded_pos starts at None, so the first post-prime tick
         # always emits regardless of how close target_pos is to 0.
-        axis = make_axis(Kp=0.5, command_tolerance=10.0)
+        axis = make_axis(kp=0.5, command_tolerance=10.0)
         _prime(axis, current_pos=0.0)
         cmd = axis.update(desired_value=0.0, time=_t(1))
         assert cmd == pytest.approx(0.0)
 
 
 class TestProportionalIncrement:
-    """new_target = current_pos + Kp * (desired - current_pos).
+    """new_target = current_pos + kp * (desired - current_pos).
 
     Roll's actuator and sensor share units (degrees), so the controller
-    treats Kp's output as an *increment* on the current position rather
+    treats kp's output as an *increment* on the current position rather
     than an absolute target.
     """
 
     def test_proportional_step_toward_target(self):
-        axis = make_axis(Kp=0.5)
+        axis = make_axis(kp=0.5)
         _prime(axis, current_pos=0.0)
         # error = 10, correction = 5, target = 0 + 5 = 5.
         assert axis.update(desired_value=10.0, time=_t(1)) == pytest.approx(5.0)
 
     def test_zero_error_holds_position(self):
-        axis = make_axis(Kp=0.5)
+        axis = make_axis(kp=0.5)
         _prime(axis, current_pos=5.0)
         assert axis.update(desired_value=5.0, time=_t(1)) == pytest.approx(5.0)
 
     def test_negative_error_steps_backward(self):
-        axis = make_axis(Kp=0.5)
+        axis = make_axis(kp=0.5)
         _prime(axis, current_pos=10.0)
         # error = -10, correction = -5, target = 10 - 5 = 5.
         assert axis.update(desired_value=0.0, time=_t(1)) == pytest.approx(5.0)
 
     def test_kp_one_jumps_to_target(self):
-        axis = make_axis(Kp=1.0)
+        axis = make_axis(kp=1.0)
         _prime(axis, current_pos=0.0)
         assert axis.update(desired_value=10.0, time=_t(1)) == pytest.approx(10.0)
 
@@ -96,7 +96,7 @@ class TestOutputClamp:
     def _make(self):
         return AxisController(
             name="roll",
-            Kp=0.5,
+            kp=0.5,
             command_tolerance=0.0,
             output_limits=(-25.0, 25.0),
         )
@@ -129,13 +129,13 @@ class TestRedundantPublishGuard:
         # for the first real call. Without this, an axis whose first
         # target happens to equal 0 (or a clamped value) would never
         # publish.
-        axis = make_axis(Kp=0.5, command_tolerance=100.0)
+        axis = make_axis(kp=0.5, command_tolerance=100.0)
         _prime(axis, current_pos=0.0)
         cmd = axis.update(desired_value=10.0, time=_t(1))
         assert cmd == pytest.approx(5.0)
 
     def test_target_change_within_tolerance_suppressed(self):
-        axis = make_axis(Kp=0.5, command_tolerance=1.0)
+        axis = make_axis(kp=0.5, command_tolerance=1.0)
         _prime(axis, current_pos=0.0)
 
         # Tick 1 emits; latches last_commanded_pos = 5.0.
@@ -147,7 +147,7 @@ class TestRedundantPublishGuard:
         assert cmd2 is None
 
     def test_target_change_above_tolerance_emits(self):
-        axis = make_axis(Kp=0.5, command_tolerance=0.1)
+        axis = make_axis(kp=0.5, command_tolerance=0.1)
         _prime(axis, current_pos=0.0)
 
         cmd1 = axis.update(desired_value=10.0, time=_t(1))
@@ -164,7 +164,7 @@ class TestRedundantPublishGuard:
         # everything after the first emission.
         axis = AxisController(
             name="roll",
-            Kp=0.5,
+            kp=0.5,
             command_tolerance=0.0,
             output_limits=(-25.0, 25.0),
         )
@@ -181,16 +181,16 @@ class TestRedundantPublishGuard:
 class TestPIDPathWired:
     """Smoke that the underlying PIDController is actually feeding the
     axis. Not re-testing PIDController itself — test_pid_controller.py
-    covers that. With Kp=0 we isolate the integral contribution and watch
+    covers that. With kp=0 we isolate the integral contribution and watch
     the output grow under persistent error.
     """
 
     def test_integral_accumulates_under_persistent_error(self):
         axis = AxisController(
             name="roll",
-            Kp=0.0,
-            Ki=0.5,
-            Kd=0.0,
+            kp=0.0,
+            ki=0.5,
+            kd=0.0,
             command_tolerance=0.0,
             integral_limits=(-1000.0, 1000.0),
             output_limits=(-1000.0, 1000.0),

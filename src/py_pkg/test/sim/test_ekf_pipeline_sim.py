@@ -86,7 +86,7 @@ def generate_test_description():
                 )
             ]
         ),
-        # Same spawn pose as unified_sim.launch.py.
+        # Same spawn pose as trim_sim.launch.py.
         launch_arguments={
             "z": "-5",
             "roll": "3.141592653589793",

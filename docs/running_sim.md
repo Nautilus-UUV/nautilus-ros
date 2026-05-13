@@ -14,6 +14,14 @@ source install/setup.bash
 
 ## Unbounded interactive run with the GUI
 
+All three mission launches below accept the same `scenario:=<path>`
+argument (defaults to the installed `library/nominal.yaml` —
+perturbation-free, fault-injection off). Override with
+`library/baseline.yaml` to turn BCU fault injection back on, or with
+any custom YAML for an MC sweep. The trim section spells the
+override out; the same flag works for the sawtooth and surface
+variants and for `bridge.launch.py` / `control_stack.launch.py`.
+
 ### 1. Targeted Trim and Neutral Mission Profile
 ---
 
@@ -24,7 +32,10 @@ holds the glider at the requested target depth. Runs forever until
 Ctrl-C.
 
 ```bash
-S
+ros2 launch nautilus_hal trim_sim.launch.py \
+    headless:=false \
+    mission_autostart:=true \
+    target_pressure_pa:=65332.0
 ```
 
 - `headless:=false` opens the Gazebo GUI; leave at its default `true` for
@@ -33,6 +44,19 @@ S
   target_pressure_pa=…}` and `/command:start` after an 8/10 s
 - `target_pressure_pa` is the depth setpoint in **gauge Pa**:
   - 65 332 ≈ 6.5 m
+- `scenario:=<path>` selects the scenario YAML that drives gains, plant,
+  bridge publish rates, and fault injection. Defaults to the installed
+  `library/nominal.yaml` (perturbation-free, fault-injection off). To
+  run with BCU fault injection on (MTTF ~60 s), point it at the
+  baseline scenario:
+
+  ```bash
+  ros2 launch nautilus_hal trim_sim.launch.py \
+      headless:=false \
+      mission_autostart:=true \
+      target_pressure_pa:=65332.0 \
+      scenario:=$(ros2 pkg prefix py_pkg)/share/py_pkg/scenarios/library/baseline.yaml
+  ```
 
 
 #### Re-firing mid-run

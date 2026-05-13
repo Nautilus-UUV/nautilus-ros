@@ -10,12 +10,8 @@ from std_msgs.msg import Int16, UInt8
 from py_pkg.math_utils import clamp
 from py_pkg.physics import gauge_pressure_pa, q_to_rpm
 from py_pkg.pid import depth_control_system as ControlSystem
-from py_pkg.pid.depth_config import (
-    init_buoyancy_engine,
-    init_control,
-    init_motor,
-)
 from py_pkg.robot_specs import BCU_DEEP_THRESHOLD_PA
+from py_pkg.scenarios.compile import depth_spec_from_node
 from py_pkg.uuv_ros_core import (
     UUVTopics,
     create_publisher_for_topic,
@@ -62,9 +58,13 @@ class DepthControlNode(Node):
         # can run concurrently.
         self.callback_group = ReentrantCallbackGroup()
 
-        self.control_system = ControlSystem.DepthControlSystem(init_control)
-        self.current_bladder_level = init_buoyancy_engine.get("initial_proportion_full")
-        self.bladder_volume = init_buoyancy_engine.get("tank_volume")
+        cfg = depth_spec_from_node(self)
+        self.control_system = ControlSystem.DepthControlSystem(cfg)
+        self.current_bladder_level = cfg.plant_model.initial_proportion_full
+        self.bladder_volume = cfg.plant_model.bladder_nominal_m3
+        self._min_rpm = cfg.plant_model.min_rpm
+        self._max_rpm = cfg.plant_model.max_rpm
+        self._pump_efficiency = cfg.plant_model.pump_efficiency
         self.current_time = self.get_clock().now().nanoseconds / 1e9
 
         self.control_output = 0.0
@@ -104,7 +104,7 @@ class DepthControlNode(Node):
         )
 
         self.control_timer = self.create_timer(
-            1.0 / 10.0,  # 10 Hz control frequency
+            1.0 / cfg.frequency_hz,
             self.control_loop,
             callback_group=self.callback_group,
         )
@@ -145,9 +145,11 @@ class DepthControlNode(Node):
         )
 
         msg = Int16()
-        self.motor_rpm = q_to_rpm(self.control_output, self.bladder_volume)
-        min_rpm = init_motor.get("min_rpm")
-        max_rpm = init_motor.get("max_rpm")
+        self.motor_rpm = q_to_rpm(
+            self.control_output, self.bladder_volume, self._pump_efficiency
+        )
+        min_rpm = self._min_rpm
+        max_rpm = self._max_rpm
         if abs(self.motor_rpm) < min_rpm:
             # Pump cannot run reliably below min_rpm; suppress small commands
             # instead of slamming to +/-min_rpm (which would limit-cycle the setpoint).
