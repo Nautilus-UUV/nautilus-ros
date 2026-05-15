@@ -6,6 +6,11 @@ ROS2 navigation and control system for Nautilus's autonomous underwater vehicle,
 
 All about prerequisites, setup, development, package's architecture, testing and debugging.
 
+## Running the simulation
+
+- [`docs/running_sim.md`](docs/running_sim.md) — native colcon + Gazebo flow (interactive workstation use).
+- [`docs/running_in_apptainer.md`](docs/running_in_apptainer.md) — the containerized flow for Monte-Carlo sweeps on a multi-CPU server.
+
 ## Packages
 
 ### `py_pkg` - Python ROS2 Package

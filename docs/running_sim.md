@@ -3,6 +3,10 @@
 Two ways to bring the glider up against the DAVE simulator: as a **Tier 3
 pytest test** or as an **unbounded interactive launch** (Gazebo GUI on, runs until you Ctrl-C).
 
+For the containerized flow (Apptainer SIF on a multi-CPU server, no GPU,
+no network at run time — the path for MC sweeps), see
+[`running_in_apptainer.md`](running_in_apptainer.md).
+
 Both paths assume the workspace has been built and sourced:
 
 ```bash
