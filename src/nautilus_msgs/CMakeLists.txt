@@ -10,6 +10,7 @@ find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/MissionCommand.msg"
+  "msg/BcuPumpCommand.msg"
 )
 
 ament_package()

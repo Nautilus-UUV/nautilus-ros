@@ -12,9 +12,10 @@ Example:
 
 from can_msgs.msg import Frame
 from geometry_msgs.msg import Pose
-from nautilus_msgs.msg import MissionCommand
+from nautilus_msgs.msg import BcuPumpCommand, MissionCommand
 from sensor_msgs.msg import Imu, Temperature
 from std_msgs.msg import (
+    Bool,
     Float32,
     Int16,
     Int32,
@@ -51,4 +52,6 @@ TOPIC_MESSAGE_MAP = {
     UUVTopics.PATH: MissionCommand,
     UUVTopics.COMMAND: String,
     UUVTopics.CAN_OUT: Frame,
+    UUVTopics.DEBUG_BCU_RPM: BcuPumpCommand,
+    UUVTopics.CONTROL_MANUAL_OVERRIDE: Bool,
 }

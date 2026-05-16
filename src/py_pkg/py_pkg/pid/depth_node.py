@@ -5,7 +5,7 @@ from geometry_msgs.msg import Pose
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from std_msgs.msg import Int16, UInt8
+from std_msgs.msg import Bool, Int16, UInt8
 
 from py_pkg.math_utils import clamp
 from py_pkg.physics import gauge_pressure_pa, q_to_rpm
@@ -72,6 +72,11 @@ class DepthControlNode(Node):
         # Held None until the first POSITION_TARGET arrives
         self.target_pressure_pa: float | None = None
         self.current_pressure_pa = 0.0
+        # Set by CONTROL_MANUAL_OVERRIDE. While true, control_loop bails
+        # before publishing -- a manual driver (bcu_debug, future
+        # hand-controller, ...) owns /bcu/rpm and /bcu/valves and we
+        # must not race it on either topic.
+        self._manual_override = False
 
         # Log throttle
         self._target_log_every_n = 10
@@ -103,6 +108,13 @@ class DepthControlNode(Node):
             callback_group=self.callback_group,
         )
 
+        self.manual_override_subscriber = create_subscription_for_topic(
+            self,
+            UUVTopics.CONTROL_MANUAL_OVERRIDE,
+            self._on_manual_override,
+            callback_group=self.callback_group,
+        )
+
         self.control_timer = self.create_timer(
             1.0 / cfg.frequency_hz,
             self.control_loop,
@@ -127,7 +139,22 @@ class DepthControlNode(Node):
             f"Received current pressure: {self.current_pressure_pa} Pa"
         )
 
+    def _on_manual_override(self, msg: Bool) -> None:
+        active = bool(msg.data)
+        if active != self._manual_override:
+            self.get_logger().info(
+                f"manual override {'engaged' if active else 'released'} -- "
+                f"depth_node BCU publishing {'paused' if active else 'resumed'}"
+            )
+        self._manual_override = active
+
     def control_loop(self):
+        if self._manual_override:
+            # A manual driver owns /bcu/rpm and /bcu/valves right now.
+            # Skip both the no-target zero-hold and the full PID step so
+            # we don't race them on the wire.
+            return
+
         if self.target_pressure_pa is None:
             # No target yet — emit a zero-RPM hold so the BCU bridge
             # doesn't drift, and skip the cascaded controller work.

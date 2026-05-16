@@ -17,7 +17,10 @@ Composition (inputs -> outputs):
     /position/target +  -> acu_node      -> /acu/pitch + /acu/roll
       /position/estimation
     /path + /command    -> pathfinding_node -> /position/target
-    MQTT nautilus/cmd/* -> mqtt_bridge   -> /command + /path
+    MQTT nautilus/cmd/* -> mqtt_bridge   -> /command + /path + /debug/bcu/rpm
+    /debug/bcu/rpm      -> bcu_debug     -> /bcu/rpm  (manual override)
+    /bcu/rpm            -> stm_com       -> UART (hardware only; gated by
+                                            enable_stm_com:= launch arg)
 """
 
 import os
@@ -25,6 +28,7 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -95,6 +99,19 @@ def _wire_control_stack(context, *_args, **_kwargs):
                 }
             ],
         ),
+        Node(
+            package="py_pkg",
+            executable="bcu_debug_node",
+            name="bcu_debug",
+            output="screen",
+        ),
+        Node(
+            package="py_pkg",
+            executable="stm_com_node",
+            name="stm_com",
+            output="screen",
+            condition=IfCondition(LaunchConfiguration("enable_stm_com")),
+        ),
     ]
 
 
@@ -121,6 +138,15 @@ def generate_launch_description():
                 "mqtt_broker_port",
                 default_value="1883",
                 description="MQTT broker TCP port.",
+            ),
+            DeclareLaunchArgument(
+                "enable_stm_com",
+                default_value="false",
+                description=(
+                    "Spawn stm_com_node, which opens /dev/serial0 to talk to "
+                    "the STM32. Off by default so sim launches don't crash on "
+                    "hosts without the UART device; set true on the Pi."
+                ),
             ),
             OpaqueFunction(function=_wire_control_stack),
         ]

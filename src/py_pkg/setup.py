@@ -37,6 +37,8 @@ setup(
             "mqtt_bridge_node = py_pkg.mqtt.mqtt_bridge_node:main",
             "depth_node = py_pkg.pid.depth_node:main",
             "acu_node = py_pkg.pid.acu_node:main",
+            "stm_com_node = py_pkg.stm_com.stm_com_node:main",
+            "bcu_debug_node = py_pkg.debug.bcu_debug_node:main",
         ],
     },
 )

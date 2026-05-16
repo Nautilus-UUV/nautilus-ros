@@ -51,6 +51,10 @@ TOPIC_QOS_MAP = {
     # Commands
     UUVTopics.COMMAND: UUVQoS.COMMAND,
     UUVTopics.PATH: UUVQoS.COMMAND,
+    UUVTopics.DEBUG_BCU_RPM: UUVQoS.COMMAND,
+    # Latched control-state flag; TRANSIENT_LOCAL via COMMAND profile so a
+    # late-joining depth_node sees the current override state immediately.
+    UUVTopics.CONTROL_MANUAL_OVERRIDE: UUVQoS.COMMAND,
     # Everything else: control
     UUVTopics.INTERNAL_TEMPERATURE: UUVQoS.CONTROL,
     UUVTopics.INTERNAL_HUMIDITY: UUVQoS.CONTROL,

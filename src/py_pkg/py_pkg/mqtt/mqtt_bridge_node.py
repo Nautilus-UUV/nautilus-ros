@@ -52,6 +52,7 @@ class IngressMapping:
 TOPIC_MAP: tuple[IngressMapping, ...] = (
     IngressMapping(UUVTopics.COMMAND, "nautilus/cmd/command", 1),
     IngressMapping(UUVTopics.PATH, "nautilus/cmd/path", 1),
+    IngressMapping(UUVTopics.DEBUG_BCU_RPM, "nautilus/cmd/debug/bcu/rpm", 1),
 )
 
 

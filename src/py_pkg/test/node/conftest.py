@@ -22,7 +22,8 @@ import time
 import pytest
 import rclpy
 from geometry_msgs.msg import Pose
-from nautilus_msgs.msg import MissionCommand
+from nautilus_msgs.msg import BcuPumpCommand, MissionCommand
+from py_pkg.debug.bcu_debug_node import BcuDebugNode
 from py_pkg.path.pathfinding import PathfindingNode
 from py_pkg.pid.acu_node import ACUControlNode
 from py_pkg.pid.depth_node import DepthControlNode
@@ -33,7 +34,7 @@ from py_pkg.uuv_ros_core import (
 )
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
-from std_msgs.msg import Int16, Int32, String, UInt8
+from std_msgs.msg import Bool, Int16, Int32, String, UInt8
 
 
 def _isolated_ros_domain_id() -> int:
@@ -113,6 +114,9 @@ class _DepthTesterNode(Node):
         self.external_pressure_pub = create_publisher_for_topic(
             self, UUVTopics.EXTERNAL_PRESSURE
         )
+        self.manual_override_pub = create_publisher_for_topic(
+            self, UUVTopics.CONTROL_MANUAL_OVERRIDE
+        )
         self.bcu_rpm_sub = create_subscription_for_topic(
             self, UUVTopics.BCU_RPM, self._on_rpm
         )
@@ -138,6 +142,11 @@ class _DepthTesterNode(Node):
         msg.data = int(value_pa)
         self.external_pressure_pub.publish(msg)
 
+    def publish_manual_override(self, active: bool) -> None:
+        msg = Bool()
+        msg.data = bool(active)
+        self.manual_override_pub.publish(msg)
+
 
 class DepthNodeHarness(NodeHarness):
     """NodeHarness specialised for DepthControlNode + _DepthTesterNode."""
@@ -158,6 +167,9 @@ class DepthNodeHarness(NodeHarness):
 
     def publish_external_pressure(self, value_pa: int) -> None:
         self.tester.publish_external_pressure(value_pa)
+
+    def publish_manual_override(self, active: bool) -> None:
+        self.tester.publish_manual_override(active)
 
 
 @pytest.fixture
@@ -384,6 +396,81 @@ class PathfindingNodeHarness(NodeHarness):
 def pathfinding_node_harness():
     """Function-scoped harness. Tears both nodes down on exit."""
     harness = PathfindingNodeHarness()
+    try:
+        yield harness
+    finally:
+        harness.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# BCU debug node harness
+# ---------------------------------------------------------------------------
+
+
+class _BcuDebugTesterNode(Node):
+    """Drives BcuDebugNode and captures BCU_RPM + CONTROL_MANUAL_OVERRIDE
+    emissions with timestamps.
+
+    The debug node owns a duration timer, so tests need to reason about
+    *when* each rpm value arrives -- a passthrough subscriber that only
+    keeps the values would lose the "did the stop fire on time" signal."""
+
+    def __init__(self):
+        super().__init__("bcu_debug_tester")
+        self.received: list[tuple[float, int]] = []
+        self.override_events: list[tuple[float, bool]] = []
+
+        self.cmd_pub = create_publisher_for_topic(self, UUVTopics.DEBUG_BCU_RPM)
+        self.rpm_sub = create_subscription_for_topic(
+            self, UUVTopics.BCU_RPM, self._on_rpm
+        )
+        self.override_sub = create_subscription_for_topic(
+            self, UUVTopics.CONTROL_MANUAL_OVERRIDE, self._on_override
+        )
+
+    def _on_rpm(self, msg: Int16) -> None:
+        self.received.append((time.monotonic(), int(msg.data)))
+
+    def _on_override(self, msg: Bool) -> None:
+        self.override_events.append((time.monotonic(), bool(msg.data)))
+
+    def publish_pump(self, rpm: int, duration_s: float) -> None:
+        msg = BcuPumpCommand()
+        msg.rpm = int(rpm)
+        msg.duration_s = float(duration_s)
+        self.cmd_pub.publish(msg)
+
+
+class BcuDebugNodeHarness(NodeHarness):
+    """NodeHarness specialised for BcuDebugNode + _BcuDebugTesterNode."""
+
+    def __init__(self):
+        super().__init__(BcuDebugNode, _BcuDebugTesterNode)
+
+    @property
+    def received(self) -> list[tuple[float, int]]:
+        return self.tester.received
+
+    @property
+    def received_rpm(self) -> list[int]:
+        return [rpm for _, rpm in self.tester.received]
+
+    @property
+    def override_events(self) -> list[tuple[float, bool]]:
+        return self.tester.override_events
+
+    @property
+    def override_states(self) -> list[bool]:
+        return [state for _, state in self.tester.override_events]
+
+    def publish_pump(self, rpm: int, duration_s: float) -> None:
+        self.tester.publish_pump(rpm, duration_s)
+
+
+@pytest.fixture
+def bcu_debug_node_harness():
+    """Function-scoped harness. Tears both nodes down on exit."""
+    harness = BcuDebugNodeHarness()
     try:
         yield harness
     finally:
