@@ -10,6 +10,11 @@
 #     --cpus CPULIST        pin the apptainer process tree to the given
 #                           host CPUs via taskset (e.g. 0-3 or 0,2,4) so
 #                           one sim run doesn't fight others for cores
+#     --env KEY=VAL         forward an extra env var into the container
+#                           (repeatable). --cleanenv strips the host env,
+#                           so anything beyond GZ_IP must be re-injected
+#                           explicitly. Used by run_sweep.py to set
+#                           per-slot GZ_PARTITION / ROS_DOMAIN_ID.
 #
 # Run from the workspace root so `./sim_data` resolves correctly.
 #
@@ -26,11 +31,13 @@ set -euo pipefail
 
 SCENARIOS_DIR=""
 CPUS=""
+EXTRA_ENVS=()
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --scenarios-dir) SCENARIOS_DIR="$2"; shift 2 ;;
         --cpus)          CPUS="$2";          shift 2 ;;
+        --env)           EXTRA_ENVS+=( "$2" ); shift 2 ;;
         --) shift; break ;;
         -h|--help)
             sed -n '2,/^$/p' "$0" | sed 's/^# \?//'
@@ -67,7 +74,12 @@ if [[ -n "$SCENARIOS_DIR" ]]; then
     binds+=( --bind "$(readlink -f "$SCENARIOS_DIR"):/ros2_ws/scenarios:ro" )
 fi
 
-cmd=( apptainer exec --cleanenv --env GZ_IP=127.0.0.1 "${binds[@]}"
+env_args=( --env GZ_IP=127.0.0.1 )
+for kv in "${EXTRA_ENVS[@]}"; do
+    env_args+=( --env "$kv" )
+done
+
+cmd=( apptainer exec --cleanenv "${env_args[@]}" "${binds[@]}"
       "$SIF" /entrypoint.sh "$@" )
 
 if [[ -n "$CPUS" ]]; then

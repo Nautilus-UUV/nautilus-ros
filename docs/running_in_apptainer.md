@@ -232,14 +232,166 @@ apptainer exec --cleanenv nautilus_sim.sif /entrypoint.sh bash
 `/entrypoint.sh` has already sourced ROS and the workspace setup by
 the time you land in the shell.
 
-## Future: sampler orchestrator
+## Running an LHS sweep
 
-A planned `scripts/run_sampler.py` (deferred) will iterate over a host
-directory of scenario YAMLs, kick off one `apptainer exec` per
-scenario, share a single `sampler_id`, and assign each run a unique
-`run_id` derived from the scenario filename. Each run's bag lands at
-`sim_data/{sampler_id}/{run_id}_{ts}/raw/`, ready for the
-anomaly-detection pipeline to ingest in bulk. Per-run isolation
-(`GZ_PARTITION`, `ROS_DOMAIN_ID`, `--cpus`) is the sampler's job to
-set; the current launch plumbing — `sampler_id` arg, host-mounted
-scenarios — is the contract that sampler will rely on.
+For Monte Carlo work, two scripts in `src/nautilus-ros/scripts/` cover
+the generate-then-dispatch loop:
+
+- `lhs_sample.py` — reads a sweep spec (which scenario dot-paths to
+  perturb and how), draws a Latin Hypercube over those dimensions, and
+  overlays each sample onto a base scenario from
+  `py_pkg/scenarios/library/`. Writes one YAML per sample plus a
+  `manifest.json` recording the spec hash and the full sample matrix,
+  so post-hoc analysis can join bag results back to scenario
+  coordinates without re-parsing YAMLs.
+- `run_sweep.py` — consumes the directory of YAMLs, runs them through
+  `apptainer_exec.sh` with bounded concurrency, gives every concurrent
+  run its own `GZ_PARTITION` / `ROS_DOMAIN_ID` (so Gazebo transports
+  and DDS chatter don't collide), and replenishes the pool as slots
+  free. Optional `--cpu-budget` slices a host CPU range into disjoint
+  per-slot sets so the runs don't fight for cores.
+
+Both scripts run *outside* the SIF; the host needs `numpy`, `pyyaml`,
+and `scipy>=1.10` (see `scripts/requirements-sampler.txt`).
+
+### The sweep spec
+
+A short YAML lists what to perturb, what distribution to draw from,
+and how many samples to take. See
+`scripts/sweeps/example_hydro_faults_pump.yaml` for a worked example
+covering hydrodynamics ±20%, BCU fault rate/duration, and the
+controller's pump-efficiency belief. The shape:
+
+```yaml
+description: "..."
+n_samples: 64
+seed: 42
+base_scenario: nominal_with_hydrodynamics.yaml   # name in py_pkg's library/
+dimensions:
+  - { path: rig.hydrodynamics.added_mass_xx, distribution: uniform, low: 4.24, high: 6.36 }
+  - { path: rig.faults.bcu_rpm.probability_per_sec, distribution: loguniform, low: 0.005, high: 0.05 }
+  # ...
+```
+
+`path` is a dot-path into the Scenario tree; the sampler writes the
+sampled value at that leaf and leaves everything else alone. Use
+`nominal_with_hydrodynamics.yaml` as the base whenever you perturb any
+`rig.hydrodynamics.*` field — the schema is all-or-nothing, so a
+partial block won't validate.
+
+Mission knobs (`target_pressure_pa`, `angle_rad`, `n_resurfaces`) are
+not scenario-YAML fields. Pass them once on the `run_sweep.py`
+command line; every run in the sweep uses the same values.
+
+### Smoke run (4 scenarios, 2 in parallel)
+
+Use this to confirm the sampler + dispatcher + apptainer plumbing works
+end-to-end on your workstation before launching a full sweep. The
+sweep is intentionally small: 4 samples over only the depth-loop PID
+gains (`control.controllers.depth.pid_pressure.{kp,ki,kd}`) at +/- 50%
+of nominal, base scenario is `nominal.yaml` (no SDF render), and the
+sawtooth mission is a single descend/ascend cycle.
+
+```bash
+cd /home/$USER/dave_ws
+
+# 1. Generate 4 scenario YAMLs + manifest under ./scenarios/smoke/.
+./src/nautilus-ros/scripts/lhs_sample.py \
+    --spec src/nautilus-ros/scripts/sweeps/smoke_depth_pid.yaml \
+    --out ./scenarios --name smoke
+
+# 2. Run them 2-at-a-time on host CPUs 0-7 (two slots, 4 cores each).
+./src/nautilus-ros/scripts/run_sweep.py \
+    --scenarios-dir ./scenarios/smoke \
+    --sif nautilus_sim.sif \
+    --concurrency 2 \
+    --cpu-budget 0-7 \
+    --per-run-timeout 300 \
+    --launch sawtooth_sim.launch.py \
+    --launch-args target_pressure_pa:=147150.0 angle_rad:=0.6109 n_resurfaces:=1
+```
+
+While it runs, you can verify the two slots are isolated:
+
+```bash
+pgrep -af apptainer       # expect 2 apptainer exec processes
+tail -F sim_data/smoke/sweep_status.csv
+ls sim_data/smoke/        # _logs/, sweep_status.csv, lhs_NNNN_{ts}/raw/
+```
+
+Total wall time on a workstation is on the order of a few minutes
+(two batches of two runs, each sawtooth cycle ~1–2 min). Sims that
+self-terminate before the timeout show `exit_code=0, timed_out=False`
+in `sweep_status.csv`; sims that hit the timeout show `exit_code=-15,
+timed_out=True` — both are expected outcomes for a smoke run (the
+mission completes, then the launch hangs waiting for the next
+`/path`, and the timeout cleans it up).
+
+### End-to-end
+
+```bash
+cd /home/$USER/dave_ws
+
+# 1. Generate 64 scenario YAMLs + manifest.
+./src/nautilus-ros/scripts/lhs_sample.py \
+    --spec src/nautilus-ros/scripts/sweeps/example_hydro_faults_pump.yaml \
+    --out ./scenarios --name lhs_hydro_v1
+
+# 2. Dispatch them, 2 at a time, on host CPUs 0-7.
+./src/nautilus-ros/scripts/run_sweep.py \
+    --scenarios-dir ./scenarios/lhs_hydro_v1 \
+    --sif nautilus_sim.sif \
+    --concurrency 2 \
+    --cpu-budget 0-7 \
+    --per-run-timeout 600 \
+    --launch sawtooth_sim.launch.py \
+    --launch-args target_pressure_pa:=147150.0 angle_rad:=0.6109 n_resurfaces:=5
+```
+
+`--per-run-timeout` is **required in practice** for sawtooth and trim
+sweeps. The mission self-terminates after `n_resurfaces` cycles but the
+launch keeps Gazebo + the control stack alive waiting for the next
+`/path` message, so the subprocess never exits on its own. Pick a value
+slightly above `n_resurfaces × single-cycle wall time`. Timed-out runs
+get `timed_out=true` in `sweep_status.csv` so they're distinguishable
+from real crashes after the fact.
+
+`run_sweep.py` first runs a single short `apptainer exec` to load the
+first generated YAML through `load_scenario` — that way a schema typo
+in the sweep spec fails once instead of N times. Then it launches
+slots, polls every second, reaps finished runs, and refills from the
+queue.
+
+### Output layout
+
+```
+sim_data/
+  lhs_hydro_v1/
+    _logs/
+      lhs_0000.log         # apptainer_exec.sh stdout+stderr per run
+      lhs_0001.log
+      ...
+    sweep_status.csv       # run_id, slot, start_ts, end_ts, exit_code, yaml_path, duration_sec, timed_out
+    lhs_0000_{ts}/raw/...  # bags from each individual run, same layout as single-run flow
+    lhs_0001_{ts}/raw/...
+    ...
+```
+
+The per-run bag layout is unchanged from the single-run flow, so
+`UG-anomaly_detection/src/data/extract.py` ingests sweep output without
+modification.
+
+### Knobs worth knowing about
+
+- `--concurrency N` (default 2) — N runs in flight at once. Pick based
+  on host cores and Gazebo's appetite per sim (~4 cores each is a safe
+  starting point).
+- `--per-run-timeout SECONDS` — wall-clock budget per slot. See the
+  note above; without this set, sawtooth/trim sweeps will hang after
+  the first batch of missions complete.
+- `--ros-domain-base 50` — slot i runs with `ROS_DOMAIN_ID=base+i`.
+  Bump the base if 50–50+N collides with something else on the host.
+- `--no-record` — skip `record:=true`; useful for dry-running the
+  orchestrator without filling the disk with bags.
+- `--no-preflight` — skip the load-scenario validation. Saves a few
+  seconds; not recommended on the first run of a new sweep spec.
