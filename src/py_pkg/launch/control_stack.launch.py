@@ -17,6 +17,7 @@ Composition (inputs -> outputs):
     /position/target +  -> acu_node      -> /acu/pitch + /acu/roll
       /position/estimation
     /path + /command    -> pathfinding_node -> /position/target
+    MQTT nautilus/cmd/* -> mqtt_bridge   -> /command + /path
 """
 
 import os
@@ -47,6 +48,8 @@ def _wire_control_stack(context, *_args, **_kwargs):
     from py_pkg.scenarios.loader import load_scenario
 
     control = load_scenario(LaunchConfiguration("scenario").perform(context)).control
+    mqtt_broker_host = LaunchConfiguration("mqtt_broker_host").perform(context)
+    mqtt_broker_port = int(LaunchConfiguration("mqtt_broker_port").perform(context))
     return [
         Node(
             package="py_pkg",
@@ -80,6 +83,18 @@ def _wire_control_stack(context, *_args, **_kwargs):
             name="pathfinding_node",
             output="screen",
         ),
+        Node(
+            package="py_pkg",
+            executable="mqtt_bridge_node",
+            name="mqtt_bridge",
+            output="screen",
+            parameters=[
+                {
+                    "broker_host": mqtt_broker_host,
+                    "broker_port": mqtt_broker_port,
+                }
+            ],
+        ),
     ]
 
 
@@ -93,6 +108,19 @@ def generate_launch_description():
                     "Path to a scenario YAML. Loaded via py_pkg.scenarios.load_scenario "
                     "to parameterize every controller; defaults to the installed nominal (fault-injection off)."
                 ),
+            ),
+            DeclareLaunchArgument(
+                "mqtt_broker_host",
+                default_value="127.0.0.1",
+                description=(
+                    "MQTT broker host the topside bridge connects to. Default targets a "
+                    "local mosquitto; override with the tether broker IP on the mission laptop."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "mqtt_broker_port",
+                default_value="1883",
+                description="MQTT broker TCP port.",
             ),
             OpaqueFunction(function=_wire_control_stack),
         ]
