@@ -22,7 +22,7 @@ description: >
 
 n_samples: 1880
 seed: 0
-base_scenario: baseline.yaml
+base_scenario: nominal.yaml
 
 dimensions:
   # Depth outer-loop PID gains: +/- 50% around nominal.
@@ -34,10 +34,10 @@ dimensions:
   - { path: rig.plant.bladder_min_m3, distribution: uniform, low: 0.00025,  high: 0.000839 }
   - { path: rig.plant.bladder_max_m3, distribution: uniform, low: 0.001559, high: 0.00225  }
 
-  # BCU fault injection: MTTF ~3 min, duration ~30 s. Tight bands so the
-  # realized values stay close to target while still being valid sweep
-  # dimensions (the sampler rejects high == low).
-  #   probability_per_sec in [0.00500, 0.00625]  -> MTTF in [160 s, 200 s]
-  #   duration_sec        in [28.0,    32.0]     -> ~30 s
-  - { path: rig.faults.bcu_rpm.probability_per_sec, distribution: loguniform, low: 0.00500, high: 0.00625 }
-  - { path: rig.faults.bcu_rpm.duration_sec,        distribution: uniform,    low: 28.0,    high: 32.0    }
+  # # BCU fault injection: MTTF ~3 min, duration ~30 s. Tight bands so the
+  # # realized values stay close to target while still being valid sweep
+  # # dimensions (the sampler rejects high == low).
+  # #   probability_per_sec in [0.00500, 0.00625]  -> MTTF in [160 s, 200 s]
+  # #   duration_sec        in [28.0,    32.0]     -> ~30 s
+  # - { path: rig.faults.bcu_rpm.probability_per_sec, distribution: loguniform, low: 0.00500, high: 0.00625 }
+  # - { path: rig.faults.bcu_rpm.duration_sec,        distribution: uniform,    low: 28.0,    high: 32.0    }
