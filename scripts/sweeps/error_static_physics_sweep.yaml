@@ -1,0 +1,26 @@
+# Error injection over a static (winner) physics + controller. Holds the
+# winner PID gains, bladder bands, and rig config from
+# suggested_lhs_0071.yaml fixed; the only swept dimensions are the BCU
+# RPM fault knobs. The goal is to characterize how the suggested-winner
+# controller degrades under stochastic pump-RPM faults, with everything
+# else held constant against the winner config.
+
+description: >
+  LHS sweep over the BCU RPM fault knobs (probability_per_sec, duration_sec)
+  while pinning all plant + controller dimensions to the suggested
+  pid_calibration winner (suggested_lhs_0071.yaml). MTTF target band is
+  ~160-200 s; fault duration ~30 s. Use this to see how the winner
+  controller behaves under a tight, realistic fault model.
+
+n_samples: 2000
+seed: 0
+base_scenario: suggested_lhs_0071.yaml
+
+dimensions:
+  # BCU fault injection: MTTF ~3 min, duration ~30 s. Tight bands so the
+  # realized values stay close to target while still being valid sweep
+  # dimensions (the sampler rejects high == low).
+  #   probability_per_sec in [0.00500, 0.00625]  -> MTTF in [160 s, 200 s]
+  #   duration_sec        in [28.0,    32.0]     -> ~30 s
+  - { path: rig.faults.bcu_rpm.probability_per_sec, distribution: loguniform, low: 0.00450, high: 0.00675 }
+  - { path: rig.faults.bcu_rpm.duration_sec,        distribution: uniform,    low: 20.0,    high: 32.0    }

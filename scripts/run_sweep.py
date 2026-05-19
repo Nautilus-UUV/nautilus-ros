@@ -235,6 +235,15 @@ class SweepRunner:
                         "timed_out",
                     ]
                 )
+        # Persist the mission knobs we forward to ros2 launch (e.g.
+        # target_pressure_pa:=147150.0). These don't live in the scenario YAML
+        # so without this file post-hoc tooling has no way to recover them.
+        # Overwritten on every invocation — last writer wins, which matches
+        # how a re-run would otherwise leave stale state.
+        if self.extra_launch_args:
+            (self.sweep_dir / "launch_args.txt").write_text(
+                " ".join(self.extra_launch_args) + "\n"
+            )
 
     def launch_slot(self, slot: Slot, run_id: str, yaml_path: Path) -> None:
         log_path = self.logs_dir / f"{run_id}.log"
