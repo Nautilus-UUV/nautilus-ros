@@ -49,6 +49,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+import yaml
+
 SCRIPTS_DIR = Path(__file__).resolve().parent
 APPTAINER_EXEC = SCRIPTS_DIR / "apptainer_exec.sh"
 
@@ -58,6 +60,60 @@ POLL_INTERVAL_SEC = 1.0
 # before escalating to SIGKILL on the whole process group. Empirically a
 # clean ros2 launch teardown can take 10-15 s; 20 s leaves margin.
 KILL_GRACE_SEC = 20
+
+# apptainer_exec.sh hardcodes the host-side `./sim_data` bind to
+# `/ros2_ws/sim_data` in the container, so the runner has to live with
+# the same convention when it predicts where bags will land.
+CONTAINER_SIM_DATA = "/ros2_ws/sim_data"
+HOST_SIM_DATA = Path.cwd() / "sim_data"
+
+# Per-bag finalize: glob *.mcap in cwd, zstd each into *.mcap.zstd, drop
+# the original. We use libzstd via ctypes rather than the `zstd` CLI
+# because the SIF ships libzstd1 (rosbag2's compression plugin needs it)
+# but not the CLI binary. ZSTD_compress is one-shot in-memory; bags
+# under a sensible `--per-run-timeout` are well under 1 GB so reading
+# the whole file is fine.
+_FINALIZE_PYTHON = r"""
+import ctypes, glob, os, sys
+lib = ctypes.CDLL('libzstd.so.1')
+lib.ZSTD_compressBound.argtypes = [ctypes.c_size_t]
+lib.ZSTD_compressBound.restype  = ctypes.c_size_t
+lib.ZSTD_compress.argtypes = [ctypes.c_char_p, ctypes.c_size_t,
+                              ctypes.c_char_p, ctypes.c_size_t, ctypes.c_int]
+lib.ZSTD_compress.restype  = ctypes.c_size_t
+lib.ZSTD_isError.argtypes = [ctypes.c_size_t]
+lib.ZSTD_isError.restype  = ctypes.c_uint
+COMPRESSION_LEVEL = 3
+for mcap in sorted(glob.glob('*.mcap')):
+    with open(mcap, 'rb') as f:
+        data = f.read()
+    cap = lib.ZSTD_compressBound(len(data))
+    out = ctypes.create_string_buffer(cap)
+    written = lib.ZSTD_compress(out, cap, data, len(data), COMPRESSION_LEVEL)
+    if lib.ZSTD_isError(written):
+        sys.exit(f'libzstd failed on {mcap}')
+    with open(mcap + '.zstd', 'wb') as f:
+        f.write(out.raw[:written])
+    os.remove(mcap)
+"""
+
+
+def _mark_metadata_compressed(metadata_path: Path, compressed_names: list[str]) -> None:
+    """Edit a rosbag2 metadata.yaml in place to declare per-file zstd compression.
+
+    Rosbag2 writes metadata with compression fields empty whenever
+    `--compression-mode none` is in effect; reindex does the same. Once
+    we have zstd'd the .mcap files into .mcap.zstd, the metadata has to
+    match or `ros2 bag info / play` won't decompress on read. The
+    `files:` inner block keeps the bare .mcap name -- that's rosbag2's
+    own convention for the original (pre-compression) MCAP filename.
+    """
+    raw = yaml.safe_load(metadata_path.read_text())
+    info = raw["rosbag2_bagfile_information"]
+    info["compression_format"] = "zstd"
+    info["compression_mode"] = "FILE"
+    info["relative_file_paths"] = list(compressed_names)
+    metadata_path.write_text(yaml.safe_dump(raw, sort_keys=False))
 
 
 def parse_cpu_list(spec: str) -> list[int]:
@@ -126,6 +182,8 @@ class Slot:
     yaml_path: Optional[Path] = None
     log_file: Optional[object] = None
     start_ts: Optional[float] = None
+    host_bag_path: Optional[Path] = None
+    container_bag_path: Optional[str] = None
 
 
 @dataclass
@@ -166,8 +224,16 @@ class SweepRunner:
         if not self.status_path.exists():
             with self.status_path.open("w", newline="") as f:
                 csv.writer(f).writerow(
-                    ["run_id", "slot", "start_ts", "end_ts", "exit_code",
-                     "yaml_path", "duration_sec", "timed_out"]
+                    [
+                        "run_id",
+                        "slot",
+                        "start_ts",
+                        "end_ts",
+                        "exit_code",
+                        "yaml_path",
+                        "duration_sec",
+                        "timed_out",
+                    ]
                 )
 
     def launch_slot(self, slot: Slot, run_id: str, yaml_path: Path) -> None:
@@ -177,17 +243,33 @@ class SweepRunner:
         gz_partition = f"{self.sweep_name}_slot{slot.index}"
         ros_domain = self.ros_domain_base + slot.index
 
+        # Pick a deterministic bag path (no in-launch timestamp) so the
+        # reaper can find and post-process the bag without globbing.
+        # Keeping `sampler_id` consistent with the sweep_name puts the
+        # bag under sim_data/<sweep>/<run_id>/raw on both sides of the bind.
+        host_bag_path: Optional[Path] = None
+        container_bag_path: Optional[str] = None
+        if self.record:
+            container_bag_path = f"{CONTAINER_SIM_DATA}/{self.sweep_name}/{run_id}/raw"
+            host_bag_path = HOST_SIM_DATA / self.sweep_name / run_id / "raw"
+
         cmd: list[str] = [
             str(APPTAINER_EXEC),
-            "--scenarios-dir", str(self.scenarios_dir),
-            "--env", f"GZ_PARTITION={gz_partition}",
-            "--env", f"ROS_DOMAIN_ID={ros_domain}",
+            "--scenarios-dir",
+            str(self.scenarios_dir),
+            "--env",
+            f"GZ_PARTITION={gz_partition}",
+            "--env",
+            f"ROS_DOMAIN_ID={ros_domain}",
         ]
         if slot.cpus:
             cmd += ["--cpus", slot.cpus]
         cmd += [
             str(self.sif),
-            "ros2", "launch", "nautilus_hal", self.launch_file,
+            "ros2",
+            "launch",
+            "nautilus_hal",
+            self.launch_file,
             "headless:=true",
             "mission_autostart:=true",
             f"sampler_id:={self.sweep_name}",
@@ -195,7 +277,15 @@ class SweepRunner:
             f"scenario:={scenario_in_container}",
         ]
         if self.record:
-            cmd.append("record:=true")
+            # bag_compression:=none keeps the recorder's shutdown path
+            # trivial — no compress thread to wait on — so a SIGKILL only
+            # ever strips the last few in-flight messages, never the
+            # metadata.yaml. We then zstd the closed bag in `reap_slot`.
+            cmd += [
+                "record:=true",
+                f"bag_path:={container_bag_path}",
+                "bag_compression:=none",
+            ]
         cmd += list(self.extra_launch_args)
 
         # Header line in the per-run log makes post-hoc forensics easy —
@@ -217,6 +307,8 @@ class SweepRunner:
         slot.yaml_path = yaml_path
         slot.log_file = log_file
         slot.start_ts = time.time()
+        slot.host_bag_path = host_bag_path
+        slot.container_bag_path = container_bag_path
         print(
             f"[slot {slot.index}] launched {run_id} (pid={proc.pid}, "
             f"GZ_PARTITION={gz_partition}, ROS_DOMAIN_ID={ros_domain}"
@@ -225,7 +317,11 @@ class SweepRunner:
         )
 
     def reap_slot(self, slot: Slot, exit_code: int, timed_out: bool = False) -> None:
-        assert slot.run_id is not None and slot.yaml_path is not None and slot.start_ts is not None
+        assert (
+            slot.run_id is not None
+            and slot.yaml_path is not None
+            and slot.start_ts is not None
+        )
         end_ts = time.time()
         duration = end_ts - slot.start_ts
         row = StatusRow(
@@ -240,10 +336,18 @@ class SweepRunner:
         )
         self.status.append(row)
         with self.status_path.open("a", newline="") as f:
-            csv.writer(f).writerow([
-                row.run_id, row.slot, row.start_ts, row.end_ts,
-                row.exit_code, row.yaml_path, row.duration_sec, row.timed_out,
-            ])
+            csv.writer(f).writerow(
+                [
+                    row.run_id,
+                    row.slot,
+                    row.start_ts,
+                    row.end_ts,
+                    row.exit_code,
+                    row.yaml_path,
+                    row.duration_sec,
+                    row.timed_out,
+                ]
+            )
         if slot.log_file is not None:
             slot.log_file.close()
         if timed_out:
@@ -253,11 +357,92 @@ class SweepRunner:
         else:
             verdict = f"FAIL (exit {exit_code})"
         print(f"[slot {slot.index}] {slot.run_id} {verdict} in {duration:.1f}s")
+        if slot.host_bag_path is not None and slot.container_bag_path is not None:
+            self._finalize_bag(
+                slot.index,
+                slot.run_id,
+                slot.host_bag_path,
+                slot.container_bag_path,
+                slot.cpus,
+            )
         slot.proc = None
         slot.run_id = None
         slot.yaml_path = None
         slot.log_file = None
         slot.start_ts = None
+        slot.host_bag_path = None
+        slot.container_bag_path = None
+
+    def _finalize_bag(
+        self,
+        slot_index: int,
+        run_id: str,
+        host_bag_dir: Path,
+        container_bag_dir: str,
+        cpus: Optional[str],
+    ) -> None:
+        """Reconstruct + compress a freshly-recorded bag via apptainer.
+
+        Recording uses `bag_compression:=none`, so even a SIGKILL during
+        timeout teardown only ever strips the last few in-flight
+        messages — the .mcap remains parseable. The bag is either
+        already finalized (clean exit) or missing metadata.yaml
+        (SIGKILL). In both cases we rebuild metadata, zstd every .mcap
+        in place, and then patch metadata to declare `compression_mode:
+        FILE, compression_format: zstd` so downstream `ros2 bag info /
+        play` sees the bag exactly as if it had been recorded with the
+        old `--compression-mode file` flag.
+
+        Reindex (`ros2 bag reindex`) and compression (via libzstd
+        through ctypes) both run inside the SIF via apptainer_exec.sh,
+        because the typical sweep host has no ROS and the SIF has no
+        `zstd` CLI -- only libzstd1 from the rosbag2 compression plugin.
+        The host-side step is just the metadata.yaml YAML patch.
+        """
+        prefix = f"[slot {slot_index}] {run_id}"
+        if not host_bag_dir.is_dir():
+            print(f"{prefix} bag dir missing: {host_bag_dir}")
+            return
+        if not sorted(host_bag_dir.glob("*.mcap")):
+            print(f"{prefix} no .mcap in {host_bag_dir}")
+            return
+
+        # Single apptainer invocation: reindex (if needed) + compress.
+        # Single quotes on PYEND make the heredoc literal so $-vars in
+        # the Python don't get expanded by bash before Python sees them.
+        script = (
+            "set -e\n"
+            f'cd "{container_bag_dir}"\n'
+            "if [ ! -f metadata.yaml ]; then\n"
+            "  ros2 bag reindex . -s mcap\n"
+            "fi\n"
+            "python3 - <<'PYEND'\n"
+            f"{_FINALIZE_PYTHON}"
+            "PYEND\n"
+        )
+        cmd = [str(APPTAINER_EXEC)]
+        if cpus:
+            cmd += ["--cpus", cpus]
+        cmd += [str(self.sif), "bash", "-c", script]
+
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0:
+            print(
+                f"{prefix} apptainer finalize failed (exit {proc.returncode}); leaving bag as-is"
+            )
+            sys.stderr.write(proc.stdout)
+            sys.stderr.write(proc.stderr)
+            return
+
+        metadata_path = host_bag_dir / "metadata.yaml"
+        compressed = sorted(host_bag_dir.glob("*.mcap.zstd"))
+        if not metadata_path.is_file() or not compressed:
+            print(
+                f"{prefix} finalize completed but expected outputs missing in {host_bag_dir}"
+            )
+            return
+        _mark_metadata_compressed(metadata_path, [c.name for c in compressed])
+        print(f"{prefix} finalized {len(compressed)} mcap(s) in {host_bag_dir}")
 
     def _kill_slot(self, slot: Slot) -> int:
         """SIGTERM the slot's entire process group; SIGKILL if it lingers.
@@ -369,9 +554,12 @@ def preflight_validate(sif: Path, scenarios_dir: Path, first_yaml: Path) -> None
     )
     cmd = [
         str(APPTAINER_EXEC),
-        "--scenarios-dir", str(scenarios_dir),
+        "--scenarios-dir",
+        str(scenarios_dir),
         str(sif),
-        "python3", "-c", code,
+        "python3",
+        "-c",
+        code,
     ]
     print(f"pre-flight: validating {first_yaml.name} via load_scenario ...")
     proc = subprocess.run(cmd, capture_output=True, text=True)
@@ -385,37 +573,78 @@ def preflight_validate(sif: Path, scenarios_dir: Path, first_yaml: Path) -> None
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--scenarios-dir", required=True, type=Path,
-                    help="Directory of scenario YAMLs (e.g. lhs_sample.py output).")
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument(
+        "--scenarios-dir",
+        required=True,
+        type=Path,
+        help="Directory of scenario YAMLs (e.g. lhs_sample.py output).",
+    )
     ap.add_argument("--sif", required=True, type=Path, help="Path to nautilus_sim.sif.")
-    ap.add_argument("--concurrency", type=int, default=2,
-                    help="Number of concurrent apptainer runs (default: 2).")
-    ap.add_argument("--cpu-budget", default="",
-                    help="CPU list (e.g. '0-31' or '0,2,4-7') to slice across slots via taskset. "
-                         "Omit to let the OS schedule.")
-    ap.add_argument("--launch", default=DEFAULT_LAUNCH,
-                    help=f"ros2 launch file under nautilus_hal/ (default: {DEFAULT_LAUNCH}).")
-    ap.add_argument("--launch-args", nargs=argparse.REMAINDER, default=[],
-                    help="Extra args passed verbatim to ros2 launch (e.g. target_pressure_pa:=147150.0). "
-                         "Must come last on the command line.")
-    ap.add_argument("--ros-domain-base", type=int, default=50,
-                    help="Slot i gets ROS_DOMAIN_ID = base + i (default base: 50).")
-    ap.add_argument("--sim-data-dir", type=Path, default=Path("./sim_data"),
-                    help="Where bags + sweep_status.csv land (default: ./sim_data).")
-    ap.add_argument("--sweep-name",
-                    help="Defaults to the scenarios-dir basename; doubles as sampler_id "
-                         "inside the launch (controls the bag output sub-dir).")
-    ap.add_argument("--no-record", action="store_true",
-                    help="Skip record:=true; sims will not record bags.")
-    ap.add_argument("--no-preflight", action="store_true",
-                    help="Skip the load_scenario pre-flight check (saves ~5s; not recommended).")
-    ap.add_argument("--per-run-timeout", type=float, default=None, metavar="SECONDS",
-                    help="Wall-clock budget per run. The sawtooth/trim launches keep the "
-                         "controller stack alive after the mission completes, so without a "
-                         "timeout the slot would hang forever. Pick this as roughly "
-                         "n_resurfaces * single-cycle-wall-time with some headroom. Timed-out "
-                         "runs are recorded with timed_out=true in sweep_status.csv.")
+    ap.add_argument(
+        "--concurrency",
+        type=int,
+        default=2,
+        help="Number of concurrent apptainer runs (default: 2).",
+    )
+    ap.add_argument(
+        "--cpu-budget",
+        default="",
+        help="CPU list (e.g. '0-31' or '0,2,4-7') to slice across slots via taskset. "
+        "Omit to let the OS schedule.",
+    )
+    ap.add_argument(
+        "--launch",
+        default=DEFAULT_LAUNCH,
+        help=f"ros2 launch file under nautilus_hal/ (default: {DEFAULT_LAUNCH}).",
+    )
+    ap.add_argument(
+        "--launch-args",
+        nargs=argparse.REMAINDER,
+        default=[],
+        help="Extra args passed verbatim to ros2 launch (e.g. target_pressure_pa:=147150.0). "
+        "Must come last on the command line.",
+    )
+    ap.add_argument(
+        "--ros-domain-base",
+        type=int,
+        default=50,
+        help="Slot i gets ROS_DOMAIN_ID = base + i (default base: 50).",
+    )
+    ap.add_argument(
+        "--sim-data-dir",
+        type=Path,
+        default=Path("./sim_data"),
+        help="Where bags + sweep_status.csv land (default: ./sim_data).",
+    )
+    ap.add_argument(
+        "--sweep-name",
+        help="Defaults to the scenarios-dir basename; doubles as sampler_id "
+        "inside the launch (controls the bag output sub-dir).",
+    )
+    ap.add_argument(
+        "--no-record",
+        action="store_true",
+        help="Skip record:=true; sims will not record bags.",
+    )
+    ap.add_argument(
+        "--no-preflight",
+        action="store_true",
+        help="Skip the load_scenario pre-flight check (saves ~5s; not recommended).",
+    )
+    ap.add_argument(
+        "--per-run-timeout",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help="Wall-clock budget per run. The sawtooth/trim launches keep the "
+        "controller stack alive after the mission completes, so without a "
+        "timeout the slot would hang forever. Pick this as roughly "
+        "n_resurfaces * single-cycle-wall-time with some headroom. Timed-out "
+        "runs are recorded with timed_out=true in sweep_status.csv.",
+    )
     args = ap.parse_args(argv)
 
     if args.per_run_timeout is not None and args.per_run_timeout <= 0:
