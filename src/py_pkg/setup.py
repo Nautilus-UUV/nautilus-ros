@@ -28,6 +28,10 @@ setup(
         "test": [
             "pytest",
         ],
+        "analysis": [
+            "matplotlib",
+            "rosbags",
+        ],
     },
     entry_points={
         "console_scripts": [
