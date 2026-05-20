@@ -15,8 +15,15 @@ import hashlib
 
 
 def derive_seed(parent_seed: int, component_id: str) -> int:
+    # ROS 2 INTEGER parameters are signed int64 (max 2**63 - 1). A full
+    # 8-byte unsigned digest lands above that range about half the time,
+    # which rclpy then serializes as DOUBLE — and any node that declares
+    # the seed param as INTEGER (e.g. bcu_sim_bridge's rng_seed) dies at
+    # startup with InvalidParameterTypeException. Mask off the sign bit
+    # so every derived seed fits in INT64_MAX; 63 bits of entropy is more
+    # than any RNG seed will ever need.
     h = hashlib.blake2b(
         f"{parent_seed}:{component_id}".encode("utf-8"),
         digest_size=8,
     )
-    return int.from_bytes(h.digest(), "big", signed=False)
+    return int.from_bytes(h.digest(), "big", signed=False) & ((1 << 63) - 1)

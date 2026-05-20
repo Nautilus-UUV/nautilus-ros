@@ -53,3 +53,17 @@ def test_derive_seed_is_deterministic_and_varies():
     assert a == b
     assert a != c
     assert a != d
+
+
+def test_derive_seed_fits_in_ros_int64():
+    # rclpy INTEGER params are signed int64. If derive_seed ever returns a
+    # value > INT64_MAX, the launch passes it through as DOUBLE and any
+    # bridge that declared the seed param as INTEGER dies at startup with
+    # InvalidParameterTypeException — which on the BCU bridge silently
+    # disables the dive path (see git history for the diagnosis).
+    int64_max = (1 << 63) - 1
+    # Half of unmasked 64-bit unsigned digests are > INT64_MAX, so sampling
+    # a few hundred parent seeds reliably catches a regression.
+    for i in range(512):
+        s = derive_seed(i, "bcu_rpm_fault")
+        assert 0 <= s <= int64_max, f"derive_seed({i}, ...) = {s} > INT64_MAX"
