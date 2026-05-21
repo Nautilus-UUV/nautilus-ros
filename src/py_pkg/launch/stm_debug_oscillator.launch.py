@@ -12,9 +12,11 @@ Wire this into the Pi's autostart unit's ExecStart=, e.g.::
         && source /home/<user>/dave_ws/install/setup.bash \\
         && ros2 launch py_pkg stm_debug_oscillator.launch.py'
 
-Port / baud / poll period are exposed as launch args so a bench
-operator can swap in a socat pseudo-tty without editing the file; the
-oscillator knobs are hardcoded on purpose.
+Port / baud / poll period plus the oscillator magnitude and period are
+all exposed as launch args, so the autostart shell script can tweak the
+pattern without rebuilding. The one knob deliberately hardcoded is
+``debug_oscillate_enabled`` -- that's what makes this the "debug
+oscillator" launch in the first place.
 """
 
 from launch import LaunchDescription
@@ -42,6 +44,16 @@ def generate_launch_description() -> LaunchDescription:
                 default_value="0.01",
                 description="ROS timer period driving serial drain + tx.",
             ),
+            DeclareLaunchArgument(
+                "debug_oscillate_rpm",
+                default_value="10",
+                description="Magnitude of the alternating RPM setpoint (sign flips every period).",
+            ),
+            DeclareLaunchArgument(
+                "debug_oscillate_period_s",
+                default_value="5.0",
+                description="Seconds between sign flips.",
+            ),
             Node(
                 package="py_pkg",
                 executable="stm_com_node",
@@ -57,8 +69,14 @@ def generate_launch_description() -> LaunchDescription:
                             LaunchConfiguration("poll_period_s"), value_type=float
                         ),
                         "debug_oscillate_enabled": True,
-                        "debug_oscillate_rpm": 10,
-                        "debug_oscillate_period_s": 5.0,
+                        "debug_oscillate_rpm": ParameterValue(
+                            LaunchConfiguration("debug_oscillate_rpm"),
+                            value_type=int,
+                        ),
+                        "debug_oscillate_period_s": ParameterValue(
+                            LaunchConfiguration("debug_oscillate_period_s"),
+                            value_type=float,
+                        ),
                     }
                 ],
             ),
