@@ -61,7 +61,6 @@ source /opt/ros/jazzy/setup.bash
 source /home/girji/dave_ws/install/setup.bash    # nautilus_hal + dave_demos
 
 BCU_SIM_GUI=1         pytest -m sim test/sim/test_bcu_sim.py              -v -s
-ACU_SIM_GUI=1         pytest -m sim test/sim/test_acu_pitch_sim.py        -v -s
 ACU_SIM_GUI=1         pytest -m sim test/sim/test_acu_roll_sim.py         -v -s
 EKF_SIM_GUI=1         pytest -m sim test/sim/test_ekf_pipeline_sim.py     -v -s
 TRIM_SIM_GUI=1        pytest -m sim test/sim/test_trim_neutral_sim.py     -v -s

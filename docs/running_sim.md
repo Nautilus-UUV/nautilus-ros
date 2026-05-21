@@ -200,7 +200,6 @@ typically lacks pytest.
 | Test | What it covers | GUI env-var |
 |---|---|---|
 | `test_bcu_sim` | RPM → flow → bladder volume integration | `BCU_SIM_GUI=1` |
-| `test_acu_pitch_sim` | ACU_PITCH → pitch joint motion | `ACU_SIM_GUI=1` |
 | `test_acu_roll_sim` | ACU_ROLL → roll joint motion | `ACU_SIM_GUI=1` |
 | `test_ekf_pipeline_sim` | IMU → prefilter → EKF pose well-formedness | `EKF_SIM_GUI=1` |
 | `test_trim_neutral_sim` | Full closed-loop TRIM, EKF in the loop | `TRIM_SIM_GUI=1` |

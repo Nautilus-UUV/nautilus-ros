@@ -1,22 +1,24 @@
-"""STM com boot-time debug oscillator: ±10 RPM every 5 s, alternating.
+"""Boot-time BCU motor-direction smoke test for a sealed Pi.
 
-Brings up *only* stm_com_node, with the oscillator forced on. No EKF,
-no depth PID, no pathfinding -- this launch's whole purpose is to drive
-the BCU motor with a simple alternating pattern so a sealed Pi (the
-CM is no longer reachable once mounted on the main board) can be
-smoke-tested on boot.
+Spawns three nodes -- nothing else. The whole purpose is to make the
+glider audibly reverse its BCU pump on a fixed cadence on boot, while
+still appearing alive to the topside frontend over MQTT:
+
+    auto_bcu_oscillator  --(±rpm on /bcu/rpm)-->  stm_com_node  -->  UART -> STM32
+    mqtt_bridge_node     <-->  mission laptop (link status + heartbeat)
+
+No EKF, no depth PID, no pathfinding. The oscillator publishes
+``/bcu/rpm`` so a second shell can ``ros2 topic echo /bcu/rpm`` and see
+the alternating values; stm_com_node consumes that topic exactly the
+way it would in the real control stack.
 
 Wire this into the Pi's autostart unit's ExecStart=, e.g.::
 
-    ExecStart=/bin/bash -lc 'source /opt/ros/jazzy/setup.bash \\
-        && source /home/<user>/dave_ws/install/setup.bash \\
-        && ros2 launch py_pkg stm_debug_oscillator.launch.py'
+    exec ros2 launch py_pkg stm_debug_oscillator.launch.py \\
+        rpm:=20 period_s:=5.0 mqtt_broker_host:=192.168.10.20
 
-Port / baud / poll period plus the oscillator magnitude and period are
-all exposed as launch args, so the autostart shell script can tweak the
-pattern without rebuilding. The one knob deliberately hardcoded is
-``debug_oscillate_enabled`` -- that's what makes this the "debug
-oscillator" launch in the first place.
+All launch args are bare ``name:=value`` -- ``ros2 launch`` does not
+accept ``--ros-args``.
 """
 
 from launch import LaunchDescription
@@ -42,17 +44,30 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument(
                 "poll_period_s",
                 default_value="0.01",
-                description="ROS timer period driving serial drain + tx.",
+                description="stm_com ROS timer period driving serial drain + tx.",
             ),
             DeclareLaunchArgument(
-                "debug_oscillate_rpm",
+                "rpm",
                 default_value="10",
                 description="Magnitude of the alternating RPM setpoint (sign flips every period).",
             ),
             DeclareLaunchArgument(
-                "debug_oscillate_period_s",
+                "period_s",
                 default_value="5.0",
-                description="Seconds between sign flips.",
+                description="Seconds between sign flips on /bcu/rpm.",
+            ),
+            DeclareLaunchArgument(
+                "mqtt_broker_host",
+                default_value="127.0.0.1",
+                description=(
+                    "MQTT broker host the topside bridge connects to. Override "
+                    "with the mission-laptop IP on the Pi (e.g. 192.168.10.20)."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "mqtt_broker_port",
+                default_value="1883",
+                description="MQTT broker TCP port.",
             ),
             Node(
                 package="py_pkg",
@@ -68,14 +83,35 @@ def generate_launch_description() -> LaunchDescription:
                         "poll_period_s": ParameterValue(
                             LaunchConfiguration("poll_period_s"), value_type=float
                         ),
-                        "debug_oscillate_enabled": True,
-                        "debug_oscillate_rpm": ParameterValue(
-                            LaunchConfiguration("debug_oscillate_rpm"),
-                            value_type=int,
+                    }
+                ],
+            ),
+            Node(
+                package="py_pkg",
+                executable="auto_bcu_oscillator",
+                name="auto_bcu_oscillator",
+                output="screen",
+                parameters=[
+                    {
+                        "rpm": ParameterValue(
+                            LaunchConfiguration("rpm"), value_type=int
                         ),
-                        "debug_oscillate_period_s": ParameterValue(
-                            LaunchConfiguration("debug_oscillate_period_s"),
-                            value_type=float,
+                        "period_s": ParameterValue(
+                            LaunchConfiguration("period_s"), value_type=float
+                        ),
+                    }
+                ],
+            ),
+            Node(
+                package="py_pkg",
+                executable="mqtt_bridge_node",
+                name="mqtt_bridge",
+                output="screen",
+                parameters=[
+                    {
+                        "broker_host": LaunchConfiguration("mqtt_broker_host"),
+                        "broker_port": ParameterValue(
+                            LaunchConfiguration("mqtt_broker_port"), value_type=int
                         ),
                     }
                 ],
