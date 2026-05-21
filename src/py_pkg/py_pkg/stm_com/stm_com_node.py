@@ -14,6 +14,14 @@ For BCU RPM: var_id = 0x2102, length = 2, payload = ``struct.pack('<h', rpm)``.
 
 Until the depth PID has published a single RPM we send 0 -- safe default,
 keeps the motor off if the STM polls before the control stack is up.
+
+Debug oscillator: if ``debug_oscillate_enabled`` is set, the node ignores
+``BCU_RPM`` entirely and instead toggles its cached setpoint between
+``+debug_oscillate_rpm`` and ``-debug_oscillate_rpm`` every
+``debug_oscillate_period_s``. The serial poll path is unchanged -- it
+just sees the toggled value. Intended for the boot-time bring-up test
+on an inaccessible Pi, where the only goal is to confirm the motor
+reverses on cue.
 """
 
 import struct
@@ -44,11 +52,29 @@ class STMComNode(Node):
         self.declare_parameter("port", "/dev/serial0")
         self.declare_parameter("baud", 115200)
         self.declare_parameter("poll_period_s", 0.01)
+        self.declare_parameter("debug_oscillate_enabled", False)
+        self.declare_parameter("debug_oscillate_rpm", 10)
+        self.declare_parameter("debug_oscillate_period_s", 5.0)
 
         port = self.get_parameter("port").get_parameter_value().string_value
         baud = self.get_parameter("baud").get_parameter_value().integer_value
         poll_period = (
             self.get_parameter("poll_period_s").get_parameter_value().double_value
+        )
+        debug_enabled = (
+            self.get_parameter("debug_oscillate_enabled")
+            .get_parameter_value()
+            .bool_value
+        )
+        debug_rpm = (
+            self.get_parameter("debug_oscillate_rpm")
+            .get_parameter_value()
+            .integer_value
+        )
+        debug_period = (
+            self.get_parameter("debug_oscillate_period_s")
+            .get_parameter_value()
+            .double_value
         )
 
         # timeout=0 -> non-blocking reads. We drive cadence from the ROS
@@ -59,8 +85,20 @@ class STMComNode(Node):
         self._latest_rpm: int = 0
         self._rx_buf = bytearray()
 
-        create_subscription_for_topic(self, UUVTopics.BCU_RPM, self._on_rpm)
+        if debug_enabled:
+            # Skip the BCU_RPM subscription so depth_node (or any other
+            # publisher that happens to come up) can't fight the pattern.
+            self._latest_rpm = int(debug_rpm)
+            self.create_timer(debug_period, self._flip_rpm)
+            self.get_logger().info(
+                f"stm_com oscillator: ±{debug_rpm} RPM every {debug_period:.1f} s"
+            )
+        else:
+            create_subscription_for_topic(self, UUVTopics.BCU_RPM, self._on_rpm)
         self.create_timer(poll_period, self._poll_serial)
+
+    def _flip_rpm(self) -> None:
+        self._latest_rpm = -self._latest_rpm
 
     def _on_rpm(self, msg) -> None:
         self._latest_rpm = int(msg.data)
