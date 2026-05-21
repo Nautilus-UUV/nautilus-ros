@@ -54,3 +54,12 @@ class UUVTopics:
 
     # CAN communication
     CAN_OUT = "/can/out"
+
+    # Debug / bench overrides (manual injection points; bypass closed-loop control)
+    DEBUG_BCU_RPM = "/debug/bcu/rpm"
+
+    # Control-graph coordination
+    # True while a manual-override node (bcu_debug, future hand-controllers,
+    # ...) is actively driving an actuator topic. Closed-loop publishers must
+    # honour it and stop emitting on the contested topic until it goes False.
+    CONTROL_MANUAL_OVERRIDE = "/control/manual_override"

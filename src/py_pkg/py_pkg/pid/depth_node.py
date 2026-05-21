@@ -5,17 +5,13 @@ from geometry_msgs.msg import Pose
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from std_msgs.msg import Int16, UInt8
+from std_msgs.msg import Bool, Int16, UInt8
 
 from py_pkg.math_utils import clamp
 from py_pkg.physics import gauge_pressure_pa, q_to_rpm
 from py_pkg.pid import depth_control_system as ControlSystem
-from py_pkg.pid.depth_config import (
-    init_buoyancy_engine,
-    init_control,
-    init_motor,
-)
 from py_pkg.robot_specs import BCU_DEEP_THRESHOLD_PA
+from py_pkg.scenarios.compile import depth_spec_from_node
 from py_pkg.uuv_ros_core import (
     UUVTopics,
     create_publisher_for_topic,
@@ -62,9 +58,13 @@ class DepthControlNode(Node):
         # can run concurrently.
         self.callback_group = ReentrantCallbackGroup()
 
-        self.control_system = ControlSystem.DepthControlSystem(init_control)
-        self.current_bladder_level = init_buoyancy_engine.get("initial_proportion_full")
-        self.bladder_volume = init_buoyancy_engine.get("tank_volume")
+        cfg = depth_spec_from_node(self)
+        self.control_system = ControlSystem.DepthControlSystem(cfg)
+        self.current_bladder_level = cfg.plant_model.initial_proportion_full
+        self.bladder_volume = cfg.plant_model.bladder_nominal_m3
+        self._min_rpm = cfg.plant_model.min_rpm
+        self._max_rpm = cfg.plant_model.max_rpm
+        self._pump_efficiency = cfg.plant_model.pump_efficiency
         self.current_time = self.get_clock().now().nanoseconds / 1e9
 
         self.control_output = 0.0
@@ -72,6 +72,11 @@ class DepthControlNode(Node):
         # Held None until the first POSITION_TARGET arrives
         self.target_pressure_pa: float | None = None
         self.current_pressure_pa = 0.0
+        # Set by CONTROL_MANUAL_OVERRIDE. While true, control_loop bails
+        # before publishing -- a manual driver (bcu_debug, future
+        # hand-controller, ...) owns /bcu/rpm and /bcu/valves and we
+        # must not race it on either topic.
+        self._manual_override = False
 
         # Log throttle
         self._target_log_every_n = 10
@@ -103,8 +108,15 @@ class DepthControlNode(Node):
             callback_group=self.callback_group,
         )
 
+        self.manual_override_subscriber = create_subscription_for_topic(
+            self,
+            UUVTopics.CONTROL_MANUAL_OVERRIDE,
+            self._on_manual_override,
+            callback_group=self.callback_group,
+        )
+
         self.control_timer = self.create_timer(
-            1.0 / 10.0,  # 10 Hz control frequency
+            1.0 / cfg.frequency_hz,
             self.control_loop,
             callback_group=self.callback_group,
         )
@@ -127,7 +139,22 @@ class DepthControlNode(Node):
             f"Received current pressure: {self.current_pressure_pa} Pa"
         )
 
+    def _on_manual_override(self, msg: Bool) -> None:
+        active = bool(msg.data)
+        if active != self._manual_override:
+            self.get_logger().info(
+                f"manual override {'engaged' if active else 'released'} -- "
+                f"depth_node BCU publishing {'paused' if active else 'resumed'}"
+            )
+        self._manual_override = active
+
     def control_loop(self):
+        if self._manual_override:
+            # A manual driver owns /bcu/rpm and /bcu/valves right now.
+            # Skip both the no-target zero-hold and the full PID step so
+            # we don't race them on the wire.
+            return
+
         if self.target_pressure_pa is None:
             # No target yet — emit a zero-RPM hold so the BCU bridge
             # doesn't drift, and skip the cascaded controller work.
@@ -145,9 +172,11 @@ class DepthControlNode(Node):
         )
 
         msg = Int16()
-        self.motor_rpm = q_to_rpm(self.control_output, self.bladder_volume)
-        min_rpm = init_motor.get("min_rpm")
-        max_rpm = init_motor.get("max_rpm")
+        self.motor_rpm = q_to_rpm(
+            self.control_output, self.bladder_volume, self._pump_efficiency
+        )
+        min_rpm = self._min_rpm
+        max_rpm = self._max_rpm
         if abs(self.motor_rpm) < min_rpm:
             # Pump cannot run reliably below min_rpm; suppress small commands
             # instead of slamming to +/-min_rpm (which would limit-cycle the setpoint).

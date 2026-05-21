@@ -39,7 +39,8 @@ from std_msgs.msg import Float32, Int16, Int32
 from ._sim_helpers import reap_lingering_gz
 
 # ---------------------------------------------------------------------------
-# Launch description — composed, NOT a wholesale include of unified_sim.
+# Launch description — composed, NOT a wholesale include of an end-to-end
+# launch. Keeps the test stack lean (bridges + Gazebo + robot, no oscillator).
 # ---------------------------------------------------------------------------
 
 
@@ -86,7 +87,7 @@ def generate_test_description():
                 )
             ]
         ),
-        # Same spawn pose as unified_sim.launch.py.
+        # Same spawn pose as the trim/sawtooth sim launches.
         launch_arguments={
             "z": "-5",
             "roll": "3.141592653589793",
@@ -197,7 +198,7 @@ class BCUSimTest(unittest.TestCase):
         """Sustained positive RPM -> positive flow + monotonic volume rise.
 
         Sequence: wait for IMU_LEFT (sim ready), settle, send RPM=0 a few
-        times to fire the bridge's startup clamp to BLADDER_MIN_VOLUME_M3
+        times to fire the bridge's startup clamp to rig.plant.bladder_min_m3
         (otherwise the +RPM accumulation gets subtracted from the SDF's
         ~1250 mL initial volume and looks like a decrease), snapshot the
         starting volume, drive +RPM at 10 Hz, then assert direction and
@@ -227,7 +228,7 @@ class BCUSimTest(unittest.TestCase):
         # 2) Let the buoyancy plugin finish loading.
         self._spin_for(post_ready_settle_s)
 
-        # 3) Fire the bridge's startup clamp to BLADDER_MIN_VOLUME_M3 by
+        # 3) Fire the bridge's startup clamp to rig.plant.bladder_min_m3 by
         #    publishing RPM=0, then let the volume roundtrip settle.
         for _ in range(3):
             self.driver.publish_rpm(0)

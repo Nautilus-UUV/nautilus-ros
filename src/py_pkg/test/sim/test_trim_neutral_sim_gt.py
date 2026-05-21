@@ -38,7 +38,6 @@ import launch_testing.asserts
 import launch_testing.markers
 import pytest
 import rclpy
-from ament_index_python.packages import get_package_share_directory
 from geometry_msgs.msg import Pose
 from launch import LaunchDescription
 from launch.actions import IncludeLaunchDescription
@@ -79,6 +78,12 @@ def generate_test_description():
         "on",
     )
 
+    # Paired with test_trim_neutral_sim.py — same scenario, same plant
+    # and control config (the memory rule on paired EKF/GT thresholds).
+    test_scenario = os.path.join(
+        os.path.dirname(__file__), "scenarios", "test_trim_neutral.yaml"
+    )
+
     bridge_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             [
@@ -88,7 +93,8 @@ def generate_test_description():
                     "bridge.launch.py",
                 )
             ]
-        )
+        ),
+        launch_arguments={"scenario": test_scenario}.items(),
     )
 
     robot_launch = IncludeLaunchDescription(
@@ -101,7 +107,7 @@ def generate_test_description():
                 )
             ]
         ),
-        # Same spawn pose as test_trim_neutral_sim.py / unified_sim.launch.py.
+        # Same spawn pose as test_trim_neutral_sim.py / trim_sim.launch.py.
         launch_arguments={
             "z": "-5",
             "roll": "3.141592653589793",
@@ -114,19 +120,13 @@ def generate_test_description():
         }.items(),
     )
 
-    # gt_pose_bridge needs the same `model_name` parameter the other HAL
-    # bridges read from nautilus_params.yaml, so reuse that file.
-    nautilus_params = os.path.join(
-        get_package_share_directory("nautilus_hal"),
-        "config",
-        "nautilus_params.yaml",
-    )
-
+    # gt_pose_bridge declares `model_name` itself (default mirrors
+    # robot_specs / baseline scenario), so no per-bridge param overlay
+    # is needed here unless the paired test wants to override it.
     gt_pose_bridge = LaunchNode(
         package="nautilus_hal",
         executable="gt_pose_bridge",
         name="nautilus_gt_pose_bridge",
-        parameters=[nautilus_params],
         output="screen",
     )
 

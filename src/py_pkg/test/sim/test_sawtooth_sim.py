@@ -14,7 +14,7 @@ Pipeline under test (mission state machine + cascaded controllers + EKF):
 The ACU pitch axis is now a bang-bang controller on
 ``EXTERNAL_PRESSURE`` vs the pressure setpoint pathfinding stamps onto
 ``POSITION_TARGET.position.z`` -- it picks one of two extremes
-(``ACU_PITCH_OUTPUT_LIMITS_M``, on the wire as Int16 mm) and sticks
+(``AcuPitchSpec.output_limits``, on the wire as Int16 mm) and sticks
 there until the sign of the pressure error flips. So we don't measure a
 body-frame pitch angle here; we just check that the right extreme
 shows up on ``ACU_PITCH`` during each leg:
@@ -53,7 +53,7 @@ from launch_ros.substitutions import FindPackageShare
 from nautilus_msgs.msg import MissionCommand
 from py_pkg.math_utils import quaternion_to_roll_pitch
 from py_pkg.path.missions.factory import MissionId
-from py_pkg.robot_specs import ACU_PITCH_OUTPUT_LIMITS_M
+from py_pkg.scenarios.spec.control import AcuPitchSpec
 from py_pkg.uuv_ros_core import (
     UUVTopics,
     create_publisher_for_topic,
@@ -74,8 +74,9 @@ N_RESURFACES = 1
 # Bang-bang ACU pitch endpoints on the wire (Int16 mm). Same derivation
 # as in ``pid/acu_node.py``: the soft-saturation tuple is ordered
 # (front, back) with "front" the most-negative end of stroke.
-ACU_PITCH_FRONT_MM = int(round(ACU_PITCH_OUTPUT_LIMITS_M[1] * 1000.0))
-ACU_PITCH_BACK_MM = int(round(ACU_PITCH_OUTPUT_LIMITS_M[0] * 1000.0))
+_PITCH_OUTPUT_LIMITS_M = AcuPitchSpec().output_limits
+ACU_PITCH_FRONT_MM = int(round(_PITCH_OUTPUT_LIMITS_M[1] * 1000.0))
+ACU_PITCH_BACK_MM = int(round(_PITCH_OUTPUT_LIMITS_M[0] * 1000.0))
 
 
 @pytest.mark.launch_test
@@ -102,13 +103,13 @@ def generate_test_description():
             ]
         ),
         # Test publishes the MissionCommand + start itself for deterministic
-        # timing; the launch's autostart path is the CLI-only convenience.
+        # timing; scenario sets autostart=false. The mission constants in
+        # this file remain the source of truth for the driver's publish.
         launch_arguments={
-            "target_pressure_pa": str(TARGET_PRESSURE_PA),
-            "angle_rad": str(PITCH_RAD),
-            "n_resurfaces": str(N_RESURFACES),
+            "scenario": os.path.join(
+                os.path.dirname(__file__), "scenarios", "test_sawtooth.yaml"
+            ),
             "headless": "false" if gui_enabled else "true",
-            "mission_autostart": "false",
         }.items(),
     )
 

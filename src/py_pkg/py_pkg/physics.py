@@ -16,7 +16,7 @@ conversion functions that use them. Robot-specific physical
 constants (pump, bladder, motors) live in `robot_specs.py`.
 """
 
-from py_pkg.robot_specs import PUMP_EFFICIENCY, VOLUME_PER_REV_M3
+from py_pkg.robot_specs import VOLUME_PER_REV_M3
 
 # Standard atmosphere (Pa) — pressure at the water surface, subtracted
 # off the absolute reading from the external pressure sensor.
@@ -78,13 +78,16 @@ def pressure_to_depth(
     return (pressure_pa - atmospheric_pa) / (density * GRAVITY_M_S2)
 
 
-def q_to_rpm(q: float, bladder_volume: float) -> float:
+def q_to_rpm(q: float, bladder_volume: float, pump_efficiency: float) -> float:
     """
     Convert bladder flow-rate ratio (1/s) to motor RPM.
 
     :param q: bladder flow rate as a fraction of total volume per second (1/s)
     :param bladder_volume: bladder volume (m^3)
+    :param pump_efficiency: volumetric efficiency the controller assumes
+        when inverting flow → RPM. Lives on DepthPlantModel so MC sweeps
+        can perturb controller-vs-actual pump efficiency.
     :return: motor speed (RPM)
     """
     flow_rate = q * bladder_volume  # m^3/s
-    return SECONDS_PER_MINUTE / (VOLUME_PER_REV_M3 * PUMP_EFFICIENCY) * flow_rate
+    return SECONDS_PER_MINUTE / (VOLUME_PER_REV_M3 * pump_efficiency) * flow_rate

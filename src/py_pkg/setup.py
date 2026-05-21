@@ -13,6 +13,10 @@ setup(
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),
         (os.path.join("share", package_name, "launch"), glob("launch/*.launch.py")),
+        (
+            os.path.join("share", package_name, "scenarios", "library"),
+            glob("py_pkg/scenarios/library/*.yaml"),
+        ),
     ],
     install_requires=["setuptools"],
     zip_safe=True,
@@ -24,6 +28,10 @@ setup(
         "test": [
             "pytest",
         ],
+        "analysis": [
+            "matplotlib",
+            "rosbags",
+        ],
     },
     entry_points={
         "console_scripts": [
@@ -33,6 +41,10 @@ setup(
             "mqtt_bridge_node = py_pkg.mqtt.mqtt_bridge_node:main",
             "depth_node = py_pkg.pid.depth_node:main",
             "acu_node = py_pkg.pid.acu_node:main",
+            "stm_com_node = py_pkg.stm_com.stm_com_node:main",
+            "bcu_debug_node = py_pkg.debug.bcu_debug_node:main",
+            "auto_bcu_oscillator = py_pkg.debug.auto_bcu_oscillator:main",
+            "plot_sweep = py_pkg.analysis.cli:main",
         ],
     },
 )

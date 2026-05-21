@@ -1,0 +1,63 @@
+seed: 71
+control:
+  controllers:
+    depth:
+      frequency_hz: 10
+      pid_pressure:
+        kp: 4.0503987326657423e-07
+        ki: 1.0187681288048267e-08
+        kd: 1.9540682648190775e-05
+        integral_limits:
+        - -0.0025
+        - 0.0025
+        output_limits:
+        - -0.01
+        - 0.01
+        derivative_filter: 0.3
+      plant_model:
+        bladder_nominal_m3: 0.0025
+        initial_proportion_full: 1.0
+        min_rpm: 0
+        max_rpm: 4000
+        pump_efficiency: 0.93
+    acu_pitch:
+      name: pitch
+      output_limits:
+      - -0.11
+      - -0.01
+    acu_roll:
+      frequency_hz: 10
+      name: roll
+      kp: 0.5
+      ki: 0.005
+      kd: 0.05
+      command_tolerance: 0.5
+      integral_limits:
+      - -30.0
+      - 30.0
+      output_limits:
+      - -30.0
+      - 30.0
+      derivative_filter: 0.2
+rig:
+  sim:
+    model_name: glider_nautilus
+    world_name: oceans_waves
+  plant:
+    volume_per_rev_m3: 3.2e-07
+    bladder_min_m3: 0.00040434878381863224
+    bladder_max_m3: 0.0017875302605825645
+    bladder_nominal_m3: 0.0025
+    bcu_motor_min_rpm: 0
+    bcu_motor_max_rpm: 4000
+  faults:
+    bcu_rpm:
+      probability_per_sec: 0.0
+      duration_sec: 10.0
+      degraded_factor: 0.5
+      severe_factor: 0.0
+  bridges:
+    bcu:
+      publish_rate_hz: 10
+    external_sensor:
+      publish_rate_hz: 10

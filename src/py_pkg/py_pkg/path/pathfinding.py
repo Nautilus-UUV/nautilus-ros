@@ -35,6 +35,9 @@ class PathfindingNode(Node):
         self._mission_cmd: MissionCommand | None = None
         self._mode: str = "IDLE"  # IDLE | LOADED | RUNNING | STOPPED
         self._mission_t0_s: float | None = None
+        # `start` may arrive before `/path` or before pressure ingress;
+        # buffer the intent and drain it once preconditions hold.
+        self._start_pending: bool = False
 
         self._current_pressure_pa: float | None = None
         self._current_pose: Pose | None = None
@@ -59,6 +62,8 @@ class PathfindingNode(Node):
     def _on_pressure(self, msg) -> None:
         # EXTERNAL_PRESSURE is absolute Pa; the depth stack works in gauge.
         self._current_pressure_pa = gauge_pressure_pa(float(msg.data))
+        if self._start_pending:
+            self._handle_start()
 
     def _on_path(self, msg: MissionCommand) -> None:
         try:
@@ -70,6 +75,8 @@ class PathfindingNode(Node):
         self._mode = "LOADED"
         self._mission_t0_s = None
         self.get_logger().info(f"Loaded mission_id={msg.mission_id}.")
+        if self._start_pending:
+            self._handle_start()
 
     def _on_command(self, msg: String) -> None:
         cmd = msg.data.strip().lower()
@@ -77,6 +84,7 @@ class PathfindingNode(Node):
         if cmd == "start":
             self._handle_start()
         elif cmd == "stop":
+            self._start_pending = False
             self._mode = "STOPPED"
             self.get_logger().info("Mode STOPPED (holding last setpoint).")
         elif cmd == "abort":
@@ -85,11 +93,16 @@ class PathfindingNode(Node):
             self.get_logger().warn(f"Unknown /command: {cmd!r}")
 
     def _handle_start(self) -> None:
-        if self._mission is None or self._mission_cmd is None:
-            self.get_logger().warn("Cannot start: no mission loaded on /path.")
-            return
-        if self._current_pressure_pa is None:
-            self.get_logger().warn("Cannot start: no pressure ingress yet.")
+        if (
+            self._mission is None
+            or self._mission_cmd is None
+            or self._current_pressure_pa is None
+        ):
+            if not self._start_pending:
+                self.get_logger().info(
+                    "Start queued; waiting for /path and pressure ingress."
+                )
+            self._start_pending = True
             return
         self._mission.start(
             MissionState(
@@ -101,6 +114,7 @@ class PathfindingNode(Node):
         )
         self._mission_t0_s = self.get_clock().now().nanoseconds / 1e9
         self._mode = "RUNNING"
+        self._start_pending = False
         self.get_logger().info("Mode RUNNING.")
 
     def _handle_abort(self) -> None:
@@ -110,6 +124,7 @@ class PathfindingNode(Node):
         self._mission_cmd = None
         self._mode = "IDLE"
         self._mission_t0_s = None
+        self._start_pending = False
         pose = Pose()
         pose.position.z = 0.0
         pose.orientation.w = 1.0

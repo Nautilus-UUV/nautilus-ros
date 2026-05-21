@@ -18,32 +18,32 @@ class AxisController:
     different from the sensor frame (deg).
 
     Time is passed in externally in seconds. This ensures the control
-    math (Ki/Kd values) remains consistent regardless of how fast the
+    math (ki/kd values) remains consistent regardless of how fast the
     main program loops.
     """
 
     def __init__(
         self,
         name,
-        Kp,
+        kp,
         command_tolerance,
-        Ki=0.0,
-        Kd=0.0,
+        ki=0.0,
+        kd=0.0,
         integral_limits=(-1000.0, 1000.0),
         output_limits=(-1000.0, 1000.0),
         derivative_filter=0.0,
     ):
         self.name = name
-        self.Kp = Kp
-        self.Ki = Ki
-        self.Kd = Kd
+        self.kp = kp
+        self.ki = ki
+        self.kd = kd
         self.command_tolerance = command_tolerance
         self.output_limits = output_limits
 
         self.pid = PIDController(
-            kp=Kp,
-            ki=Ki,
-            kd=Kd,
+            kp=kp,
+            ki=ki,
+            kd=kd,
             integral_limits=integral_limits,
             output_limits=(-float("inf"), float("inf")),
             derivative_filter=derivative_filter,
@@ -85,7 +85,9 @@ class AxisController:
     def update(self, desired_value, time):
         """Returns a motor-frame command, or None if the redundant-publish
         guard determines the bus has nothing new to hear."""
-        self.target_pos = self._clamp_motor(self._compute_new_target(desired_value, time))
+        self.target_pos = self._clamp_motor(
+            self._compute_new_target(desired_value, time)
+        )
 
         # Prime: PID's first call returns 0 to seed prev_time, which would
         # show up as a phantom "go to zero" command. Swallow it.
@@ -107,7 +109,7 @@ class MassShifterController(AxisController):
     """Controls the pitch axis by linearly moving a weight (a mass-shifter).
 
     Unlike the roll axis, this motor moves in meters (linear stroke) to change
-    an angle measured in degrees. The tuning parameter (Kp) acts as the conversion
+    an angle measured in degrees. The tuning parameter (kp) acts as the conversion
     factor between meters and degrees.
 
     Because of this physical difference, the mathematical output is the *exact

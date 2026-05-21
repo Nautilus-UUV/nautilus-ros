@@ -32,6 +32,47 @@ TARGET_PA_100M = gauge_pressure_pa(depth_to_pressure_pa(100.0))
 TARGET_PA_DEEP_HUGE = gauge_pressure_pa(depth_to_pressure_pa(1000.0))
 
 
+class TestManualOverride:
+    """While CONTROL_MANUAL_OVERRIDE is True, depth_node must stop
+    publishing to /bcu/rpm and /bcu/valves -- a manual driver (bcu_debug)
+    owns those topics and depth_node's periodic zero-hold would clobber
+    it otherwise."""
+
+    def test_no_target_zero_hold_pauses_under_override(self, depth_node_harness):
+        h = depth_node_harness
+        # Engage the override BEFORE the 10 Hz control timer has had a
+        # chance to fire its no-target zero-publish.
+        h.publish_manual_override(True)
+        h.spin_until(
+            lambda: h.node._manual_override is True, timeout=1.0
+        )
+
+        rpm_count_before = len(h.received_rpm)
+        valves_count_before = len(h.received_valves)
+        h.spin_for(0.5)  # 5+ control ticks at 10 Hz
+
+        assert len(h.received_rpm) == rpm_count_before, (
+            f"depth_node must not publish /bcu/rpm while overridden, got "
+            f"{h.received_rpm[rpm_count_before:]}"
+        )
+        assert len(h.received_valves) == valves_count_before
+
+    def test_publish_resumes_after_override_released(self, depth_node_harness):
+        h = depth_node_harness
+        h.publish_manual_override(True)
+        h.spin_until(lambda: h.node._manual_override is True, timeout=1.0)
+        h.spin_for(0.3)
+
+        h.publish_manual_override(False)
+        h.spin_until(lambda: h.node._manual_override is False, timeout=1.0)
+
+        baseline = len(h.received_rpm)
+        h.spin_for(0.4)
+        assert len(h.received_rpm) > baseline, (
+            "depth_node must resume the zero-hold publish once override is released"
+        )
+
+
 class TestWiringSmoke:
     """Construction + topic graph wiring."""
 

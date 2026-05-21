@@ -1,0 +1,21 @@
+# Tiny smoke sweep: perturb only the BCU-driving depth-loop PID gains
+# (control.controllers.depth.pid_pressure.{kp,ki,kd}) around the nominal
+# values, 4 samples. Designed to be fast: nominal base scenario (no
+# hydrodynamics render), 3 dimensions, short mission.
+#
+# Use this to confirm the sampler + dispatcher + apptainer plumbing
+# works end-to-end on your workstation before launching a real sweep.
+
+description: >
+  Smoke test: 4-sample LHS over the depth outer-loop PID gains
+  (kp/ki/kd of pid_pressure) at +/- 50% of nominal. Everything else
+  stays at nominal.yaml.
+
+n_samples: 8
+seed: 0
+base_scenario: nominal.yaml
+
+dimensions:
+  - { path: control.controllers.depth.pid_pressure.kp, distribution: uniform, low: 2.0e-7, high: 6.0e-7 }
+  - { path: control.controllers.depth.pid_pressure.ki, distribution: uniform, low: 5.0e-9, high: 1.5e-8 }
+  - { path: control.controllers.depth.pid_pressure.kd, distribution: uniform, low: 7.5e-6, high: 2.25e-5 }

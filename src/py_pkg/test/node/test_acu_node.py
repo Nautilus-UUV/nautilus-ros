@@ -2,7 +2,7 @@
 
 Pitch ignores attitude entirely now — it's a pressure-error bang-bang
 publishing one of two ``Int16`` mm extremes pulled from
-``ACU_PITCH_OUTPUT_LIMITS_M``. Roll keeps the same PID/AxisController
+``AcuPitchSpec.output_limits``. Roll keeps the same PID/AxisController
 contract on ``ACU_ROLL`` (Int16 centidegrees).
 
 The harness publishes:
@@ -16,18 +16,15 @@ The harness publishes:
 import pytest
 
 from py_pkg.physics import ATMOSPHERIC_PRESSURE_PA
-from py_pkg.robot_specs import (
-    ACU_PITCH_OUTPUT_LIMITS_M,
-    ACU_ROLL_CDEG_PER_DEG,
-    ACU_ROLL_MAX_ANGLE_DEG,
-)
-
+from py_pkg.robot_specs import ACU_ROLL_CDEG_PER_DEG, ACU_ROLL_MAX_ANGLE_DEG
+from py_pkg.scenarios.spec.control import AcuPitchSpec
 
 # Bang-bang pitch wire values, mirrored from acu_node.py. Index 0 is the
 # "back" extreme (selected when shallower than setpoint), index 1 is the
 # "front" extreme (selected when deeper than or equal to setpoint).
-PITCH_BACK_MM = int(round(ACU_PITCH_OUTPUT_LIMITS_M[0] * 1000.0))
-PITCH_FRONT_MM = int(round(ACU_PITCH_OUTPUT_LIMITS_M[1] * 1000.0))
+_PITCH_OUTPUT_LIMITS_M = AcuPitchSpec().output_limits
+PITCH_BACK_MM = int(round(_PITCH_OUTPUT_LIMITS_M[0] * 1000.0))
+PITCH_FRONT_MM = int(round(_PITCH_OUTPUT_LIMITS_M[1] * 1000.0))
 
 ROLL_MAX_CDEG = int(round(ACU_ROLL_MAX_ANGLE_DEG * ACU_ROLL_CDEG_PER_DEG))
 
@@ -173,7 +170,7 @@ class TestPitchGatedOnInputs:
 
 
 class TestPitchBangBang:
-    """Output is one of two extremes from ``ACU_PITCH_OUTPUT_LIMITS_M``;
+    """Output is one of two extremes from ``AcuPitchSpec.output_limits``;
     it never lands anywhere in between regardless of error magnitude."""
 
     def test_shallower_than_target_emits_back(self, acu_node_harness):
@@ -228,7 +225,7 @@ class TestPitchBangBang:
 
 class TestRollSignConvention:
     """Positive desired roll (relative to current=0) → positive ACU_ROLL
-    (cdeg). Roll axis target_pos_deg = current + Kp*(desired - current);
+    (cdeg). Roll axis target_pos_deg = current + kp*(desired - current);
     published value is int(round(target_pos_deg * ACU_ROLL_CDEG_PER_DEG))
     with no sign inversion in the publish path."""
 

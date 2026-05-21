@@ -28,6 +28,7 @@ from typing import Any
 
 import paho.mqtt.client as mqtt
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rosidl_runtime_py.set_message import set_message_fields
 
@@ -51,6 +52,7 @@ class IngressMapping:
 TOPIC_MAP: tuple[IngressMapping, ...] = (
     IngressMapping(UUVTopics.COMMAND, "nautilus/cmd/command", 1),
     IngressMapping(UUVTopics.PATH, "nautilus/cmd/path", 1),
+    IngressMapping(UUVTopics.DEBUG_BCU_RPM, "nautilus/cmd/debug/bcu/rpm", 1),
 )
 
 
@@ -176,13 +178,18 @@ class MqttBridge(Node):
 
 
 def main(args=None) -> None:
+    # Catch SIGINT/SIGTERM so the process exits 0 instead of 1 on Ctrl-C —
+    # matches the pattern in pathfinding/depth/acu nodes so launch_testing's
+    # exit-code check stays happy.
     rclpy.init(args=args)
     node = MqttBridge()
     try:
         rclpy.spin(node)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        rclpy.try_shutdown()
 
 
 if __name__ == "__main__":
