@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 from py_pkg.math_utils import (
     clamp,
+    deadband_snap,
     quaternion_to_roll_pitch,
     quaternion_to_yaw,
     rpy_to_quaternion,
@@ -125,3 +126,59 @@ class TestClamp:
         # lo == hi → val is forced to that single value
         assert clamp(0.7, 0.5, 0.5) == pytest.approx(0.5)
         assert clamp(0.3, 0.5, 0.5) == pytest.approx(0.5)
+
+
+class TestDeadbandSnap:
+    """deadband_snap(val, zero_below, snap_to, limit) — the BCU pump deadband.
+
+    Tuned to the nominal scenario: zero_below=500, snap_to=1000, limit=4000.
+    """
+
+    ZERO_BELOW = 500
+    SNAP_TO = 1000
+    LIMIT = 4000
+
+    def _snap(self, val):
+        return deadband_snap(val, self.ZERO_BELOW, self.SNAP_TO, self.LIMIT)
+
+    def test_zero_passes_through(self):
+        assert self._snap(0.0) == 0.0
+
+    @pytest.mark.parametrize("val", [-499.0, -1.0, 1.0, 250.0, 499.0])
+    def test_below_zero_threshold_suppressed_to_zero(self, val):
+        assert self._snap(val) == 0.0
+
+    @pytest.mark.parametrize(
+        "val,expected",
+        [
+            (500.0, 1000.0),   # boundary snaps up, not down
+            (750.0, 1000.0),
+            (999.0, 1000.0),
+            (-500.0, -1000.0),
+            (-750.0, -1000.0),
+        ],
+    )
+    def test_in_deadband_snaps_up_to_edge(self, val, expected):
+        assert self._snap(val) == pytest.approx(expected)
+
+    @pytest.mark.parametrize("val", [1000.0, -1000.0, 2500.0, -2500.0, 4000.0, -4000.0])
+    def test_above_edge_passes_through(self, val):
+        assert self._snap(val) == pytest.approx(val)
+
+    @pytest.mark.parametrize(
+        "val,expected", [(5000.0, 4000.0), (-5000.0, -4000.0), (1e9, 4000.0)]
+    )
+    def test_beyond_limit_saturates(self, val, expected):
+        assert self._snap(val) == pytest.approx(expected)
+
+    def test_sign_is_preserved(self):
+        assert self._snap(700.0) > 0
+        assert self._snap(-700.0) < 0
+
+    @pytest.mark.parametrize("val", [-9000.0, -3000.0, -750.0, -10.0, 0.0, 10.0, 3000.0])
+    def test_zero_thresholds_reduce_to_plain_clamp(self, val):
+        # zero_below == snap_to == 0 → no deadband, just a ±limit clamp.
+        # This is the dataclass default, so a bare DepthSpec() is unchanged.
+        assert deadband_snap(val, 0, 0, self.LIMIT) == pytest.approx(
+            clamp(val, -self.LIMIT, self.LIMIT)
+        )

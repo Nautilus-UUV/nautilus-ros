@@ -52,6 +52,21 @@ class PlantSpec(StrictModel):
     bladder_nominal_m3: float = BLADDER_VOLUME_M3
     bcu_motor_min_rpm: int = BCU_MOTOR_MIN_RPM
     bcu_motor_max_rpm: int = BCU_MOTOR_MAX_RPM
+    # Internal tank pressure sensor model. The tank feeds the
+    # bladder, so tank pressure runs INVERSE to bladder fill: oil pushed out
+    # into the bladder drains the tank. Dive tests saw a ~0.7-1.5 barg gauge
+    # swing, which the BCU bridge maps linearly onto the tank's oil level
+    # (full bladder = drained tank = empty endpoint; empty bladder = full tank
+    # = full endpoint). Pure fill — depth does not enter. YAML-only knobs with
+    # no robot_specs counterpart, same as bladder_min_m3 / bladder_max_m3.
+    tank_pressure_empty_pa: float = 70_000.0  # 0.7 barg, tank drained (bladder full)
+    tank_pressure_full_pa: float = 150_000.0  # 1.5 barg, tank full of oil (bladder empty)
+    
+    # Correction for a hull held below atmospheric (partial vacuum). The
+    # sensor reads tank-relative-to-hull, so a sub-atmospheric hull inflates
+    # the gauge reading by however far it sits below atmospheric. This offset
+    # is added to the reading; 0.0 = hull at atmospheric (no correction).
+    tank_pressure_vacuum_offset_pa: float = 0.0
 
 
 class FaultInjectorSpec(StrictModel):

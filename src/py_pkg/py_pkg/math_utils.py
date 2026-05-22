@@ -62,3 +62,23 @@ def clamp(val: float, lo: float, hi: float) -> float:
     if val < lo:
         return lo
     return val
+
+
+def deadband_snap(val: float, zero_below: float, snap_to: float, limit: float) -> float:
+    """Shape a signed command through a deadband, then saturate.
+
+    Magnitudes under ``zero_below`` are suppressed to 0; magnitudes in
+    ``[zero_below, snap_to)`` are pushed up to ``±snap_to`` (the minimum
+    value the actuator runs at reliably); everything else passes through,
+    saturated into ``[-limit, limit]``. Sign is preserved. Invariant
+    (not enforced): ``0 <= zero_below <= snap_to <= limit``.
+
+    With ``zero_below == snap_to == 0`` this reduces to a plain
+    ``clamp(val, -limit, limit)``.
+    """
+    mag = abs(val)
+    if mag < zero_below:
+        return 0.0
+    if mag < snap_to:
+        return snap_to if val > 0 else -snap_to
+    return clamp(val, -limit, limit)

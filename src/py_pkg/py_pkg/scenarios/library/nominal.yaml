@@ -20,7 +20,8 @@ control:
       plant_model:
         bladder_nominal_m3: 0.0025
         initial_proportion_full: 1.0
-        min_rpm: 0
+        min_rpm: 500
+        min_operating_rpm: 1000
         max_rpm: 4000
         pump_efficiency: 0.93
     acu_pitch:

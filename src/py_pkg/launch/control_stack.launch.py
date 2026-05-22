@@ -54,6 +54,9 @@ def _wire_control_stack(context, *_args, **_kwargs):
     control = load_scenario(LaunchConfiguration("scenario").perform(context)).control
     mqtt_broker_host = LaunchConfiguration("mqtt_broker_host").perform(context)
     mqtt_broker_port = int(LaunchConfiguration("mqtt_broker_port").perform(context))
+    ekf_publish_enabled = (
+        LaunchConfiguration("ekf_publish_enabled").perform(context).lower() == "true"
+    )
     return [
         Node(
             package="py_pkg",
@@ -66,6 +69,7 @@ def _wire_control_stack(context, *_args, **_kwargs):
             executable="ekf_node",
             name="ekf_node",
             output="screen",
+            parameters=[{"publish_enabled": ekf_publish_enabled}],
         ),
         Node(
             package="py_pkg",
@@ -138,6 +142,18 @@ def generate_launch_description():
                 "mqtt_broker_port",
                 default_value="1883",
                 description="MQTT broker TCP port.",
+            ),
+            DeclareLaunchArgument(
+                "ekf_publish_enabled",
+                default_value="true",
+                description=(
+                    "Let ekf_node publish /position/estimation. Set false to "
+                    "silence the EKF while its tuning is in flux -- the node "
+                    "still runs the math, but no Pose goes out, so the "
+                    "Telemetry tab's EKF panels freeze instead of jittering. "
+                    "Closed-loop dive control (depth + ACU pitch) does not "
+                    "depend on EKF output."
+                ),
             ),
             DeclareLaunchArgument(
                 "enable_stm_com",

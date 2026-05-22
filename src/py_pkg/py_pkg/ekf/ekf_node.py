@@ -29,6 +29,19 @@ class EKFNode(Node):
         self.declare_parameter("dt", 0.01)
         dt = self.get_parameter("dt").get_parameter_value().double_value
 
+        # Hold-off switch for the half-finished filter. When False the node
+        # still spins and runs the math (so downstream tests / debugging
+        # still see it consuming the IMU) but no Pose is published, which
+        # means anything subscribed to /position/estimation -- attitude
+        # indicator, telemetry strip charts, future pathfinder roll
+        # tracking -- sees no traffic and stays static. BCU depth control
+        # and the bang-bang ACU pitch loop don't use EKF output, so
+        # disabling here does not break closed-loop dive behaviour.
+        self.declare_parameter("publish_enabled", True)
+        self._publish_enabled = (
+            self.get_parameter("publish_enabled").get_parameter_value().bool_value
+        )
+
         self.ekf = EKFFilter(dt)
         self._last_stamp = None  # tracks previous message timestamp
         self._initialized = False  # whether initial orientation has been set
@@ -47,7 +60,8 @@ class EKFNode(Node):
         self.get_logger().info(
             "EKF Node started, subscribed to "
             f"{UUVTopics.IMU_FILTERED_LEFT} and publishing to "
-            f"{UUVTopics.POSITION_ESTIMATION}"
+            f"{UUVTopics.POSITION_ESTIMATION} "
+            f"(publish_enabled={self._publish_enabled})"
         )
 
     def imu_callback(self, msg_in: Imu):
@@ -93,23 +107,28 @@ class EKFNode(Node):
         # Use accelerometer as attitude measurement; gyro is used as input in predict()
         self.ekf.update(measured_accel)
 
-        # Publish position + orientation as a single Pose
+        # Publish position + orientation as a single Pose. Suppressed when
+        # publish_enabled=False; the math above still runs so an operator
+        # can flip the parameter live without restarting the node.
         est_state = self.ekf.x
-        pose_msg = Pose()
-        pose_msg.position.x = est_state[0]
-        pose_msg.position.y = est_state[1]
-        pose_msg.position.z = est_state[2]
-        pose_msg.orientation.x = est_state[6]
-        pose_msg.orientation.y = est_state[7]
-        pose_msg.orientation.z = est_state[8]
-        pose_msg.orientation.w = est_state[9]
-        self.pub.publish(pose_msg)
+        if self._publish_enabled:
+            pose_msg = Pose()
+            pose_msg.position.x = est_state[0]
+            pose_msg.position.y = est_state[1]
+            pose_msg.position.z = est_state[2]
+            pose_msg.orientation.x = est_state[6]
+            pose_msg.orientation.y = est_state[7]
+            pose_msg.orientation.z = est_state[8]
+            pose_msg.orientation.w = est_state[9]
+            self.pub.publish(pose_msg)
 
         self._cb_count += 1
         if self._cb_count % self._log_every_n == 0:
+            suffix = "" if self._publish_enabled else " (publish_enabled=False)"
             self.get_logger().info(
                 f"Current position [x,y,z]: "
                 f"[{est_state[0]:.3f}, {est_state[1]:.3f}, {est_state[2]:.3f}] m"
+                f"{suffix}"
             )
 
 

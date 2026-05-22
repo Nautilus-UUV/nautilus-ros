@@ -7,7 +7,7 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from std_msgs.msg import Bool, Int16, UInt8
 
-from py_pkg.math_utils import clamp
+from py_pkg.math_utils import deadband_snap
 from py_pkg.physics import gauge_pressure_pa, q_to_rpm
 from py_pkg.pid import depth_control_system as ControlSystem
 from py_pkg.robot_specs import BCU_DEEP_THRESHOLD_PA
@@ -31,9 +31,10 @@ def select_pump_and_valves(
     enough that the surrounding water pressure is above
     ``deep_threshold_pa`` AND the controller is asking to go deeper
     still (``q > 0``), we don't run the pump at all. We just open
-    valve 2 and let ambient water pressure passively push water into
-    the bladder. The bladder fills, the glider gets denser, and we
-    sink — without spending any pump energy.
+    valve 2 and let the high ambient pressure squeeze oil out of the
+    bladder back into the tank on its own. The bladder deflates, the
+    glider displaces less water, and we sink — without spending any
+    pump energy.
 
     Otherwise the rule is simple: when the pump is actually running,
     valve 1 is open to carry the flow; when the pump is idle, both
@@ -63,6 +64,7 @@ class DepthControlNode(Node):
         self.current_bladder_level = cfg.plant_model.initial_proportion_full
         self.bladder_volume = cfg.plant_model.bladder_nominal_m3
         self._min_rpm = cfg.plant_model.min_rpm
+        self._min_operating_rpm = cfg.plant_model.min_operating_rpm
         self._max_rpm = cfg.plant_model.max_rpm
         self._pump_efficiency = cfg.plant_model.pump_efficiency
         self.current_time = self.get_clock().now().nanoseconds / 1e9
@@ -175,18 +177,16 @@ class DepthControlNode(Node):
         self.motor_rpm = q_to_rpm(
             self.control_output, self.bladder_volume, self._pump_efficiency
         )
-        min_rpm = self._min_rpm
-        max_rpm = self._max_rpm
-        if abs(self.motor_rpm) < min_rpm:
-            # Pump cannot run reliably below min_rpm; suppress small commands
-            # instead of slamming to +/-min_rpm (which would limit-cycle the setpoint).
-            self.motor_rpm = 0.0
-        elif self.motor_rpm > 0:
-            self.motor_rpm = clamp(self.motor_rpm, min_rpm, max_rpm)
-        else:
-            self.motor_rpm = clamp(self.motor_rpm, -max_rpm, -min_rpm)
-        # Pump wiring inverts direction: positive q (fill bladder → sink) is
-        # delivered as a negative RPM command on the BCU bus.
+        # Shape the RPM through the pump deadband: commands below min_rpm are
+        # suppressed to 0, commands between min_rpm and min_operating_rpm are
+        # pushed up to the minimum speed the pump runs at reliably, and
+        # everything else passes through saturated to +/-max_rpm.
+        self.motor_rpm = deadband_snap(
+            self.motor_rpm, self._min_rpm, self._min_operating_rpm, self._max_rpm
+        )
+        # The controller's q sign is opposite the bus convention: q > 0 means
+        # descend (deflate the bladder), but on the BCU bus a positive RPM
+        # inflates (rise). Negate so a descend command goes out as negative RPM.
         pump_rpm = int(-1 * self.motor_rpm)
 
         pump_rpm, valve1_open, valve2_open = select_pump_and_valves(
