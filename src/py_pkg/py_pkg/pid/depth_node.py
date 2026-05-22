@@ -31,9 +31,10 @@ def select_pump_and_valves(
     enough that the surrounding water pressure is above
     ``deep_threshold_pa`` AND the controller is asking to go deeper
     still (``q > 0``), we don't run the pump at all. We just open
-    valve 2 and let ambient water pressure passively push water into
-    the bladder. The bladder fills, the glider gets denser, and we
-    sink — without spending any pump energy.
+    valve 2 and let the high ambient pressure squeeze oil out of the
+    bladder back into the tank on its own. The bladder deflates, the
+    glider displaces less water, and we sink — without spending any
+    pump energy.
 
     Otherwise the rule is simple: when the pump is actually running,
     valve 1 is open to carry the flow; when the pump is idle, both
@@ -183,8 +184,9 @@ class DepthControlNode(Node):
         self.motor_rpm = deadband_snap(
             self.motor_rpm, self._min_rpm, self._min_operating_rpm, self._max_rpm
         )
-        # Pump wiring inverts direction: positive q (fill bladder → sink) is
-        # delivered as a negative RPM command on the BCU bus.
+        # The controller's q sign is opposite the bus convention: q > 0 means
+        # descend (deflate the bladder), but on the BCU bus a positive RPM
+        # inflates (rise). Negate so a descend command goes out as negative RPM.
         pump_rpm = int(-1 * self.motor_rpm)
 
         pump_rpm, valve1_open, valve2_open = select_pump_and_valves(

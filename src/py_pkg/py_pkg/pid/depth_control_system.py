@@ -1,18 +1,21 @@
 """Outer-loop depth controller for the glider.
 
 This is the math that turns "we want to be at this depth" into "we
-want to fill or empty the bladder this fast." A single PID compares
-the target pressure against the measured pressure (both in gauge Pa)
-and outputs a bladder flow ratio q in 1/s — the fraction of the
-bladder to fill or empty per second. Positive q means we are filling
-the bladder, which makes the glider denser and sinks it; negative q
-empties it.
+want to inflate or deflate the bladder this fast." A single PID
+compares the target pressure against the measured pressure (both in
+gauge Pa) and outputs a bladder flow ratio q in 1/s — how fast to
+move oil between the internal tank and the external bladder. Sign
+convention: positive q means descend (sink), negative q means ascend
+(rise). The mechanism is displacement, not ballast — to sink we
+deflate the bladder (oil back into the tank) so it displaces less
+water; to rise we inflate it.
 
-The conversion from this flow command to the actual pump RPM
-(including the sign flip — the pump is wired so that *filling* the
-bladder requires a *negative* RPM command) happens in ``depth_node``,
-not here. This file stays at the level of "what should the bladder be
-doing" and leaves the wire-level details to the node that publishes.
+The conversion from this flow command to the actual pump RPM happens
+in ``depth_node``, not here. Note the sign flip there: on the BCU bus
+a *positive* RPM inflates the bladder (rise), so the controller's
+"positive q = descend" is delivered as a *negative* RPM command. This
+file stays at the level of "what should the bladder be doing" and
+leaves the wire-level details to the node that publishes.
 """
 
 from py_pkg.scenarios.spec.control import DepthSpec
@@ -26,8 +29,8 @@ class DepthControlSystem:
     gauge pascals. The target depth, the measured pressure, and the
     PID's internal error are all gauge Pa, so there's no unit
     conversion happening inside. The output is a bladder flow ratio q
-    in 1/s: positive q means "fill the bladder, sink", negative q
-    means "empty the bladder, rise."
+    in 1/s: positive q means "deflate the bladder, sink", negative q
+    means "inflate the bladder, rise."
 
     A single PID is enough here because the physics from the flow
     command all the way down to actual depth behaves like a
