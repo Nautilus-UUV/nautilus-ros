@@ -82,28 +82,6 @@ def normalize_trajectory(traj: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
     return out
 
 
-def _empirical_median(samples: list[dict[str, np.ndarray]]) -> dict[str, np.ndarray]:
-    """Linear-interpolate each run onto a shared 1 Hz grid and return the median.
-
-    Grid spans 0 .. min(run_end) so we never extrapolate. Any run shorter than 2
-    samples is dropped — the median is meaningless against it.
-    """
-    usable = [s for s in samples if s["t"].size >= 2]
-    if not usable:
-        return {k: np.empty(0) for k in ("t", *_KEYS)}
-    t_end = min(float(s["t"][-1]) for s in usable)
-    if t_end <= 0:
-        return {k: np.empty(0) for k in ("t", *_KEYS)}
-    grid = np.arange(0.0, t_end, 1.0)
-    if grid.size == 0:
-        return {k: np.empty(0) for k in ("t", *_KEYS)}
-    stacked = {k: np.empty((len(usable), grid.size)) for k in _KEYS}
-    for i, s in enumerate(usable):
-        for k in _KEYS:
-            stacked[k][i] = np.interp(grid, s["t"], s[k])
-    return {"t": grid, **{k: np.median(stacked[k], axis=0) for k in _KEYS}}
-
-
 def _pitch_extrema_score(
     traj: dict[str, np.ndarray], pitch_limit_rad: float
 ) -> float | None:
@@ -332,23 +310,6 @@ def plot_sweep(
             axes_flat, traj, color="crimson", label="nominal",
             angle_scale=angle_scale, zorder=10,
         )
-    elif plotted > 1:
-        median = _empirical_median([t for _, t in runs_with_traj if t["t"].size])
-        if median["t"].size:
-            for ax, key in zip(axes_flat, _KEYS):
-                series = median[key]
-                if key in ("roll", "pitch", "yaw"):
-                    series = series * angle_scale
-                ax.plot(
-                    median["t"],
-                    series,
-                    color="black",
-                    alpha=1.0,
-                    lw=2.0,
-                    ls="--",
-                    zorder=10,
-                    label="empirical median",
-                )
 
     # --- reference markers ---
     # Pitch envelope: glider's mechanical up/down pitch limit. Drawn in whatever
@@ -415,24 +376,24 @@ def plot_sweep(
     )
     combined_id = combined_winner[0].run_id if combined_winner else None
 
-    # Pitch winner — chocolate. Green is reserved for the suggested/combined
-    # winner (the headline), so a single-metric pitch leader uses a warm contrast
-    # against the steelblue cloud. Suppressed when the combined winner is the
-    # same run; the green line below absorbs the achievement into its label.
+    # Pitch winner — purple. Red is reserved for the suggested/combined winner
+    # (the headline), so a single-metric pitch leader uses purple as a distinct
+    # contrast against the steelblue cloud. Suppressed when the combined winner
+    # is the same run; the red line below absorbs the achievement into its label.
     if pitch_winner is not None and pitch_winner[0].run_id != combined_id:
         entry, traj, score = pitch_winner
         rms_deg = float(np.sqrt(score) * 180.0 / np.pi)
         _plot_highlight(
-            axes_flat, traj, color="chocolate",
+            axes_flat, traj, color="purple",
             label=f"best pitch peaks: {entry.run_id}  (Δ={rms_deg:.1f}°)",
             angle_scale=angle_scale, zorder=11,
         )
 
-    # Depth winner — purple. Same combined-priority suppression rule.
+    # Depth winner — green. Same combined-priority suppression rule.
     if depth_winner is not None and depth_winner[0].run_id != combined_id:
         entry, traj, t_min, z_min, dist = depth_winner
         _plot_highlight(
-            axes_flat, traj, color="purple",
+            axes_flat, traj, color="green",
             label=(
                 f"closest to target: {entry.run_id}  "
                 f"(|Δz|={dist:.2f} m)"
@@ -448,15 +409,15 @@ def plot_sweep(
         z_ax = axes_flat[_KEYS.index("z")]
         z_ax.plot(
             [t_min], [z_min],
-            marker="o", color="purple", ms=6, zorder=12,
+            marker="o", color="green", ms=6, zorder=12,
         )
 
-    # Combined / suggested winner — darkorange, drawn last so it sits on top of
-    # any coincident individual-winner line. Bright orange is the "this is the
-    # headline" color; the pitch envelope guide is rendered in neutral gray
-    # specifically so it doesn't compete with this line on the pitch subplot.
-    # The legend label calls out which individual metrics this same run also
-    # leads, so a single line communicates the full set of achievements.
+    # Combined / suggested winner — red, drawn last so it sits on top of any
+    # coincident individual-winner line. Red is the "this is the headline"
+    # color; the pitch envelope guide is rendered in neutral gray specifically
+    # so it doesn't compete with this line on the pitch subplot. The legend
+    # label calls out which individual metrics this same run also leads, so a
+    # single line communicates the full set of achievements.
     if combined_winner is not None:
         entry, traj, p_rank, d_rank, n = combined_winner
         extras: list[str] = []
@@ -466,7 +427,7 @@ def plot_sweep(
             extras.append("also closest to target")
         extra_tag = f"  [{', '.join(extras)}]" if extras else ""
         _plot_highlight(
-            axes_flat, traj, color="darkorange",
+            axes_flat, traj, color="red",
             label=(
                 f"suggested: {entry.run_id}  "
                 f"(pitch #{p_rank}, depth #{d_rank} of {n} reached target){extra_tag}"

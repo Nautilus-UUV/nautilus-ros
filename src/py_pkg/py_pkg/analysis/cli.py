@@ -88,9 +88,9 @@ def main(argv: list[str] | None = None) -> int:
         "--all-winners",
         action="store_true",
         help=(
-            "also highlight the per-metric pitch and depth winners (chocolate and "
-            "purple respectively) alongside the suggested winner. Off by default; "
-            "default plot shows only the suggested/combined winner in green."
+            "also highlight the per-metric pitch and depth winners (purple and "
+            "green respectively) alongside the suggested winner. Off by default; "
+            "default plot shows only the suggested/combined winner in red."
         ),
     )
     parser.add_argument(
