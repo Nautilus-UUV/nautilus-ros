@@ -23,6 +23,7 @@ import pytest
 import rclpy
 from geometry_msgs.msg import Pose
 from nautilus_msgs.msg import BcuPumpCommand, MissionCommand
+from py_pkg.debug.acu_debug_node import AcuDebugNode
 from py_pkg.debug.bcu_debug_node import BcuDebugNode
 from py_pkg.path.pathfinding import PathfindingNode
 from py_pkg.pid.acu_node import ACUControlNode
@@ -34,7 +35,7 @@ from py_pkg.uuv_ros_core import (
 )
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
-from std_msgs.msg import Bool, Int16, Int32, String, UInt8
+from std_msgs.msg import Bool, Empty, Int16, Int32, String, UInt8
 
 
 def _isolated_ros_domain_id() -> int:
@@ -117,6 +118,7 @@ class _DepthTesterNode(Node):
         self.manual_override_pub = create_publisher_for_topic(
             self, UUVTopics.CONTROL_MANUAL_OVERRIDE
         )
+        self.reset_pub = create_publisher_for_topic(self, UUVTopics.CONTROL_RESET)
         self.bcu_rpm_sub = create_subscription_for_topic(
             self, UUVTopics.BCU_RPM, self._on_rpm
         )
@@ -147,6 +149,9 @@ class _DepthTesterNode(Node):
         msg.data = bool(active)
         self.manual_override_pub.publish(msg)
 
+    def publish_reset(self) -> None:
+        self.reset_pub.publish(Empty())
+
 
 class DepthNodeHarness(NodeHarness):
     """NodeHarness specialised for DepthControlNode + _DepthTesterNode."""
@@ -170,6 +175,9 @@ class DepthNodeHarness(NodeHarness):
 
     def publish_manual_override(self, active: bool) -> None:
         self.tester.publish_manual_override(active)
+
+    def publish_reset(self) -> None:
+        self.tester.publish_reset()
 
 
 @pytest.fixture
@@ -221,6 +229,10 @@ class _ACUTesterNode(Node):
         self.external_pressure_pub = create_publisher_for_topic(
             self, UUVTopics.EXTERNAL_PRESSURE
         )
+        self.acu_override_pub = create_publisher_for_topic(
+            self, UUVTopics.CONTROL_ACU_OVERRIDE
+        )
+        self.reset_pub = create_publisher_for_topic(self, UUVTopics.CONTROL_RESET)
         self.pitch_sub = create_subscription_for_topic(
             self, UUVTopics.ACU_PITCH, self._on_pitch
         )
@@ -258,6 +270,14 @@ class _ACUTesterNode(Node):
         msg.data = int(value_pa)
         self.external_pressure_pub.publish(msg)
 
+    def publish_acu_override(self, active: bool) -> None:
+        msg = Bool()
+        msg.data = bool(active)
+        self.acu_override_pub.publish(msg)
+
+    def publish_reset(self) -> None:
+        self.reset_pub.publish(Empty())
+
 
 class ACUNodeHarness(NodeHarness):
     """NodeHarness specialised for ACUControlNode + _ACUTesterNode."""
@@ -286,6 +306,12 @@ class ACUNodeHarness(NodeHarness):
     def publish_external_pressure(self, value_pa: int) -> None:
         self.tester.publish_external_pressure(value_pa)
 
+    def publish_acu_override(self, active: bool) -> None:
+        self.tester.publish_acu_override(active)
+
+    def publish_reset(self) -> None:
+        self.tester.publish_reset()
+
 
 @pytest.fixture
 def acu_node_harness():
@@ -308,6 +334,7 @@ class _PathfindingTesterNode(Node):
     def __init__(self):
         super().__init__("pathfinding_node_tester")
         self.received_targets: list = []
+        self.received_resets: list = []
 
         self.estimation_pub = create_publisher_for_topic(
             self, UUVTopics.POSITION_ESTIMATION
@@ -320,9 +347,15 @@ class _PathfindingTesterNode(Node):
         self.target_sub = create_subscription_for_topic(
             self, UUVTopics.POSITION_TARGET, self._on_target
         )
+        self.reset_sub = create_subscription_for_topic(
+            self, UUVTopics.CONTROL_RESET, self._on_reset
+        )
 
     def _on_target(self, msg: Pose) -> None:
         self.received_targets.append(msg)
+
+    def _on_reset(self, msg: Empty) -> None:
+        self.received_resets.append(msg)
 
     def publish_pose_estimation(self, x: float, y: float, z: float) -> None:
         msg = Pose()
@@ -368,6 +401,10 @@ class PathfindingNodeHarness(NodeHarness):
     def received_targets(self) -> list:
         return self.tester.received_targets
 
+    @property
+    def received_resets(self) -> list:
+        return self.tester.received_resets
+
     def publish_pose_estimation(self, x: float, y: float, z: float) -> None:
         self.tester.publish_pose_estimation(x, y, z)
 
@@ -408,8 +445,12 @@ def pathfinding_node_harness():
 
 
 class _BcuDebugTesterNode(Node):
-    """Drives BcuDebugNode and captures BCU_RPM + CONTROL_MANUAL_OVERRIDE
-    emissions with timestamps.
+    """Drives BcuDebugNode and captures BCU_RPM + BCU_VALVES emissions
+    with timestamps.
+
+    The override is operator-owned now, so the tester *publishes*
+    CONTROL_MANUAL_OVERRIDE to put the node into / out of manual mode (the
+    role the slider plays in production) rather than listening for it.
 
     The debug node owns a duration timer, so tests need to reason about
     *when* each rpm value arrives -- a passthrough subscriber that only
@@ -418,27 +459,59 @@ class _BcuDebugTesterNode(Node):
     def __init__(self):
         super().__init__("bcu_debug_tester")
         self.received: list[tuple[float, int]] = []
-        self.override_events: list[tuple[float, bool]] = []
+        self.received_valves: list[int] = []
 
         self.cmd_pub = create_publisher_for_topic(self, UUVTopics.DEBUG_BCU_RPM)
+        self.valves_cmd_pub = create_publisher_for_topic(
+            self, UUVTopics.DEBUG_BCU_VALVES
+        )
+        self.emergency_pub = create_publisher_for_topic(
+            self, UUVTopics.DEBUG_EMERGENCY_SURFACE
+        )
+        self.external_pressure_pub = create_publisher_for_topic(
+            self, UUVTopics.EXTERNAL_PRESSURE
+        )
+        self.manual_override_pub = create_publisher_for_topic(
+            self, UUVTopics.CONTROL_MANUAL_OVERRIDE
+        )
         self.rpm_sub = create_subscription_for_topic(
             self, UUVTopics.BCU_RPM, self._on_rpm
         )
-        self.override_sub = create_subscription_for_topic(
-            self, UUVTopics.CONTROL_MANUAL_OVERRIDE, self._on_override
+        self.valves_sub = create_subscription_for_topic(
+            self, UUVTopics.BCU_VALVES, self._on_valves
         )
 
     def _on_rpm(self, msg: Int16) -> None:
         self.received.append((time.monotonic(), int(msg.data)))
 
-    def _on_override(self, msg: Bool) -> None:
-        self.override_events.append((time.monotonic(), bool(msg.data)))
+    def _on_valves(self, msg: UInt8) -> None:
+        self.received_valves.append(int(msg.data))
 
     def publish_pump(self, rpm: int, duration_s: float) -> None:
         msg = BcuPumpCommand()
         msg.rpm = int(rpm)
         msg.duration_s = float(duration_s)
         self.cmd_pub.publish(msg)
+
+    def publish_valves(self, mask: int) -> None:
+        msg = UInt8()
+        msg.data = int(mask)
+        self.valves_cmd_pub.publish(msg)
+
+    def publish_emergency(self, active: bool) -> None:
+        msg = Bool()
+        msg.data = bool(active)
+        self.emergency_pub.publish(msg)
+
+    def publish_external_pressure(self, value_pa: int) -> None:
+        msg = Int32()
+        msg.data = int(value_pa)
+        self.external_pressure_pub.publish(msg)
+
+    def publish_manual_override(self, active: bool) -> None:
+        msg = Bool()
+        msg.data = bool(active)
+        self.manual_override_pub.publish(msg)
 
 
 class BcuDebugNodeHarness(NodeHarness):
@@ -456,21 +529,116 @@ class BcuDebugNodeHarness(NodeHarness):
         return [rpm for _, rpm in self.tester.received]
 
     @property
-    def override_events(self) -> list[tuple[float, bool]]:
-        return self.tester.override_events
-
-    @property
-    def override_states(self) -> list[bool]:
-        return [state for _, state in self.tester.override_events]
+    def received_valves(self) -> list[int]:
+        return self.tester.received_valves
 
     def publish_pump(self, rpm: int, duration_s: float) -> None:
         self.tester.publish_pump(rpm, duration_s)
+
+    def publish_valves(self, mask: int) -> None:
+        self.tester.publish_valves(mask)
+
+    def publish_emergency(self, active: bool) -> None:
+        self.tester.publish_emergency(active)
+
+    def publish_external_pressure(self, value_pa: int) -> None:
+        self.tester.publish_external_pressure(value_pa)
+
+    def publish_manual_override(self, active: bool) -> None:
+        self.tester.publish_manual_override(active)
 
 
 @pytest.fixture
 def bcu_debug_node_harness():
     """Function-scoped harness. Tears both nodes down on exit."""
     harness = BcuDebugNodeHarness()
+    try:
+        yield harness
+    finally:
+        harness.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# ACU debug node harness
+# ---------------------------------------------------------------------------
+
+
+class _AcuDebugTesterNode(Node):
+    """Drives AcuDebugNode and captures ACU_PITCH / ACU_ROLL emissions.
+
+    The override is operator-owned now, so the tester *publishes*
+    CONTROL_ACU_OVERRIDE to put the node into / out of manual mode (the role
+    the slider plays in production) rather than listening for it."""
+
+    def __init__(self):
+        super().__init__("acu_debug_tester")
+        self.received_pitch_mm: list[int] = []
+        self.received_roll_cdeg: list[int] = []
+
+        self.pitch_cmd_pub = create_publisher_for_topic(
+            self, UUVTopics.DEBUG_ACU_PITCH
+        )
+        self.roll_cmd_pub = create_publisher_for_topic(self, UUVTopics.DEBUG_ACU_ROLL)
+        self.acu_override_pub = create_publisher_for_topic(
+            self, UUVTopics.CONTROL_ACU_OVERRIDE
+        )
+        self.pitch_sub = create_subscription_for_topic(
+            self, UUVTopics.ACU_PITCH, self._on_pitch
+        )
+        self.roll_sub = create_subscription_for_topic(
+            self, UUVTopics.ACU_ROLL, self._on_roll
+        )
+
+    def _on_pitch(self, msg: Int16) -> None:
+        self.received_pitch_mm.append(int(msg.data))
+
+    def _on_roll(self, msg: Int16) -> None:
+        self.received_roll_cdeg.append(int(msg.data))
+
+    def publish_pitch(self, mm: int) -> None:
+        msg = Int16()
+        msg.data = int(mm)
+        self.pitch_cmd_pub.publish(msg)
+
+    def publish_roll(self, cdeg: int) -> None:
+        msg = Int16()
+        msg.data = int(cdeg)
+        self.roll_cmd_pub.publish(msg)
+
+    def publish_acu_override(self, active: bool) -> None:
+        msg = Bool()
+        msg.data = bool(active)
+        self.acu_override_pub.publish(msg)
+
+
+class AcuDebugNodeHarness(NodeHarness):
+    """NodeHarness specialised for AcuDebugNode + _AcuDebugTesterNode."""
+
+    def __init__(self):
+        super().__init__(AcuDebugNode, _AcuDebugTesterNode)
+
+    @property
+    def received_pitch_mm(self) -> list[int]:
+        return self.tester.received_pitch_mm
+
+    @property
+    def received_roll_cdeg(self) -> list[int]:
+        return self.tester.received_roll_cdeg
+
+    def publish_pitch(self, mm: int) -> None:
+        self.tester.publish_pitch(mm)
+
+    def publish_roll(self, cdeg: int) -> None:
+        self.tester.publish_roll(cdeg)
+
+    def publish_acu_override(self, active: bool) -> None:
+        self.tester.publish_acu_override(active)
+
+
+@pytest.fixture
+def acu_debug_node_harness():
+    """Function-scoped harness. Tears both nodes down on exit."""
+    harness = AcuDebugNodeHarness()
     try:
         yield harness
     finally:

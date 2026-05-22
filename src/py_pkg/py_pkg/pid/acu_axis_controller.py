@@ -59,6 +59,19 @@ class AxisController:
         self.last_commanded_pos: float | None = None
         self._primed = False
 
+    def reset(self):
+        """Wipe controller memory back to construction state.
+
+        Clears the PID's integrator/filter/timing and the redundant-publish
+        guard so the next `update` re-primes exactly as it did at boot. Used
+        when the ACU is told to go fresh (Do-Nothing mission).
+        """
+        self.pid.reset()
+        self.current_pos = 0.0
+        self.target_pos = 0.0
+        self.last_commanded_pos = None
+        self._primed = False
+
     def update_sensor(self, measured_pos):
         self.current_pos = measured_pos
 

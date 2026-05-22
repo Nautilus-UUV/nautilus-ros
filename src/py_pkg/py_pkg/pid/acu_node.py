@@ -33,7 +33,7 @@ from geometry_msgs.msg import Pose
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from std_msgs.msg import Int16, Int32
+from std_msgs.msg import Bool, Empty, Int16, Int32
 
 from py_pkg.math_utils import quaternion_to_roll_pitch
 from py_pkg.physics import gauge_pressure_pa
@@ -83,6 +83,11 @@ class ACUControlNode(Node):
         self.target_roll_deg = 0.0
         self.current_roll_deg = 0.0
 
+        # Set by CONTROL_ACU_OVERRIDE. While true, control_loop bails before
+        # publishing -- acu_debug (or a future hand-controller) owns
+        # /acu/pitch and /acu/roll and we must not race it on either topic.
+        self._manual_override = False
+
         self.pitch_pub = create_publisher_for_topic(
             self, UUVTopics.ACU_PITCH, callback_group=self.callback_group
         )
@@ -106,6 +111,20 @@ class ACUControlNode(Node):
             self,
             UUVTopics.POSITION_ESTIMATION,
             self.current_pose_callback,
+            callback_group=self.callback_group,
+        )
+
+        create_subscription_for_topic(
+            self,
+            UUVTopics.CONTROL_ACU_OVERRIDE,
+            self._on_manual_override,
+            callback_group=self.callback_group,
+        )
+
+        create_subscription_for_topic(
+            self,
+            UUVTopics.CONTROL_RESET,
+            self._on_reset,
             callback_group=self.callback_group,
         )
 
@@ -141,7 +160,30 @@ class ACUControlNode(Node):
         roll, _ = quaternion_to_roll_pitch(q.x, q.y, q.z, q.w)
         self.current_roll_deg = math.degrees(roll)
 
+    def _on_manual_override(self, msg: Bool) -> None:
+        active = bool(msg.data)
+        if active != self._manual_override:
+            self.get_logger().info(
+                f"ACU manual override {'engaged' if active else 'released'} -- "
+                f"acu_node publishing {'paused' if active else 'resumed'}"
+            )
+        self._manual_override = active
+
+    def _on_reset(self, _msg: Empty) -> None:
+        # Drop the setpoint and wipe controller state so pitch re-gates on a
+        # fresh target and roll re-primes from zero -- exactly as at boot, with
+        # no stale setpoint or integral windup from a prior mission.
+        self.roll_axis.reset()
+        self.target_pressure_pa = None
+        self.target_roll_deg = 0.0
+        self.current_roll_deg = 0.0
+        self.get_logger().info("control reset -> no-target hold (fresh state).")
+
     def control_loop(self):
+        if self._manual_override:
+            # A manual driver (acu_debug) owns /acu/pitch and /acu/roll right
+            # now. Skip the whole step so we don't race it on the wire.
+            return
         self._update_pitch()
         self._update_roll()
 

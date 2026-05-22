@@ -18,13 +18,14 @@ source install/setup.bash
 
 ## Unbounded interactive run with the GUI
 
-All three mission launches below accept the same `scenario:=<path>`
+All four mission launches below accept the same `scenario:=<path>`
 argument (defaults to the installed `library/nominal.yaml` —
 perturbation-free, fault-injection off). Override with
 `library/baseline.yaml` to turn BCU fault injection back on, or with
 any custom YAML for an MC sweep. The trim section spells the
-override out; the same flag works for the sawtooth and surface
-variants and for `bridge.launch.py` / `control_stack.launch.py`.
+override out; the same flag works for the sawtooth, surface, and
+do-nothing variants and for `bridge.launch.py` /
+`control_stack.launch.py`.
 
 ### 1. Targeted Trim and Neutral Mission Profile
 ---
@@ -149,6 +150,51 @@ ros2 topic pub --once \
     --qos-reliability reliable --qos-durability transient_local \
     /path nautilus_msgs/msg/MissionCommand \
     "{mission_id: 2, target_pressure_pa: 0.0, angle_rad: 0.0, n_resurfaces: 0}"
+
+ros2 topic pub --once \
+    --qos-reliability reliable --qos-durability transient_local \
+    /command std_msgs/msg/String "{data: start}"
+```
+
+
+### 4. Do Nothing Mission Profile
+---
+
+The same bringup as above — HAL bridges + Gazebo + glider model + the
+full control stack — but the control commands nothing. The DO_NOTHING
+mission keeps every node live yet publishes no setpoint, so `depth_node`
+sits in its zero-RPM / valves-closed hold and `acu_node` stays quiet:
+the glider holds whatever trim it has and drifts. On start it also emits
+`CONTROL_RESET`, which wipes the controllers (target back to `None`, PID
+integrators/filters cleared) back to exactly how they sat at boot — so
+nothing carries over if you ran another mission earlier in the session.
+Useful for exercising the sim, sensors, EKF, telemetry, the MQTT bridge,
+and the operator UI without the glider moving. Runs forever until Ctrl-C.
+
+```bash
+ros2 launch nautilus_hal do_nothing_sim.launch.py \
+    headless:=false \
+    mission_autostart:=true
+```
+
+- `mission_autostart:=true` publishes `MissionCommand{mission_id=3}` and
+  `/command:start` after an 8/10 s delay, which also resets the
+  controllers to their fresh, no-mission state.
+- Even with `mission_autostart:=false` (the default) the control does
+  nothing: no mission is loaded, so `depth_node` holds 0 RPM with the
+  valves shut and `acu_node` never commands pitch. Autostart just makes
+  the Do-Nothing state explicit and resets any prior mission's state.
+- DO_NOTHING has no operator-tunable parameters — `target_pressure_pa`,
+  `angle_rad`, and `n_resurfaces` are all ignored.
+
+
+#### Re-firing mid-run
+
+```bash
+ros2 topic pub --once \
+    --qos-reliability reliable --qos-durability transient_local \
+    /path nautilus_msgs/msg/MissionCommand \
+    "{mission_id: 3, target_pressure_pa: 0.0, angle_rad: 0.0, n_resurfaces: 0}"
 
 ros2 topic pub --once \
     --qos-reliability reliable --qos-durability transient_local \

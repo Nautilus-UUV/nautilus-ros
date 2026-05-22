@@ -39,12 +39,18 @@ class MissionProfile(Protocol):
         Open-loop missions can leave it as a no-op.
         """
 
-    def reference(self, mission_t: float) -> Pose:
+    def reference(self, mission_t: float) -> Pose | None:
         """Setpoint at `mission_t` seconds since start.
 
         `position.z` MUST be gauge Pa. `orientation` encodes target
         roll/pitch for the ACU (yaw is unused — Nautilus has no yaw
         actuator).
+
+        Returning `None` means "no setpoint this tick": the executor
+        publishes nothing, so the controllers fall back to their
+        no-target safe hold (depth_node holds 0 RPM with valves shut;
+        acu_node skips pitch). That's how the Do-Nothing mission keeps
+        the stack live while commanding the glider not at all.
         """
 
     def is_done(self, mission_t: float) -> bool:

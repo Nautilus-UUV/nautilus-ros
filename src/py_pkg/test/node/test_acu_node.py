@@ -288,3 +288,58 @@ class TestRollQuiescence:
         assert late_count - early_count <= 1, (
             f"expected quiescence after saturation, got {h.received_roll_cdeg}"
         )
+
+
+class TestManualOverride:
+    """CONTROL_ACU_OVERRIDE silences the controller so acu_debug can own
+    /acu/pitch and /acu/roll without the loop racing it on the wire."""
+
+    def test_override_suppresses_pitch_and_roll(self, acu_node_harness):
+        h = acu_node_harness
+        h.publish_acu_override(True)
+        # Let the flag land before the inputs that would otherwise drive a tick.
+        h.spin_for(0.1)
+        h.publish_target(roll_deg=20.0, target_pressure_pa=80000.0)
+        h.publish_external_pressure(_abs_pa_for_gauge(20000.0))
+        h.spin_for(0.6)
+        assert h.received_pitch_mm == []
+        assert h.received_roll_cdeg == []
+
+    def test_release_resumes_publishing(self, acu_node_harness):
+        h = acu_node_harness
+        h.publish_acu_override(True)
+        h.spin_for(0.1)
+        h.publish_target(roll_deg=20.0, target_pressure_pa=80000.0)
+        h.publish_external_pressure(_abs_pa_for_gauge(20000.0))
+        h.spin_for(0.4)
+        assert h.received_pitch_mm == []
+
+        h.publish_acu_override(False)
+        h.spin_until(lambda: len(h.received_pitch_mm) >= 1, timeout=1.5)
+        assert len(h.received_pitch_mm) >= 1
+
+
+class TestControlReset:
+    """CONTROL_RESET drops the held target and re-primes the roll axis, so
+    the bang-bang pitch loop re-gates on a fresh target -- exactly as at
+    boot before any mission (Do-Nothing mission)."""
+
+    def test_reset_clears_target_and_gates_pitch_off(self, acu_node_harness):
+        h = acu_node_harness
+        # Drive a pitch command first (current shallower than target -> diving).
+        h.publish_target(target_pressure_pa=80000.0)
+        h.publish_external_pressure(_abs_pa_for_gauge(20000.0))
+        h.spin_until(lambda: len(h.received_pitch_mm) >= 2, timeout=1.5)
+
+        h.publish_reset()
+        h.spin_until(lambda: h.node.target_pressure_pa is None, timeout=1.0)
+        assert h.node.target_pressure_pa is None
+
+        # With the target cleared, the bang-bang pitch loop is gated off: no
+        # new pitch emissions even though pressure is still flowing.
+        pitch_before = len(h.received_pitch_mm)
+        h.spin_for(0.4)
+        assert len(h.received_pitch_mm) == pitch_before, (
+            f"pitch must stay silent after reset, got "
+            f"{h.received_pitch_mm[pitch_before:]}"
+        )

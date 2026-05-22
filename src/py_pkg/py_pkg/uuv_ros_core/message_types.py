@@ -16,6 +16,7 @@ from nautilus_msgs.msg import BcuPumpCommand, MissionCommand
 from sensor_msgs.msg import Imu, Temperature
 from std_msgs.msg import (
     Bool,
+    Empty,
     Float32,
     Int16,
     Int32,
@@ -53,5 +54,12 @@ TOPIC_MESSAGE_MAP = {
     UUVTopics.COMMAND: String,
     UUVTopics.CAN_OUT: Frame,
     UUVTopics.DEBUG_BCU_RPM: BcuPumpCommand,
+    # Same wire types as the actuator topics these debug injection points feed.
+    UUVTopics.DEBUG_BCU_VALVES: UInt8,
+    UUVTopics.DEBUG_ACU_PITCH: Int16,
+    UUVTopics.DEBUG_ACU_ROLL: Int16,
+    UUVTopics.DEBUG_EMERGENCY_SURFACE: Bool,
     UUVTopics.CONTROL_MANUAL_OVERRIDE: Bool,
+    UUVTopics.CONTROL_ACU_OVERRIDE: Bool,
+    UUVTopics.CONTROL_RESET: Empty,
 }

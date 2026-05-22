@@ -5,7 +5,7 @@ from geometry_msgs.msg import Pose
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from std_msgs.msg import Bool, Int16, UInt8
+from std_msgs.msg import Bool, Empty, Int16, UInt8
 
 from py_pkg.math_utils import deadband_snap
 from py_pkg.physics import gauge_pressure_pa, q_to_rpm
@@ -61,7 +61,8 @@ class DepthControlNode(Node):
 
         cfg = depth_spec_from_node(self)
         self.control_system = ControlSystem.DepthControlSystem(cfg)
-        self.current_bladder_level = cfg.plant_model.initial_proportion_full
+        self._initial_proportion_full = cfg.plant_model.initial_proportion_full
+        self.current_bladder_level = self._initial_proportion_full
         self.bladder_volume = cfg.plant_model.bladder_nominal_m3
         self._min_rpm = cfg.plant_model.min_rpm
         self._min_operating_rpm = cfg.plant_model.min_operating_rpm
@@ -117,6 +118,13 @@ class DepthControlNode(Node):
             callback_group=self.callback_group,
         )
 
+        self.reset_subscriber = create_subscription_for_topic(
+            self,
+            UUVTopics.CONTROL_RESET,
+            self._on_reset,
+            callback_group=self.callback_group,
+        )
+
         self.control_timer = self.create_timer(
             1.0 / cfg.frequency_hz,
             self.control_loop,
@@ -149,6 +157,17 @@ class DepthControlNode(Node):
                 f"depth_node BCU publishing {'paused' if active else 'resumed'}"
             )
         self._manual_override = active
+
+    def _on_reset(self, _msg: Empty) -> None:
+        # Drop the setpoint and wipe controller state so the next control_loop
+        # falls into the no-target zero-RPM hold exactly as it did at boot --
+        # no leftover target, no integral windup from a prior mission.
+        self.control_system.reset()
+        self.current_bladder_level = self._initial_proportion_full
+        self.control_output = 0.0
+        self.motor_rpm = 0.0
+        self.target_pressure_pa = None
+        self.get_logger().info("control reset -> no-target hold (fresh state).")
 
     def control_loop(self):
         if self._manual_override:

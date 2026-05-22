@@ -66,3 +66,14 @@ class DepthControlSystem:
     def calc_acc(self, pressure_pa: float, time: float) -> float:
         """Run one control step and return the bladder flow command q (1/s)."""
         return self.pid_pressure.update(self.target_pressure_pa, pressure_pa, time)
+
+    def reset(self) -> None:
+        """Wipe controller memory back to construction state.
+
+        Clears the PID's integrator, derivative filter and timing history,
+        and re-arms the surface-safe default target. Used when the depth
+        loop is told to go fresh (Do-Nothing mission) so no windup or stale
+        setpoint carries over from a previous mission.
+        """
+        self.pid_pressure.reset()
+        self.target_pressure_pa = 0.0

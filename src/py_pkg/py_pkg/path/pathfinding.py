@@ -14,7 +14,7 @@ from geometry_msgs.msg import Pose
 from nautilus_msgs.msg import MissionCommand
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from std_msgs.msg import String
+from std_msgs.msg import Empty, String
 
 from ..physics import gauge_pressure_pa
 from ..uuv_ros_core import (
@@ -52,6 +52,7 @@ class PathfindingNode(Node):
         create_subscription_for_topic(self, UUVTopics.PATH, self._on_path)
 
         self._target_pub = create_publisher_for_topic(self, UUVTopics.POSITION_TARGET)
+        self._reset_pub = create_publisher_for_topic(self, UUVTopics.CONTROL_RESET)
         self.create_timer(1.0 / REFERENCE_RATE_HZ, self._tick)
 
         self.get_logger().info("pathfinding_node started (mission-id dispatch).")
@@ -115,6 +116,13 @@ class PathfindingNode(Node):
         self._mission_t0_s = self.get_clock().now().nanoseconds / 1e9
         self._mode = "RUNNING"
         self._start_pending = False
+        # Some missions (Do-Nothing) want the controllers back at their fresh,
+        # no-mission state before they go quiet -- they advertise it via a
+        # `resets_control_on_start` attribute. Emit CONTROL_RESET so depth_node
+        # / acu_node drop any held target and wipe controller state.
+        if getattr(self._mission, "resets_control_on_start", False):
+            self._reset_pub.publish(Empty())
+            self.get_logger().info("Emitted CONTROL_RESET (mission requested fresh state).")
         self.get_logger().info("Mode RUNNING.")
 
     def _handle_abort(self) -> None:
@@ -148,7 +156,12 @@ class PathfindingNode(Node):
             self._mission_cmd = None
             self._mission_t0_s = None
             return
-        self._target_pub.publish(self._mission.reference(mission_t))
+        # A mission may decline to command this tick (reference -> None); the
+        # Do-Nothing mission always does. Publish nothing so the controllers
+        # stay in their no-target hold rather than tracking a stale setpoint.
+        ref = self._mission.reference(mission_t)
+        if ref is not None:
+            self._target_pub.publish(ref)
 
 
 def main(args=None):

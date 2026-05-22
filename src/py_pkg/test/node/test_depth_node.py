@@ -366,6 +366,37 @@ class TestValveSelection:
                 )
 
 
+class TestControlReset:
+    """CONTROL_RESET drops the held target and wipes controller state, so
+    depth_node falls back to its no-target zero-RPM / valves-closed hold --
+    exactly as it sat at boot before any mission (Do-Nothing mission)."""
+
+    def test_reset_returns_to_zero_hold(self, depth_node_harness):
+        h = depth_node_harness
+        # Drive a real descent command first.
+        h.publish_target_pressure(TARGET_PA_70M)
+        h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
+        h.spin_until(lambda: len(h.received_rpm) >= 4, timeout=1.5)
+        assert h.received_rpm[-1] != 0, "precondition: pump actively commanded"
+
+        # Reset -> target back to None, controller state wiped.
+        h.publish_reset()
+        h.spin_until(lambda: h.node.target_pressure_pa is None, timeout=1.0)
+        assert h.node.target_pressure_pa is None
+
+        # Every subsequent emission is the zero-RPM / valves-closed hold.
+        rpm_before = len(h.received_rpm)
+        valves_before = len(h.received_valves)
+        h.spin_for(0.4)
+        post_rpm = h.received_rpm[rpm_before:]
+        post_valves = h.received_valves[valves_before:]
+        assert len(post_rpm) >= 2, "node must keep emitting the zero-hold"
+        assert all(r == 0 for r in post_rpm), f"expected zero-hold, got {post_rpm}"
+        assert all(v == 0 for v in post_valves), (
+            f"expected valves closed, got {post_valves}"
+        )
+
+
 def _seen_any(harness) -> bool:
     """Helper for spin_until: stop spinning once the timer has emitted at least once."""
     return len(harness.received_rpm) >= 1

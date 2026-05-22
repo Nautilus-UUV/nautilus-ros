@@ -80,6 +80,21 @@ INGRESS_MAP: tuple[IngressMapping, ...] = (
     IngressMapping(UUVTopics.COMMAND, "nautilus/cmd/command", 1),
     IngressMapping(UUVTopics.PATH, "nautilus/cmd/path", 1),
     IngressMapping(UUVTopics.DEBUG_BCU_RPM, "nautilus/cmd/debug/bcu/rpm", 1),
+    IngressMapping(UUVTopics.DEBUG_BCU_VALVES, "nautilus/cmd/debug/bcu/valves", 1),
+    IngressMapping(UUVTopics.DEBUG_ACU_PITCH, "nautilus/cmd/debug/acu/pitch", 1),
+    IngressMapping(UUVTopics.DEBUG_ACU_ROLL, "nautilus/cmd/debug/acu/roll", 1),
+    IngressMapping(
+        UUVTopics.DEBUG_EMERGENCY_SURFACE, "nautilus/cmd/debug/emergency_surface", 1
+    ),
+    # Operator manual-override slider: the UI raises/lowers both flags to enter
+    # or leave manual mode. depth_node / acu_node stand down while True; the
+    # debug nodes drive the wire only while True.
+    IngressMapping(
+        UUVTopics.CONTROL_MANUAL_OVERRIDE, "nautilus/cmd/control/manual_override", 1
+    ),
+    IngressMapping(
+        UUVTopics.CONTROL_ACU_OVERRIDE, "nautilus/cmd/control/acu_override", 1
+    ),
 )
 
 
@@ -112,6 +127,20 @@ EGRESS_MAP: tuple[EgressMapping, ...] = (
     ),
     EgressMapping(UUVTopics.ACU_PITCH, "nautilus/telemetry/acu/pitch", 10.0),
     EgressMapping(UUVTopics.ACU_ROLL, "nautilus/telemetry/acu/roll", 10.0),
+    # Manual-override flags: state-like, mirror on-change/retained so the UI
+    # can show "manual mode active" without polling.
+    EgressMapping(
+        UUVTopics.CONTROL_MANUAL_OVERRIDE,
+        "nautilus/telemetry/control/manual_override",
+        0.0,
+        on_change=True,
+    ),
+    EgressMapping(
+        UUVTopics.CONTROL_ACU_OVERRIDE,
+        "nautilus/telemetry/control/acu_override",
+        0.0,
+        on_change=True,
+    ),
 )
 
 

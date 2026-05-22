@@ -17,10 +17,20 @@ Composition (inputs -> outputs):
     /position/target +  -> acu_node      -> /acu/pitch + /acu/roll
       /position/estimation
     /path + /command    -> pathfinding_node -> /position/target
-    MQTT nautilus/cmd/* -> mqtt_bridge   -> /command + /path + /debug/bcu/rpm
-    /debug/bcu/rpm      -> bcu_debug     -> /bcu/rpm  (manual override)
+    MQTT nautilus/cmd/* -> mqtt_bridge   -> /command + /path + /debug/*
+                                            + /control/{manual,acu}_override
+    /debug/bcu/rpm +    -> bcu_debug     -> /bcu/rpm + /bcu/valves, but only
+      /debug/bcu/valves +                   while /control/manual_override is
+      /debug/emergency_surface              True (operator-owned); emergency
+                                            surface always acts.
+    /debug/acu/pitch +  -> acu_debug     -> /acu/pitch + /acu/roll, but only
+      /debug/acu/roll                       while /control/acu_override is True.
     /bcu/rpm            -> stm_com       -> UART (hardware only; gated by
                                             enable_stm_com:= launch arg)
+
+The manual-override flags are owned by the operator UI (raised through the
+MQTT bridge), not by the debug nodes. depth_node / acu_node stand down while
+their flag is True; bcu_debug / acu_debug drive the wire only while it is True.
 """
 
 import os
@@ -107,6 +117,12 @@ def _wire_control_stack(context, *_args, **_kwargs):
             package="py_pkg",
             executable="bcu_debug_node",
             name="bcu_debug",
+            output="screen",
+        ),
+        Node(
+            package="py_pkg",
+            executable="acu_debug_node",
+            name="acu_debug",
             output="screen",
         ),
         Node(

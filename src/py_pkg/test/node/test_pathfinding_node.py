@@ -16,6 +16,7 @@ from py_pkg.path.missions import surface as surface_mod
 SAWTOOTH = int(MissionId.SAWTOOTH)
 TRIM = int(MissionId.TRIM_AND_NEUTRAL_BUOYANCY)
 SURFACE = int(MissionId.SURFACE)
+DO_NOTHING = int(MissionId.DO_NOTHING)
 
 # Surface absolute pressure (Pa). gauge_pressure_pa() yields ~0 -> "at surface".
 PRESSURE_AT_SURFACE_PA = 101_325
@@ -347,6 +348,48 @@ class TestSurfaceMission:
             h.spin_for(0.05)
         assert h.node._mode == "RUNNING"
         assert len(h.received_targets) >= 5
+
+
+class TestDoNothingMission:
+    """DO_NOTHING keeps the node RUNNING but commands nothing: it emits a
+    CONTROL_RESET on start (so the controllers go fresh) and then never
+    publishes a POSITION_TARGET."""
+
+    def test_start_emits_control_reset(self, pathfinding_node_harness):
+        h = pathfinding_node_harness
+        h.publish_mission_command(DO_NOTHING)
+        h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
+        h.spin_until(
+            lambda: (
+                h.node._mode == "LOADED" and h.node._current_pressure_pa is not None
+            ),
+            timeout=1.0,
+        )
+        h.publish_command("start")
+        h.spin_until(lambda: h.node._mode == "RUNNING", timeout=1.0)
+        h.spin_until(lambda: len(h.received_resets) >= 1, timeout=1.0)
+        assert len(h.received_resets) >= 1
+
+    def test_running_emits_no_targets(self, pathfinding_node_harness):
+        h = pathfinding_node_harness
+        h.publish_mission_command(DO_NOTHING)
+        h.publish_external_pressure(PRESSURE_AT_DEPTH_PA)
+        h.spin_until(
+            lambda: (
+                h.node._mode == "LOADED" and h.node._current_pressure_pa is not None
+            ),
+            timeout=1.0,
+        )
+        h.publish_command("start")
+        h.spin_until(lambda: h.node._mode == "RUNNING", timeout=1.0)
+        # Keep feeding pressure across several tick windows; the mission must
+        # stay RUNNING and never publish a setpoint (reference -> None).
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            h.publish_external_pressure(PRESSURE_AT_DEPTH_PA)
+            h.spin_for(0.05)
+        assert h.node._mode == "RUNNING"
+        assert h.received_targets == []
 
 
 class TestTickGating:
