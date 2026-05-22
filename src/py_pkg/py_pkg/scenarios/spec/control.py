@@ -3,8 +3,10 @@
 Authors what controllers and the mission look like for one run.
 Knows nothing about faults, sim plant, or world identifiers — those
 live in `rig.py`. Defaults reproduce today's literal values in
-`pid/depth_config.py` and `pid/acu_roll_config.py` exactly, so a
-ControlScenario() with no overrides matches current behaviour.
+`pid/depth_config.py` and `pid/acu_roll_config.py`, with one deliberate
+exception: the BCU pump deadband (`DepthPlantModel.min_rpm` /
+`min_operating_rpm`) defaults to active (500/1000), because the pump's
+minimum reliable speed is a hardware floor that applies on every run.
 
 DepthPlantModel is deliberately separate from RigScenario.plant.
 At nominal both mirror robot_specs; MC perturbs them independently
@@ -18,7 +20,6 @@ from pydantic import Field
 from py_pkg.robot_specs import (
     ACU_ROLL_MAX_ANGLE_DEG,
     BCU_MOTOR_MAX_RPM,
-    BCU_MOTOR_MIN_RPM,
     BLADDER_VOLUME_M3,
 )
 
@@ -60,10 +61,17 @@ class DepthPlantModel(StrictModel):
 
     bladder_nominal_m3: float = BLADDER_VOLUME_M3
     initial_proportion_full: float = 1.0
-    min_rpm: int = BCU_MOTOR_MIN_RPM
-    # Sub-deadband behaviour matters here: the controller is allowed
-    # to ask for tiny RPMs near the target. The physical hardware
-    # min-RPM clamp is enforced downstream, not by the control math.
+    # Pump deadband, applied to the RPM command in the control loop. The
+    # pump can't run reliably at low speed, so the loop snaps the command
+    # into three regions: |rpm| < min_rpm -> 0,
+    # min_rpm <= |rpm| < min_operating_rpm -> +/-min_operating_rpm, and
+    # everything above passes through saturated to +/-max_rpm. On by
+    # default — the floor is a hardware fact, not a per-scenario choice —
+    # though MC sweeps may override it. min_rpm / min_operating_rpm are
+    # control knobs, not robot_specs mirrors; only max_rpm mirrors the
+    # hardware ceiling.
+    min_rpm: int = 500
+    min_operating_rpm: int = 1000
     max_rpm: int = BCU_MOTOR_MAX_RPM
     # Nominal pump volumetric efficiency between 1000 and 3000 RPM.
     pump_efficiency: float = 0.93

@@ -51,6 +51,7 @@ def params_for_depth_node(scen: ControlScenario) -> dict[str, Any]:
         "plant_model.bladder_nominal_m3": d.plant_model.bladder_nominal_m3,
         "plant_model.initial_proportion_full": d.plant_model.initial_proportion_full,
         "plant_model.min_rpm": d.plant_model.min_rpm,
+        "plant_model.min_operating_rpm": d.plant_model.min_operating_rpm,
         "plant_model.max_rpm": d.plant_model.max_rpm,
         "plant_model.pump_efficiency": d.plant_model.pump_efficiency,
     }
@@ -84,6 +85,7 @@ def depth_spec_from_node(node: Node) -> DepthSpec:
         "plant_model.initial_proportion_full", pm.initial_proportion_full
     )
     node.declare_parameter("plant_model.min_rpm", pm.min_rpm)
+    node.declare_parameter("plant_model.min_operating_rpm", pm.min_operating_rpm)
     node.declare_parameter("plant_model.max_rpm", pm.max_rpm)
     node.declare_parameter("plant_model.pump_efficiency", pm.pump_efficiency)
 
@@ -108,6 +110,7 @@ def depth_spec_from_node(node: Node) -> DepthSpec:
             bladder_nominal_m3=g("plant_model.bladder_nominal_m3").value,
             initial_proportion_full=g("plant_model.initial_proportion_full").value,
             min_rpm=g("plant_model.min_rpm").value,
+            min_operating_rpm=g("plant_model.min_operating_rpm").value,
             max_rpm=g("plant_model.max_rpm").value,
             pump_efficiency=g("plant_model.pump_efficiency").value,
         ),
@@ -219,6 +222,9 @@ def params_for_bcu_bridge(scen: RigScenario, parent_seed: int = 0) -> dict[str, 
         "fault_severe_factor": f.severe_factor,
         "rng_seed": derive_seed(parent_seed, "bcu_rpm_fault"),
         "publish_rate_hz": b.publish_rate_hz,
+        "tank_pressure_empty_pa": p.tank_pressure_empty_pa,
+        "tank_pressure_full_pa": p.tank_pressure_full_pa,
+        "tank_pressure_vacuum_offset_pa": p.tank_pressure_vacuum_offset_pa,
     }
 
 

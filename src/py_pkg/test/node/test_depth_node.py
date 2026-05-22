@@ -15,7 +15,7 @@ from py_pkg.physics import (
     depth_to_pressure_pa,
     gauge_pressure_pa,
 )
-from py_pkg.robot_specs import BCU_MOTOR_MAX_RPM, BCU_MOTOR_MIN_RPM
+from py_pkg.robot_specs import BCU_MOTOR_MAX_RPM
 
 
 # Absolute Pa at the surface (atmospheric); yields current_pressure_pa = 0.
@@ -225,17 +225,20 @@ class TestClamping:
             assert abs(r) <= BCU_MOTOR_MAX_RPM, f"published {r} exceeds max"
 
     def test_published_rpm_respects_min_deadband(self, depth_node_harness):
-        # depth_node zeros out commands whose magnitude is below min_rpm (the
-        # pump can't run reliably below that), so every emission must be
-        # either 0 or have |rpm| >= min_rpm — no values inside (0, min_rpm).
+        # The pump deadband is on by default (min_rpm=500,
+        # min_operating_rpm=1000), so deadband_snap either suppresses a
+        # command to 0 or snaps it up to +/-min_operating_rpm — no emission
+        # may land inside (0, min_operating_rpm). The exact three-region
+        # mapping is proved in test_math_utils.TestDeadbandSnap.
         h = depth_node_harness
+        edge = h.node._min_operating_rpm
         h.publish_target_pressure(0.0)
         h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
         h.spin_for(0.6)
         assert len(h.received_rpm) >= 3
         for r in h.received_rpm:
-            assert r == 0 or abs(r) >= BCU_MOTOR_MIN_RPM, (
-                f"published {r} falls inside the (0, {BCU_MOTOR_MIN_RPM}) deadband"
+            assert r == 0 or abs(r) >= edge, (
+                f"published {r} falls inside the (0, {edge}) deadband"
             )
 
 

@@ -44,8 +44,10 @@ def test_rig_plant_mirrors_robot_specs():
 def test_control_plant_model_mirrors_robot_specs():
     pm = load_scenario(_nominal_path()).control.controllers.depth.plant_model
     assert pm.bladder_nominal_m3 == robot_specs.BLADDER_VOLUME_M3
-    assert pm.min_rpm == robot_specs.BCU_MOTOR_MIN_RPM
     assert pm.max_rpm == robot_specs.BCU_MOTOR_MAX_RPM
+    # min_rpm / min_operating_rpm are control-tuning knobs (the pump deadband
+    # the depth loop snaps RPM commands through), not hardware mirrors — they
+    # intentionally diverge from BCU_MOTOR_MIN_RPM, so they're not asserted here.
 
 
 def test_acu_roll_output_limits_mirror_robot_specs():
