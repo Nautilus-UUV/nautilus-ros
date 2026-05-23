@@ -156,7 +156,24 @@ class DepthControlNode(Node):
                 f"manual override {'engaged' if active else 'released'} -- "
                 f"depth_node BCU publishing {'paused' if active else 'resumed'}"
             )
+            if active:
+                # Hand the BCU off at a safe stop before we go silent: one
+                # 0-RPM + valves-closed command. Without it the last mission
+                # RPM stays latched on the wire -- on hardware the STM keeps
+                # shipping it (no staleness watchdog), so the pump would keep
+                # running until the operator sends a manual command. The zero
+                # also refreshes the sim bridge's dt clock, avoiding a
+                # one-tick bladder jump when control resumes.
+                self._publish_bcu_stop()
         self._manual_override = active
+
+    def _publish_bcu_stop(self) -> None:
+        zero_rpm = Int16()
+        zero_rpm.data = 0
+        self.bcu_controller_rpm_publisher.publish(zero_rpm)
+        valves_off = UInt8()
+        valves_off.data = 0
+        self.bcu_valves_publisher.publish(valves_off)
 
     def _on_reset(self, _msg: Empty) -> None:
         # Drop the setpoint and wipe controller state so the next control_loop
@@ -179,12 +196,7 @@ class DepthControlNode(Node):
         if self.target_pressure_pa is None:
             # No target yet — emit a zero-RPM hold so the BCU bridge
             # doesn't drift, and skip the cascaded controller work.
-            zero_msg = Int16()
-            zero_msg.data = 0
-            self.bcu_controller_rpm_publisher.publish(zero_msg)
-            valves_off = UInt8()
-            valves_off.data = 0
-            self.bcu_valves_publisher.publish(valves_off)
+            self._publish_bcu_stop()
             return
 
         self.current_time = self.get_clock().now().nanoseconds / 1e9

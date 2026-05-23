@@ -291,14 +291,22 @@ class TestRollQuiescence:
 
 
 class TestManualOverride:
-    """CONTROL_ACU_OVERRIDE silences the controller so acu_debug can own
-    /acu/pitch and /acu/roll without the loop racing it on the wire."""
+    """Engaging CONTROL_ACU_OVERRIDE hands the ACU off to neutral -- one
+    0-pitch + 0-roll command -- then silences the controller so acu_debug can
+    own /acu/pitch and /acu/roll without the loop racing it on the wire."""
 
-    def test_override_suppresses_pitch_and_roll(self, acu_node_harness):
+    def test_engage_commands_neutral_then_suppresses(self, acu_node_harness):
         h = acu_node_harness
         h.publish_acu_override(True)
-        # Let the flag land before the inputs that would otherwise drive a tick.
-        h.spin_for(0.1)
+        h.spin_until(lambda: h.node._manual_override is True, timeout=1.0)
+        h.spin_for(0.2)  # let the one-shot neutral emissions land
+
+        assert h.received_pitch_mm and h.received_pitch_mm[-1] == 0
+        assert h.received_roll_cdeg and h.received_roll_cdeg[-1] == 0
+
+        # After neutral the loop stays silent even with fresh inputs.
+        h.received_pitch_mm.clear()
+        h.received_roll_cdeg.clear()
         h.publish_target(roll_deg=20.0, target_pressure_pa=80000.0)
         h.publish_external_pressure(_abs_pa_for_gauge(20000.0))
         h.spin_for(0.6)
@@ -308,13 +316,13 @@ class TestManualOverride:
     def test_release_resumes_publishing(self, acu_node_harness):
         h = acu_node_harness
         h.publish_acu_override(True)
-        h.spin_for(0.1)
-        h.publish_target(roll_deg=20.0, target_pressure_pa=80000.0)
-        h.publish_external_pressure(_abs_pa_for_gauge(20000.0))
-        h.spin_for(0.4)
-        assert h.received_pitch_mm == []
+        h.spin_until(lambda: h.node._manual_override is True, timeout=1.0)
+        h.spin_for(0.2)  # drain the engage neutral
+        h.received_pitch_mm.clear()
 
         h.publish_acu_override(False)
+        h.publish_target(roll_deg=20.0, target_pressure_pa=80000.0)
+        h.publish_external_pressure(_abs_pa_for_gauge(20000.0))
         h.spin_until(lambda: len(h.received_pitch_mm) >= 1, timeout=1.5)
         assert len(h.received_pitch_mm) >= 1
 

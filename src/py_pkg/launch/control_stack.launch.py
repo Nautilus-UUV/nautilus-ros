@@ -17,6 +17,8 @@ Composition (inputs -> outputs):
     /position/target +  -> acu_node      -> /acu/pitch + /acu/roll
       /position/estimation
     /path + /command    -> pathfinding_node -> /position/target
+    feedback + sensors  -> liveness_node -> /status/liveness (per-subsystem
+                                            DiagnosticArray; freshness watchdog)
     MQTT nautilus/cmd/* -> mqtt_bridge   -> /command + /path + /debug/*
                                             + /control/{manual,acu}_override
     /debug/bcu/rpm +    -> bcu_debug     -> /bcu/rpm + /bcu/valves, but only
@@ -27,6 +29,8 @@ Composition (inputs -> outputs):
       /debug/acu/roll                       while /control/acu_override is True.
     /bcu/rpm            -> stm_com       -> UART (hardware only; gated by
                                             enable_stm_com:= launch arg)
+    /bcu/* + /acu/*     -> can_com       -> CAN PDO 0x181 (hardware only;
+                                            gated by enable_can_com:= launch arg)
 
 The manual-override flags are owned by the operator UI (raised through the
 MQTT bridge), not by the debug nodes. depth_node / acu_node stand down while
@@ -103,6 +107,12 @@ def _wire_control_stack(context, *_args, **_kwargs):
         ),
         Node(
             package="py_pkg",
+            executable="liveness_node",
+            name="liveness_node",
+            output="screen",
+        ),
+        Node(
+            package="py_pkg",
             executable="mqtt_bridge_node",
             name="mqtt_bridge",
             output="screen",
@@ -131,6 +141,13 @@ def _wire_control_stack(context, *_args, **_kwargs):
             name="stm_com",
             output="screen",
             condition=IfCondition(LaunchConfiguration("enable_stm_com")),
+        ),
+        Node(
+            package="py_pkg",
+            executable="can_com_node",
+            name="can_com",
+            output="screen",
+            condition=IfCondition(LaunchConfiguration("enable_can_com")),
         ),
     ]
 
@@ -178,6 +195,18 @@ def generate_launch_description():
                     "Spawn stm_com_node, which opens /dev/serial0 to talk to "
                     "the STM32. Off by default so sim launches don't crash on "
                     "hosts without the UART device; set true on the Pi."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "enable_can_com",
+                default_value="false",
+                description=(
+                    "Spawn can_com_node, which binds a raw SocketCAN socket on "
+                    "can0 and heartbeats the actuator PDO (id 0x181) to the CU "
+                    "board. Off by default so sim/dev hosts without a CAN "
+                    "interface don't crash; set true on the vehicle (requires "
+                    "`ip link set can0 type can bitrate 125000 && ip link set "
+                    "up can0` first)."
                 ),
             ),
             OpaqueFunction(function=_wire_control_stack),

@@ -33,6 +33,11 @@ class UUVTopics:
     BCU_FLOW_RATE = "/bcu/flow_rate"
     BCU_VALVES = "/bcu/valves"
     BCU_RPM = "/bcu/rpm"
+    # Actuator feedback the BCU bridge pings back so an idle pump/valves still
+    # prove they're alive. RPM is the fault-adjusted effective value; valves
+    # echo the latest commanded bitmask (bit0=v1, bit1=v2).
+    BCU_FEEDBACK_RPM = "/bcu/feedback/rpm"
+    BCU_FEEDBACK_VALVES = "/bcu/feedback/valves"
 
     # Attitude Control Unit (ACU)
     ACU_PITCH = "/acu/pitch"
@@ -83,3 +88,9 @@ class UUVTopics:
     # filters, publish guards) so they sit exactly as they did at boot before
     # any mission. pathfinding emits it when the Do-Nothing mission starts.
     CONTROL_RESET = "/control/reset"
+
+    # System status
+    # Per-subsystem health, one DiagnosticArray published by the liveness node
+    # from a freshness watchdog over the steady glider-side feedback/sensor
+    # streams. The MQTT bridge forwards it to the operator UI.
+    STATUS_LIVENESS = "/status/liveness"

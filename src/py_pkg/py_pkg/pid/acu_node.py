@@ -167,7 +167,21 @@ class ACUControlNode(Node):
                 f"ACU manual override {'engaged' if active else 'released'} -- "
                 f"acu_node publishing {'paused' if active else 'resumed'}"
             )
+            if active:
+                # Hand the ACU off to neutral before we go silent: command
+                # pitch + roll to 0 once, so manual mode starts from the
+                # equivalent of nothing instead of leaving the last mission
+                # attitude latched on the wire.
+                self._publish_acu_neutral()
         self._manual_override = active
+
+    def _publish_acu_neutral(self) -> None:
+        pitch = Int16()
+        pitch.data = 0
+        self.pitch_pub.publish(pitch)
+        roll = Int16()
+        roll.data = 0
+        self.roll_pub.publish(roll)
 
     def _on_reset(self, _msg: Empty) -> None:
         # Drop the setpoint and wipe controller state so pitch re-gates on a

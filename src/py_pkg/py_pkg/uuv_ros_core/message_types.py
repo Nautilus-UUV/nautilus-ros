@@ -11,6 +11,7 @@ Example:
 """
 
 from can_msgs.msg import Frame
+from diagnostic_msgs.msg import DiagnosticArray
 from geometry_msgs.msg import Pose
 from nautilus_msgs.msg import BcuPumpCommand, MissionCommand
 from sensor_msgs.msg import Imu, Temperature
@@ -40,6 +41,8 @@ TOPIC_MESSAGE_MAP = {
     UUVTopics.BCU_RPM: Int16,
     # Bit 0 = valve 1, bit 1 = valve 2; 1 = open, 0 = closed.
     UUVTopics.BCU_VALVES: UInt8,
+    UUVTopics.BCU_FEEDBACK_RPM: Int16,
+    UUVTopics.BCU_FEEDBACK_VALVES: UInt8,
     UUVTopics.ACU_PITCH: Int16,
     UUVTopics.ACU_ROLL: Int16,
     UUVTopics.ACU_FEEDBACK_OFFSET: Float32,
@@ -62,4 +65,5 @@ TOPIC_MESSAGE_MAP = {
     UUVTopics.CONTROL_MANUAL_OVERRIDE: Bool,
     UUVTopics.CONTROL_ACU_OVERRIDE: Bool,
     UUVTopics.CONTROL_RESET: Empty,
+    UUVTopics.STATUS_LIVENESS: DiagnosticArray,
 }

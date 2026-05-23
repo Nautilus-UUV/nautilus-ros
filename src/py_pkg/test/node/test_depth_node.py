@@ -33,29 +33,45 @@ TARGET_PA_DEEP_HUGE = gauge_pressure_pa(depth_to_pressure_pa(1000.0))
 
 
 class TestManualOverride:
-    """While CONTROL_MANUAL_OVERRIDE is True, depth_node must stop
-    publishing to /bcu/rpm and /bcu/valves -- a manual driver (bcu_debug)
-    owns those topics and depth_node's periodic zero-hold would clobber
-    it otherwise."""
+    """Engaging CONTROL_MANUAL_OVERRIDE hands the BCU off at a safe stop --
+    one 0-RPM + valves-closed command -- then depth_node goes silent so the
+    manual driver (bcu_debug) owns /bcu/rpm + /bcu/valves without the loop
+    racing it."""
 
-    def test_no_target_zero_hold_pauses_under_override(self, depth_node_harness):
+    def test_engage_commands_safe_stop_then_pauses(self, depth_node_harness):
         h = depth_node_harness
-        # Engage the override BEFORE the 10 Hz control timer has had a
-        # chance to fire its no-target zero-publish.
         h.publish_manual_override(True)
-        h.spin_until(
-            lambda: h.node._manual_override is True, timeout=1.0
-        )
+        h.spin_until(lambda: h.node._manual_override is True, timeout=1.0)
+        h.spin_for(0.2)  # let the one-shot safe-stop emission land
 
-        rpm_count_before = len(h.received_rpm)
-        valves_count_before = len(h.received_valves)
+        assert h.received_rpm and h.received_rpm[-1] == 0
+        assert h.received_valves and h.received_valves[-1] == 0
+
+        # After the safe stop the loop stays silent -- no periodic zero-hold.
+        h.received_rpm.clear()
+        h.received_valves.clear()
         h.spin_for(0.5)  # 5+ control ticks at 10 Hz
-
-        assert len(h.received_rpm) == rpm_count_before, (
-            f"depth_node must not publish /bcu/rpm while overridden, got "
-            f"{h.received_rpm[rpm_count_before:]}"
+        assert h.received_rpm == [], (
+            f"depth_node must stay silent after the safe stop, got {h.received_rpm}"
         )
-        assert len(h.received_valves) == valves_count_before
+        assert h.received_valves == []
+
+    def test_engage_mid_pump_commands_safe_stop(self, depth_node_harness):
+        # The point of the safe stop: a mission mid-pump must not leave its
+        # last RPM running when manual mode takes over.
+        h = depth_node_harness
+        h.publish_target_pressure(TARGET_PA_70M)
+        h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
+        h.spin_until(lambda: len(h.received_rpm) >= 4, timeout=1.5)
+        assert h.received_rpm[-1] != 0, "precondition: pump actively commanded"
+
+        h.publish_manual_override(True)
+        h.spin_until(lambda: h.node._manual_override is True, timeout=1.0)
+        h.spin_for(0.2)
+        assert h.received_rpm[-1] == 0, (
+            f"engaging manual mid-pump must command 0 RPM, got {h.received_rpm[-5:]}"
+        )
+        assert h.received_valves[-1] == 0
 
     def test_publish_resumes_after_override_released(self, depth_node_harness):
         h = depth_node_harness

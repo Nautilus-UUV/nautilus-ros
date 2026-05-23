@@ -42,6 +42,8 @@ setup(
             "depth_node = py_pkg.pid.depth_node:main",
             "acu_node = py_pkg.pid.acu_node:main",
             "stm_com_node = py_pkg.stm_com.stm_com_node:main",
+            "can_com_node = py_pkg.stm_com.can_com_node:main",
+            "liveness_node = py_pkg.liveness.liveness_node:main",
             "bcu_debug_node = py_pkg.debug.bcu_debug_node:main",
             "acu_debug_node = py_pkg.debug.acu_debug_node:main",
             "auto_bcu_oscillator = py_pkg.debug.auto_bcu_oscillator:main",

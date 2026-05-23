@@ -141,6 +141,16 @@ EGRESS_MAP: tuple[EgressMapping, ...] = (
         0.0,
         on_change=True,
     ),
+    # Per-subsystem health. State-like, so on-change/retained: a payload only
+    # crosses the tether on a real online<->offline transition (the liveness
+    # node leaves header.stamp zero to keep the JSON byte-stable otherwise),
+    # and a fresh UI tab gets the last-known states from the retained message.
+    EgressMapping(
+        UUVTopics.STATUS_LIVENESS,
+        "nautilus/status/liveness",
+        0.0,
+        on_change=True,
+    ),
 )
 
 
