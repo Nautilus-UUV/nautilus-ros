@@ -37,6 +37,9 @@ import numpy as np
 import yaml
 from scipy.stats import qmc
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src/py_pkg"))
+from py_pkg.scenarios.compile import forward_map
+
 SAMPLER_VERSION = "1.0.0"
 
 SUPPORTED_DISTRIBUTIONS = ("uniform", "loguniform")
@@ -95,6 +98,8 @@ class SweepSpec:
     seed: int
     base_scenario: str
     dimensions: tuple[Dimension, ...]
+    sampling_mode: str = "lhs"
+    isotropic_jitter_sigma: float = 0.0
 
     @classmethod
     def load(cls, path: Path) -> "SweepSpec":
@@ -111,6 +116,8 @@ class SweepSpec:
             seed=int(raw.get("seed", 0)),
             base_scenario=raw["base_scenario"],
             dimensions=dims,
+            sampling_mode=raw.get("sampling_mode", "lhs"),
+            isotropic_jitter_sigma=float(raw.get("isotropic_jitter_sigma", 0.0)),
         )
 
 
@@ -167,14 +174,29 @@ def render_scenario(
 ) -> dict:
     """Deep-copy the base, overlay the row's perturbations, set per-run seed."""
     scenario = copy.deepcopy(base)
-    for dim, value in zip(spec.dimensions, row):
-        # YAML round-trips Python floats fine; cast to float so numpy
-        # scalars don't end up serialized as `!!python/object/apply`.
-        set_dotted(scenario, dim.path, float(value))
     # Each run gets its own fault-RNG seed so MC outcomes are
     # decorrelated across samples while still being deterministic. Mix
     # the spec seed with the sample index to keep reproducibility.
     scenario["seed"] = (spec.seed * 1_000_003 + idx) & 0xFFFFFFFF
+
+    if spec.sampling_mode == "lhs":
+        for dim, value in zip(spec.dimensions, row):
+            # YAML round-trips Python floats fine; cast to float so numpy
+            # scalars don't end up serialized as `!!python/object/apply`.
+            set_dotted(scenario, dim.path, float(value))
+    elif spec.sampling_mode == "physics":
+        knobs = {dim.path: float(value) for dim, value in zip(spec.dimensions, row)}
+        hydro_spec = forward_map(
+            knobs,
+            jitter_seed=scenario["seed"],
+            jitter_sigma=spec.isotropic_jitter_sigma,
+        )
+        if "rig" not in scenario:
+            scenario["rig"] = {}
+        scenario["rig"]["hydrodynamics"] = hydro_spec.model_dump()
+    else:
+        raise ValueError(f"Unsupported sampling_mode: {spec.sampling_mode}")
+
     return scenario
 
 

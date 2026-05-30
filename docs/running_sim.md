@@ -18,14 +18,7 @@ source install/setup.bash
 
 ## Unbounded interactive run with the GUI
 
-All four mission launches below accept the same `scenario:=<path>`
-argument (defaults to the installed `library/nominal.yaml` —
-perturbation-free, fault-injection off). Override with
-`library/baseline.yaml` to turn BCU fault injection back on, or with
-any custom YAML for an MC sweep. The trim section spells the
-override out; the same flag works for the sawtooth, surface, and
-do-nothing variants and for `bridge.launch.py` /
-`control_stack.launch.py`.
+
 
 ### 1. Targeted Trim and Neutral Mission Profile
 ---
@@ -160,16 +153,7 @@ ros2 topic pub --once \
 ### 4. Do Nothing Mission Profile
 ---
 
-The same bringup as above — HAL bridges + Gazebo + glider model + the
-full control stack — but the control commands nothing. The DO_NOTHING
-mission keeps every node live yet publishes no setpoint, so `depth_node`
-sits in its zero-RPM / valves-closed hold and `acu_node` stays quiet:
-the glider holds whatever trim it has and drifts. On start it also emits
-`CONTROL_RESET`, which wipes the controllers (target back to `None`, PID
-integrators/filters cleared) back to exactly how they sat at boot — so
-nothing carries over if you ran another mission earlier in the session.
-Useful for exercising the sim, sensors, EKF, telemetry, the MQTT bridge,
-and the operator UI without the glider moving. Runs forever until Ctrl-C.
+
 
 ```bash
 ros2 launch nautilus_hal do_nothing_sim.launch.py \

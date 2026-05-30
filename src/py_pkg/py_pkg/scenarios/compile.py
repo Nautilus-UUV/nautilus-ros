@@ -16,9 +16,15 @@ place that knows the ROS parameter wire names.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-from rclpy.node import Node
+if TYPE_CHECKING:
+    from rclpy.node import Node
+import math
+import logging
+import yaml
+from pathlib import Path
+import numpy as np
 
 from .seed import derive_seed
 from .spec.control import (
@@ -29,7 +35,7 @@ from .spec.control import (
     DepthSpec,
     PIDPressureSpec,
 )
-from .spec.rig import RigScenario
+from .spec.rig import RigScenario, HydrodynamicsSpec, FinAeroSpec, PhysicsKnobs
 
 # ---------------------------------------------------------------------------
 # Control-side: forward (params_for_*) and inverse (*_spec_from_node)
@@ -248,3 +254,260 @@ def params_for_external_sensor_bridge(scen: RigScenario) -> dict[str, Any]:
 
 def params_for_gt_pose_bridge(scen: RigScenario) -> dict[str, Any]:
     return {"model_name": scen.sim.model_name}
+
+# ---------------------------------------------------------------------------
+# Hydrodynamics: Forward Map
+# ---------------------------------------------------------------------------
+
+_LOG = logging.getLogger("py_pkg.scenarios.compile")
+
+def _load_nominal_knobs() -> dict[str, Any]:
+    # 1. Try source tree layout (used by host-side lhs_sample.py)
+    library_dir = Path(__file__).resolve().parent / "library"
+    nominal_path = library_dir / "nominal_knobs.yaml"
+    
+    if not nominal_path.is_file():
+        # 2. Try ROS 2 install layout (used inside the container SIF)
+        try:
+            from ament_index_python.packages import get_package_share_directory
+            share_dir = Path(get_package_share_directory("py_pkg"))
+            nominal_path = share_dir / "scenarios" / "library" / "nominal_knobs.yaml"
+        except (ImportError, Exception):
+            pass
+
+    if not nominal_path.is_file():
+        # Fallback for tests if library isn't packaged properly
+        _LOG.warning(f"nominal_knobs.yaml not found at {nominal_path}, using hardcoded defaults")
+        return {"physics_knobs": PhysicsKnobs().model_dump(), "fluid_constants": {"rho": 1025.0, "nu": 1.05e-6, "u_ref": 0.3}}
+        
+    return yaml.safe_load(nominal_path.read_text())
+
+_NOMINAL_DATA = _load_nominal_knobs()
+_G_NOMINAL = _NOMINAL_DATA["physics_knobs"]
+_FLUID_CONSTANTS = _NOMINAL_DATA["fluid_constants"]
+_RHO = float(_FLUID_CONSTANTS["rho"])
+_NU = float(_FLUID_CONSTANTS["nu"])
+_U_REF = float(_FLUID_CONSTANTS["u_ref"])
+
+
+def _compute_closed_form(g: dict[str, float]) -> dict[str, float]:
+    """Computes hydrodynamic coefficients from physics knobs using strip theory.
+    Returns a dict with keys matching HydrodynamicsSpec and FinAeroSpec slots.
+    """
+    L = g["L"]
+    D = g["D"]
+    nabla = g["nabla"]
+    b_f = g["b_f"]
+    c_f = g["c_f"]
+    x_f = g["x_f"]
+    b_r = g["b_r"]
+    c_r = g["c_r"]
+    x_r = g["x_r"]
+    t_over_c = g["t_over_c"]
+    alpha_stall_horiz = g["alpha_stall_horiz"]
+    alpha_stall_rudder = g["alpha_stall_rudder"]
+    C_d_c = g["C_d_c"]
+    one_plus_k = g["one_plus_k"]
+    C_p_base = g["C_p_base"]
+    C_La_mult = g["C_La_mult"]
+
+    # --- Lamb factors ---
+    e = math.sqrt(max(0.0, 1.0 - (D/L)**2)) if L > D else 0.0
+    if e > 0:
+        alpha_0 = (2 * (1 - e**2) / e**3) * (0.5 * math.log((1 + e)/(1 - e)) - e)
+        beta_0 = 1 / e**2 - ((1 - e**2) / (2 * e**3)) * math.log((1 + e)/(1 - e))
+        k_1 = alpha_0 / (2 - alpha_0)
+        k_2 = beta_0 / (2 - beta_0)
+        k_prime = e**4 * (beta_0 - alpha_0) / ((2 - e**2) * (2 * e**2 - (2 - e**2) * (beta_0 - alpha_0)))
+    else:
+        k_1 = k_2 = k_prime = 0.0
+
+    # --- Hull Added Mass ---
+    I_m_shape = 1.0 / 12.0
+    X_u_dot_hull = k_1 * _RHO * nabla
+    Y_v_dot_hull = Z_w_dot_hull = k_2 * _RHO * nabla
+    M_q_dot_hull = N_r_dot_hull = k_prime * _RHO * nabla * L**2 * I_m_shape
+    K_p_dot_hull = 0.0
+
+    # --- Hull Quadratic Damping ---
+    C_p = (4 * nabla) / (math.pi * D**2 * L)
+    Y_v_v_hull = Z_w_w_hull = -0.5 * C_d_c * _RHO * L * D * math.sqrt(max(0.0, C_p))
+    M_q_q_hull = N_r_r_hull = -(1.0 / 24.0) * C_d_c * _RHO * L**3 * D * math.sqrt(max(0.0, C_p))
+
+    Re_hull = _U_REF * L / _NU
+    C_F_hull = 0.075 / (math.log10(Re_hull) - 2)**2 if Re_hull > 100 else 0.01
+    C_D_hull = C_F_hull * one_plus_k + C_p_base
+    X_u_u_hull = -(math.pi / 8.0) * _RHO * D**2 * C_D_hull
+    K_p_p_hull = 0.0
+
+    # --- Hull Linear Damping (tangent at U_REF) ---
+    X_u_hull = 2 * X_u_u_hull * _U_REF
+    Y_v_hull = 2 * Y_v_v_hull * _U_REF
+    Z_w_hull = 2 * Z_w_w_hull * _U_REF
+    M_q_hull = 2 * M_q_q_hull * _U_REF
+    N_r_hull = 2 * N_r_r_hull * _U_REF
+    K_p_hull = 0.0
+
+    # --- Fin Added Mass ---
+    Z_w_dot_horiz = (math.pi / 4.0) * _RHO * c_f**2 * b_f * 2.0
+    M_q_dot_horiz = (math.pi / 4.0) * _RHO * c_f**2 * b_f * 2.0 * x_f**2
+    Y_v_dot_horiz = N_r_dot_horiz = 0.0
+    K_p_dot_horiz = 2.0 * _RHO * math.pi * (c_f / 2.0)**2 * (((D / 2.0) + b_f)**3 - (D / 2.0)**3) / 3.0
+
+    Y_v_dot_rudder = (math.pi / 4.0) * _RHO * c_r**2 * b_r * 1.0
+    N_r_dot_rudder = (math.pi / 4.0) * _RHO * c_r**2 * b_r * 1.0 * x_r**2
+    Z_w_dot_rudder = M_q_dot_rudder = 0.0
+    z_r = 0.119
+    K_p_dot_rudder = _RHO * math.pi * (c_r / 2.0)**2 * ((z_r + b_r)**3 - z_r**3) / 3.0
+
+    # --- Fin Lift Slope ---
+    AR_f = b_f / c_f if c_f > 0 else 0.0
+    AR_r = b_r / c_r if c_r > 0 else 0.0
+    cla_horiz = C_La_mult * (2 * math.pi * AR_f / (2 + math.sqrt(AR_f**2 + 4)))
+    cla_vert  = C_La_mult * (2 * math.pi * AR_r / (2 + math.sqrt(AR_r**2 + 4)))
+
+    # --- Fin Profile Drag ---
+    Re_f = _U_REF * c_f / _NU
+    Re_r = _U_REF * c_r / _NU
+    C_F_f = 0.075 / (math.log10(Re_f) - 2)**2 if Re_f > 100 else 0.01
+    C_F_r = 0.075 / (math.log10(Re_r) - 2)**2 if Re_r > 100 else 0.01
+    cda_horiz = 2 * C_F_f * (1 + 2 * t_over_c + 60 * t_over_c**4)
+    cda_vert  = 2 * C_F_r * (1 + 2 * t_over_c + 60 * t_over_c**4)
+
+    return {
+        "added_mass_xx": X_u_dot_hull,
+        "added_mass_yy": Y_v_dot_hull + Y_v_dot_rudder,
+        "added_mass_zz": Z_w_dot_hull + Z_w_dot_horiz,
+        "added_mass_pp": K_p_dot_hull + K_p_dot_horiz + K_p_dot_rudder,
+        "added_mass_qq": M_q_dot_hull + M_q_dot_horiz,
+        "added_mass_rr": N_r_dot_hull + N_r_dot_rudder,
+        "drag_xU": X_u_hull,
+        "drag_yV": Y_v_hull,
+        "drag_zW": Z_w_hull,
+        "drag_kP": K_p_hull,
+        "drag_mQ": M_q_hull,
+        "drag_nR": N_r_hull,
+        "horiz_cla": cla_horiz,
+        "horiz_cda": cda_horiz,
+        "horiz_area": b_f * c_f,
+        "vert_cla": cla_vert,
+        "vert_cda": cda_vert,
+        "vert_area": b_r * c_r,
+    }
+
+
+def _compute_calibration_scalars() -> dict[str, float]:
+    """Computes calibration scalars: canonical_SDF / f(g_nominal).
+    Zeroes out quadratic drag (as canonical SDF has none) implicitly
+    because quadratic slots aren't even generated.
+    """
+    f_nom = _compute_closed_form(_G_NOMINAL)
+    sdf_can = HydrodynamicsSpec()
+    
+    # Map sdf_can fields to the keys generated by _compute_closed_form
+    can_dict = {
+        "added_mass_xx": sdf_can.added_mass_xx,
+        "added_mass_yy": sdf_can.added_mass_yy,
+        "added_mass_zz": sdf_can.added_mass_zz,
+        "added_mass_pp": sdf_can.added_mass_pp,
+        "added_mass_qq": sdf_can.added_mass_qq,
+        "added_mass_rr": sdf_can.added_mass_rr,
+        "drag_xU": sdf_can.drag_xU,
+        "drag_yV": sdf_can.drag_yV,
+        "drag_zW": sdf_can.drag_zW,
+        "drag_kP": sdf_can.drag_kP,
+        "drag_mQ": sdf_can.drag_mQ,
+        "drag_nR": sdf_can.drag_nR,
+        "horiz_cla": sdf_can.left_fin.cla,
+        "horiz_cda": sdf_can.left_fin.cda,
+        "horiz_area": sdf_can.left_fin.area,
+        "vert_cla": sdf_can.top_rudder.cla,
+        "vert_cda": sdf_can.top_rudder.cda,
+        "vert_area": sdf_can.top_rudder.area,
+    }
+    
+    scalars = {}
+    for k, can_val in can_dict.items():
+        nom_val = f_nom[k]
+        if abs(nom_val) < 1e-9:
+            scalars[k] = 1.0 if abs(can_val) < 1e-9 else 0.0
+        else:
+            scalars[k] = can_val / nom_val
+            
+    _LOG.info("Hydrodynamic Calibration Scalars:")
+    for k, lam in scalars.items():
+        _LOG.info(f"  {k}: {lam:.3f}")
+        if abs(lam) > 5.0:
+            _LOG.warning(f"  {k} has large calibration scalar (|λ| = {abs(lam):.2f} > 5.0). Closed-form physics dominates less.")
+            
+    return scalars, can_dict
+
+_CALIBRATION_SCALARS, _CANONICAL_VALUES = _compute_calibration_scalars()
+
+
+def forward_map(knobs: dict[str, float], jitter_seed: int | None = None, jitter_sigma: float = 0.0) -> HydrodynamicsSpec:
+    """Computes the SDF hydrodynamic surface from physics knobs.
+    Applies calibration scalars, then applies multiplicative isotropic log-normal jitter if requested.
+    """
+    f_g = _compute_closed_form(knobs)
+    lam = _CALIBRATION_SCALARS
+    
+    # Apply scalars, fallback to canonical if f_g is 0
+    out = {}
+    for k in f_g:
+        if abs(f_g[k]) < 1e-9:
+            out[k] = _CANONICAL_VALUES[k]
+        else:
+            out[k] = lam[k] * f_g[k]
+    
+    # Apply jitter AFTER scalars
+    if jitter_sigma > 0.0:
+        rng = np.random.default_rng(jitter_seed)
+        # Jitter applies to the output slots (which includes AM, linear drag, fin cla/cda/area)
+        for k in out:
+            # Jitter is multiplicative in linear space: val * exp(N(0, sigma^2))
+            noise = math.exp(rng.normal(0, jitter_sigma))
+            out[k] *= noise
+            
+        # alpha_stall is also jittered, but it comes straight from knobs, not f_g
+        stall_noise_horiz = math.exp(rng.normal(0, jitter_sigma))
+        stall_noise_rudder = math.exp(rng.normal(0, jitter_sigma))
+        alpha_stall_horiz_final = knobs["alpha_stall_horiz"] * stall_noise_horiz
+        alpha_stall_rudder_final = knobs["alpha_stall_rudder"] * stall_noise_rudder
+    else:
+        alpha_stall_horiz_final = knobs["alpha_stall_horiz"]
+        alpha_stall_rudder_final = knobs["alpha_stall_rudder"]
+        
+    return HydrodynamicsSpec(
+        added_mass_xx=out["added_mass_xx"],
+        added_mass_yy=out["added_mass_yy"],
+        added_mass_zz=out["added_mass_zz"],
+        added_mass_pp=out["added_mass_pp"],
+        added_mass_qq=out["added_mass_qq"],
+        added_mass_rr=out["added_mass_rr"],
+        drag_xU=out["drag_xU"],
+        drag_yV=out["drag_yV"],
+        drag_zW=out["drag_zW"],
+        drag_kP=out["drag_kP"],
+        drag_mQ=out["drag_mQ"],
+        drag_nR=out["drag_nR"],
+        left_fin=FinAeroSpec(
+            cla=out["horiz_cla"],
+            cda=out["horiz_cda"],
+            area=out["horiz_area"],
+            alpha_stall=alpha_stall_horiz_final,
+        ),
+        right_fin=FinAeroSpec(
+            cla=out["horiz_cla"],
+            cda=out["horiz_cda"],
+            area=out["horiz_area"],
+            alpha_stall=alpha_stall_horiz_final,
+        ),
+        top_rudder=FinAeroSpec(
+            cla=out["vert_cla"],
+            cda=out["vert_cda"],
+            area=out["vert_area"],
+            alpha_stall=alpha_stall_rudder_final,
+        ),
+        knobs=PhysicsKnobs(**knobs),
+    )

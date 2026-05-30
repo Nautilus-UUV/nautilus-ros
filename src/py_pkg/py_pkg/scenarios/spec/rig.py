@@ -116,6 +116,45 @@ class BridgesSpec(StrictModel):
     )
 
 
+class PhysicsKnobs(StrictModel):
+    """Sixteen independent physics knobs for domain-randomization sweeps.
+
+    These are the *causes* sampled in log-space; the SDF coefficients
+    are computed deterministically from them via the forward map in
+    ``compile.py``.  Stored in the emitted YAML for provenance — the
+    render path (``render_sdf.py``) ignores this block.
+
+    Defaults are the nominal operating point.  See
+    ``doc/hydrodynamic_coefficient_sampling_plan.md`` §1 for derivation.
+    """
+
+    # ── Body geometry (3) ──
+    L: float = 1.50       # hull length [m]
+    D: float = 0.15       # hull max diameter [m]
+    nabla: float = 0.018  # displaced volume [m³]
+
+    # ── Horizontal fin pair (3) ──
+    b_f: float = 0.33     # horizontal fin span, root-to-tip [m]
+    c_f: float = 0.22     # horizontal fin chord, mean [m]
+    x_f: float = 0.70     # horizontal fin lever arm from x_CB [m]
+
+    # ── Top rudder (3) ──
+    b_r: float = 0.22     # rudder span, root-to-tip [m]
+    c_r: float = 0.11     # rudder chord, mean [m]
+    x_r: float = 0.939    # rudder lever arm from x_CB [m]
+
+    # ── Foil profile / fin nonlinear envelope (3 — alpha_stall split) ──
+    t_over_c: float = 0.12         # fin thickness ratio [-]
+    alpha_stall_horiz: float = 0.17  # stall angle, horizontal pair [rad]
+    alpha_stall_rudder: float = 0.17  # stall angle, top rudder [rad]
+
+    # ── Empirical / flow-physics (4) ──
+    C_d_c: float = 1.10        # 2D cylinder cross-flow drag coeff [-]
+    one_plus_k: float = 1.20   # hull form-factor multiplier [-]
+    C_p_base: float = 0.08     # base-pressure drag coefficient [-]
+    C_La_mult: float = 1.10    # fin lift-slope correction multiplier [-]
+
+
 class FinAeroSpec(StrictModel):
     """Lift/drag plugin parameters for one control surface.
 
@@ -178,6 +217,10 @@ class HydrodynamicsSpec(StrictModel):
     top_rudder: FinAeroSpec = Field(
         default_factory=lambda: FinAeroSpec(area=0.0244)
     )
+
+    # Physics knobs that generated the SDF coefficients above.  Stored
+    # for provenance and Sobol analysis; the render path ignores this.
+    knobs: Optional[PhysicsKnobs] = None
 
 
 class RigScenario(StrictModel):

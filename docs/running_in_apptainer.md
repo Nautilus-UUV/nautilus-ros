@@ -1,44 +1,28 @@
 # Running the Nautilus simulation in Apptainer
 
-The Apptainer flow packages the workspace (ROS 2 Jazzy + Gazebo Harmonic +
-all Nautilus / DAVE / HAL code at build time) into a single `.sif` file
-that runs anywhere Apptainer is installed, with no GPU and no network
-access at run time. It is the supported path for Monte-Carlo-style
-scenario sweeps on a multi-CPU server, where many containers run side by
-side on the same host.
+## Sample Coefficients
 
-For interactive controller development on your workstation, prefer the
-native colcon flow described in [`running_sim.md`](running_sim.md); for a
-reproducible dev environment without the SIF detour, prefer
-`docker compose up` described in the workspace-root `infra_claude.md`.
+```bash
+./src/nautilus-ros/scripts/lhs_sample.py \
+  --spec src/nautilus-ros/scripts/sweeps/bcu_hydro_coarse.yaml \
+  --out ./scenarios \
+  --name bcu_hydro_coarse
+```
 
 ## Build the SIF
-
-The image bakes in the entire `src/` tree at build time, including the
-`nautilus-ros` and `dave` sister repos plus the vendored `dockwater` /
-`rocker`. Whatever is on disk under `src/` when you run `docker compose
-build` is what ends up in the SIF — so commit (or at least save) your
-work first if you want it tracked elsewhere, then:
 
 ```bash
 cd /home/$USER/dave_ws
 
-docker compose build                                                # ~10–20 min
+docker compose build   # ~10–20 min
 docker save -o dave_nautilus_image.tar dave_nautilus_image:latest
 apptainer build nautilus_sim.sif docker-archive://dave_nautilus_image.tar
 ```
 
-The Docker image pre-downloads the Fuel models the DAVE worlds depend on
-(`North East Down frame`, `Coast Water`, `Sand Heightmap`) and flattens
-them under `/offline_models/`, and the build step rewrites every
-installed `*.world` to replace `https://fuel.gazebosim.org/...` URIs
-with `model://`. Net effect: the container can spawn the world without
-talking to Fuel, which matters because the cluster has no outbound
-network.
 
 If you add a new Fuel model to a world, you must update both the
-download block and the flatten step in `Dockerfile` — there is no
-generic resolver, just a hand-maintained whitelist.
+download block and the flatten step in `Dockerfile`. There is no
+generic resolver.
 
 Sanity-check the new SIF before relying on it:
 
@@ -57,18 +41,18 @@ workspace root so the relative `./sim_data` bind resolves correctly:
 
 ```bash
 apptainer exec --cleanenv \
-    --env GZ_IP=127.0.0.1 \
-    --bind ./sim_data:/ros2_ws/sim_data \
-    --bind ./scenarios:/ros2_ws/scenarios:ro \
-    nautilus_sim.sif \
-    /entrypoint.sh ros2 launch nautilus_hal sawtooth_sim.launch.py \
-        headless:=true mission_autostart:=true \
-        target_pressure_pa:=147150.0 angle_rad:=0.6109 n_resurfaces:=5 \
-        record:=true sampler_id:=my_run run_id:=baseline \
-        scenario:=/ros2_ws/scenarios/baseline.yaml
+	--env GZ_IP=127.0.0.1 \
+	--bind ./sim_data:/ros2_ws/sim_data \
+	--bind ./scenarios:/ros2_ws/scenarios:ro \
+	nautilus_sim.sif \
+	/entrypoint.sh ros2 launch nautilus_hal sawtooth_sim.launch.py \
+    headless:=true mission_autostart:=true \
+    target_pressure_pa:=147150.0 angle_rad:=0.6109 n_resurfaces:=1 \
+    record:=true sampler_id:=bcu_hydro_coarse run_id:=lhs_0000 \
+    scenario:=/ros2_ws/scenarios/bcu_hydro_coarse/lhs_0000.yaml
 ```
 
-What each piece does:
+Arguments:
 
 - `--cleanenv` strips the host's env (DISPLAY, ROS_DOMAIN_ID, etc.) so
   the container starts from a known baseline.
