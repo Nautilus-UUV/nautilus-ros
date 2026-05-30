@@ -14,6 +14,7 @@ Outbound (Pi -> STM):
     0x2102  BCU_RPM        int16   motor RPM setpoint
 
 Inbound (STM -> Pi):
+    0x2103  BCU_STATUS     int16   motor's currently reported RPM (~1 Hz)
     0x2400  EXT_PRESSURE   uint16  absolute, 100 Pa / LSB
     0x2401  TANK_PRESSURE  uint16  gauge relative to hull, 100 Pa / LSB
     0x2402  INT_PRESSURE   uint16  absolute, 100 Pa / LSB
@@ -32,7 +33,7 @@ import serial
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from sensor_msgs.msg import Temperature
-from std_msgs.msg import Int32, UInt8MultiArray
+from std_msgs.msg import Int16, Int32, UInt8MultiArray
 
 from py_pkg.robot_specs import STM_PRESSURE_LSB_PA, STM_TEMPERATURE_LSB_C
 from py_pkg.uuv_ros_core import (
@@ -46,6 +47,7 @@ HEADER_FMT = ">HB"  # big-endian uint16 var_id, uint8 length
 HEADER_LEN = struct.calcsize(HEADER_FMT)
 
 BCU_RPM_VAR_ID = 0x2102
+BCU_STATUS_VAR_ID = 0x2103  # <h — int16, STM → us, ~1 Hz measured motor RPM
 EXT_PRESSURE_VAR_ID = 0x2400  # <H — uint16
 TANK_PRESSURE_VAR_ID = 0x2401  # <H — uint16  → BCU_PRESSURE
 INT_PRESSURE_VAR_ID = 0x2402  # <H — uint16
@@ -110,6 +112,12 @@ class STMComNode(Node):
             self, UUVTopics.INTERNAL_TEMPERATURE
         )
         self._leak_pub = create_publisher_for_topic(self, UUVTopics.INTERNAL_LEAK)
+        # Measured BCU motor RPM the STM beats back at ~1 Hz. Same topic the
+        # sim HAL bridge publishes, so liveness + UI see the same shape on
+        # hardware as in Gazebo.
+        self._bcu_feedback_rpm_pub = create_publisher_for_topic(
+            self, UUVTopics.BCU_FEEDBACK_RPM
+        )
 
     def _on_rpm(self, msg) -> None:
         self._latest_rpm = int(msg.data)
@@ -167,6 +175,8 @@ class STMComNode(Node):
             self._publish_temperature(self._int_temp_pub, payload)
         elif var_id == LEAKS_VAR_ID:
             self._publish_leaks(payload)
+        elif var_id == BCU_STATUS_VAR_ID:
+            self._publish_bcu_rpm_feedback(payload)
         else:
             self.get_logger().debug(
                 f"unknown var_id=0x{var_id:04x} len={len(payload)}"
@@ -191,6 +201,15 @@ class STMComNode(Node):
         msg = Temperature()
         msg.temperature = float(raw) * STM_TEMPERATURE_LSB_C
         pub.publish(msg)
+
+    def _publish_bcu_rpm_feedback(self, payload: bytes) -> None:
+        if len(payload) != INT16_LEN:
+            self.get_logger().warning(
+                f"bcu status payload wrong length: {len(payload)}"
+            )
+            return
+        (rpm,) = struct.unpack(INT16_FMT, payload)
+        self._bcu_feedback_rpm_pub.publish(Int16(data=rpm))
 
     def _publish_leaks(self, payload: bytes) -> None:
         if len(payload) != UINT8_LEN:
