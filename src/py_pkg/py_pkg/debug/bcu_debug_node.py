@@ -22,6 +22,17 @@ Command surfaces:
   flow; if it isn't, we warn (but still pump -- this is a debug knob, and
   the operator UI carries the same warning).
 
+* Pump until tank pressure target (``DEBUG_BCU_RPM_UNTIL_PRESSURE``) --
+  closed-loop sibling of the timed pump: run the motor at a requested RPM
+  until ``/bcu/pressure`` crosses ``target_pressure_pa`` in the direction
+  the sign of the RPM implies (positive inflates -> tank drops -> stop
+  when tank_pa <= target; negative deflates -> tank rises -> stop when
+  tank_pa >= target). Mutually exclusive with the timed pump on this node:
+  arming either replaces the other. The same ``MAX_PUMP_S`` cap fires as
+  a safety floor if the target is never reached. If the tank is already
+  past the target for the requested direction, we refuse and zero the motor
+  rather than running uselessly.
+
 * Valves (``DEBUG_BCU_VALVES``) -- latch a valve bitmask (bit0=v1, bit1=v2).
   We only touch ``/bcu/valves`` once a valve command has actually arrived, so
   a pump-only session never slams the valves shut underneath the operator.
@@ -37,7 +48,7 @@ instead of 3) can't leave the motor running for half an hour.
 """
 
 import rclpy
-from nautilus_msgs.msg import BcuPumpCommand
+from nautilus_msgs.msg import BcuPumpCommand, BcuPumpUntilPressureCommand
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from std_msgs.msg import Bool, Int16, Int32, UInt8
@@ -89,6 +100,11 @@ class BcuDebugNode(Node):
 
         create_subscription_for_topic(self, UUVTopics.DEBUG_BCU_RPM, self._on_rpm_cmd)
         create_subscription_for_topic(
+            self,
+            UUVTopics.DEBUG_BCU_RPM_UNTIL_PRESSURE,
+            self._on_rpm_until_pressure_cmd,
+        )
+        create_subscription_for_topic(
             self, UUVTopics.DEBUG_BCU_VALVES, self._on_valve_cmd
         )
         create_subscription_for_topic(
@@ -97,15 +113,25 @@ class BcuDebugNode(Node):
         create_subscription_for_topic(
             self, UUVTopics.EXTERNAL_PRESSURE, self._on_pressure
         )
+        # Tank pressure is the stop signal for the pressure-targeted pump mode.
+        create_subscription_for_topic(
+            self, UUVTopics.BCU_PRESSURE, self._on_tank_pressure
+        )
         # The operator's manual-override slider gates everything except the
         # emergency path: we only drive the wire while this is True.
         create_subscription_for_topic(
             self, UUVTopics.CONTROL_MANUAL_OVERRIDE, self._on_override
         )
 
-        # Timed pump window.
+        # A pump "session" is either timed (set by DEBUG_BCU_RPM) or
+        # pressure-targeted (set by DEBUG_BCU_RPM_UNTIL_PRESSURE). Both share
+        # _held_rpm + _pump_deadline_s; the pressure variant additionally
+        # holds _target_pressure_pa. The two modes are mutually exclusive --
+        # arming either replaces the other -- and _clear_pump_state() drops
+        # them as a unit so the invariant survives every stop path.
         self._held_rpm: int = 0
         self._pump_deadline_s: float | None = None
+        self._target_pressure_pa: int | None = None
         # Latched valve bitmask. None means we don't own /bcu/valves (depth_node
         # has it); an int means we're holding that mask.
         self._valve_mask: int | None = None
@@ -115,6 +141,9 @@ class BcuDebugNode(Node):
         self._emergency_timeout_warned = False
         # Latest external pressure as gauge Pa; None until the first reading.
         self._gauge_pa: float | None = None
+        # Latest tank pressure in absolute Pa; None until the first reading.
+        # Drives the stop check for the pressure-targeted pump mode.
+        self._tank_pa: float | None = None
         # Whether the operator slider currently has us in manual mode.
         self._manual_override = False
 
@@ -132,8 +161,7 @@ class BcuDebugNode(Node):
             # Drop any held pump/valve state and zero the motor once so we
             # leave a clean wire; emergency is left untouched (it ignores the
             # gate and the UI keeps the override up while surfacing).
-            self._held_rpm = 0
-            self._pump_deadline_s = None
+            self._clear_pump_state()
             self._valve_mask = None
             self._publish_rpm(0)
         self.get_logger().info(
@@ -144,6 +172,12 @@ class BcuDebugNode(Node):
     def _on_pressure(self, msg: Int32) -> None:
         # EXTERNAL_PRESSURE is absolute Pa; the surface check works in gauge.
         self._gauge_pa = gauge_pressure_pa(float(msg.data))
+
+    def _on_tank_pressure(self, msg: Int32) -> None:
+        # BCU_PRESSURE is the absolute tank pressure in Pa. We just cache it;
+        # the stop check runs in _on_tick alongside the deadline check so the
+        # decision is on the same heartbeat as the RPM re-publish.
+        self._tank_pa = float(msg.data)
 
     def _on_rpm_cmd(self, msg: BcuPumpCommand) -> None:
         if self._emergency:
@@ -158,14 +192,71 @@ class BcuDebugNode(Node):
         duration = _clamp_duration(float(msg.duration_s))
         if duration == 0.0:
             # Explicit stop: zero the motor and clear the window.
-            self._held_rpm = 0
-            self._pump_deadline_s = None
+            self._clear_pump_state()
             self._publish_rpm(0)
             return
 
+        # New timed window supersedes any pressure-targeted session.
+        self._clear_pump_state()
         self._held_rpm = int(msg.rpm)
         self._pump_deadline_s = self._now_s() + duration
         if self._held_rpm != 0 and not self._valve1_open():
+            self.get_logger().warn(
+                f"pumping at {self._held_rpm} rpm with valve 1 not commanded "
+                "open -- open valve 1 (motor way) to carry the flow"
+            )
+        self._publish_rpm(self._held_rpm)
+
+    def _on_rpm_until_pressure_cmd(self, msg: BcuPumpUntilPressureCommand) -> None:
+        if self._emergency:
+            self.get_logger().warn(
+                "pump-until-pressure ignored -- emergency surface active"
+            )
+            return
+        if not self._manual_override:
+            self.get_logger().warn(
+                "pump-until-pressure ignored -- manual override is off "
+                "(depth_node owns the BCU)"
+            )
+            return
+
+        rpm = int(msg.rpm)
+        target = int(msg.target_pressure_pa)
+
+        if rpm == 0:
+            # Treat as explicit stop, same as duration=0 on the timed command.
+            self._clear_pump_state()
+            self._publish_rpm(0)
+            return
+
+        if self._tank_pa is None:
+            self.get_logger().warn(
+                "pump-until-pressure ignored -- no tank-pressure sample yet "
+                "(waiting on /bcu/pressure)"
+            )
+            return
+
+        # Refuse to pump if the tank is already past the target in the direction
+        # this RPM would push -- it would just hit the safety floor doing nothing.
+        already_past = (rpm > 0 and self._tank_pa <= float(target)) or (
+            rpm < 0 and self._tank_pa >= float(target)
+        )
+        if already_past:
+            self.get_logger().warn(
+                f"pump-until-pressure refused -- tank already at "
+                f"{self._tank_pa:.0f} Pa, past target {target} Pa for "
+                f"rpm={rpm}; not pumping"
+            )
+            self._clear_pump_state()
+            self._publish_rpm(0)
+            return
+
+        # New pressure-targeted session supersedes any timed window.
+        self._clear_pump_state()
+        self._held_rpm = rpm
+        self._target_pressure_pa = target
+        self._pump_deadline_s = self._now_s() + MAX_PUMP_S
+        if not self._valve1_open():
             self.get_logger().warn(
                 f"pumping at {self._held_rpm} rpm with valve 1 not commanded "
                 "open -- open valve 1 (motor way) to carry the flow"
@@ -204,8 +295,7 @@ class BcuDebugNode(Node):
         elif not engage and self._emergency:
             self._emergency = False
             self._emergency_deadline_s = None
-            self._held_rpm = 0
-            self._pump_deadline_s = None
+            self._clear_pump_state()
             self._valve_mask = None
             self._publish_rpm(0)
             self._publish_valves(0)
@@ -225,11 +315,42 @@ class BcuDebugNode(Node):
         if not self._manual_override:
             return
 
-        # Expire the timed pump window, else re-assert the held RPM.
+        # Pump session bookkeeping. The pressure-target check runs first so
+        # the operator's stop condition wins over the safety floor on the same
+        # tick they coincide. Either stop reason clears the whole session so
+        # the next callback (timed or targeted) starts from a clean slate.
         if self._pump_deadline_s is not None:
-            if now >= self._pump_deadline_s:
-                self._held_rpm = 0
-                self._pump_deadline_s = None
+            target_reached = (
+                self._target_pressure_pa is not None
+                and self._tank_pa is not None
+                and (
+                    (
+                        self._held_rpm > 0
+                        and self._tank_pa <= float(self._target_pressure_pa)
+                    )
+                    or (
+                        self._held_rpm < 0
+                        and self._tank_pa >= float(self._target_pressure_pa)
+                    )
+                )
+            )
+            if target_reached:
+                self.get_logger().info(
+                    f"tank pressure target reached "
+                    f"({self._tank_pa:.0f} Pa, target {self._target_pressure_pa} Pa) "
+                    "-- pump stopped"
+                )
+                self._clear_pump_state()
+                self._publish_rpm(0)
+            elif now >= self._pump_deadline_s:
+                if self._target_pressure_pa is not None:
+                    self.get_logger().warn(
+                        f"pump-until-pressure hit the {MAX_PUMP_S:.0f} s safety "
+                        f"cap before reaching target {self._target_pressure_pa} Pa "
+                        f"(tank={self._tank_pa if self._tank_pa is not None else 'n/a'} Pa) "
+                        "-- pump stopped"
+                    )
+                self._clear_pump_state()
                 self._publish_rpm(0)
             else:
                 self._publish_rpm(self._held_rpm)
@@ -268,6 +389,17 @@ class BcuDebugNode(Node):
         self._publish_valves(VALVE1_OPEN_MASK)
 
     # --- helpers --------------------------------------------------------
+
+    def _clear_pump_state(self) -> None:
+        """Drop any held pump session (timed or pressure-targeted).
+
+        Does not publish; callers decide whether to also push a zero RPM
+        sample on the wire (most do) or just reset bookkeeping (e.g. when
+        the very next line is going to publish a new RPM anyway).
+        """
+        self._held_rpm = 0
+        self._pump_deadline_s = None
+        self._target_pressure_pa = None
 
     def _now_s(self) -> float:
         return self.get_clock().now().nanoseconds * 1e-9

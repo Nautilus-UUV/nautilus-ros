@@ -1,16 +1,25 @@
-"""ROS 2 -> STM32 serial bridge for the BCU motor.
+"""ROS 2 <-> STM32 serial bridge.
 
-The STM32 owns the BCU motor driver and polls us over UART for an updated
-RPM setpoint. We subscribe to ``BCU_RPM`` (Int16, signed), cache the most
-recent value, and ship it back down the wire every time the STM sends us
-anything. The STM's reply is a small status byte we don't interpret yet --
-its arrival is purely the cue to push our latest setpoint.
+The STM32 owns the BCU motor driver and a clutch of housekeeping sensors
+(pressures, temperatures, leak detect). It streams sensor frames up the
+UART and treats every frame from us as a cue to take the latest RPM
+setpoint -- so this node both pumps inbound telemetry out onto ROS topics
+and ships the most recent BCU_RPM back down on each tick.
 
 Wire format (matches the STM firmware's switch on variable id):
 
-    0xAA  | var_id (>H) | length (B) | payload (little-endian)
+    0xAA | var_id (>H) | length (B) | payload (little-endian)
 
-For BCU RPM: var_id = 0x2102, length = 2, payload = ``struct.pack('<h', rpm)``.
+Outbound (Pi -> STM):
+    0x2102  BCU_RPM        int16   motor RPM setpoint
+
+Inbound (STM -> Pi):
+    0x2400  EXT_PRESSURE   uint16  absolute, 100 Pa / LSB
+    0x2401  TANK_PRESSURE  uint16  gauge relative to hull, 100 Pa / LSB
+    0x2402  INT_PRESSURE   uint16  absolute, 100 Pa / LSB
+    0x2410  EXT_TEMP       int16   0.01 °C / LSB
+    0x2411  INT_TEMP       int16   0.01 °C / LSB
+    0x2420  LEAKS          uint8   bitmask; any nonzero bit = water detected
 
 Until the depth PID has published a single RPM we send 0 -- safe default,
 keeps the motor off if the STM polls before the control stack is up.
@@ -22,16 +31,38 @@ import rclpy
 import serial
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+from sensor_msgs.msg import Temperature
+from std_msgs.msg import Int32, UInt8MultiArray
 
-from py_pkg.uuv_ros_core import UUVTopics, create_subscription_for_topic
+from py_pkg.robot_specs import STM_PRESSURE_LSB_PA, STM_TEMPERATURE_LSB_C
+from py_pkg.uuv_ros_core import (
+    UUVTopics,
+    create_publisher_for_topic,
+    create_subscription_for_topic,
+)
 
 SYNC_BYTE = b"\xaa"
 HEADER_FMT = ">HB"  # big-endian uint16 var_id, uint8 length
 HEADER_LEN = struct.calcsize(HEADER_FMT)
 
 BCU_RPM_VAR_ID = 0x2102
-BCU_RPM_PAYLOAD_FMT = "<h"  # little-endian signed 16-bit
-BCU_RPM_PAYLOAD_LEN = struct.calcsize(BCU_RPM_PAYLOAD_FMT)
+EXT_PRESSURE_VAR_ID = 0x2400  # <H — uint16
+TANK_PRESSURE_VAR_ID = 0x2401  # <H — uint16  → BCU_PRESSURE
+INT_PRESSURE_VAR_ID = 0x2402  # <H — uint16
+EXT_TEMP_VAR_ID = 0x2410  # <h — int16
+INT_TEMP_VAR_ID = 0x2411  # <h — int16
+LEAKS_VAR_ID = 0x2420  # <B — uint8
+
+PAYLOAD_FMT = "<h"  # little-endian signed 16-bit
+BCU_RPM_PAYLOAD_LEN = struct.calcsize(PAYLOAD_FMT)
+
+# Inbound payload shapes -- size-checked before each unpack.
+UINT16_FMT = "<H"
+INT16_FMT = "<h"
+UINT8_FMT = "<B"
+UINT16_LEN = struct.calcsize(UINT16_FMT)
+INT16_LEN = struct.calcsize(INT16_FMT)
+UINT8_LEN = struct.calcsize(UINT8_FMT)
 
 
 class STMComNode(Node):
@@ -61,6 +92,25 @@ class STMComNode(Node):
         create_subscription_for_topic(self, UUVTopics.BCU_RPM, self._on_rpm)
         self.create_timer(poll_period, self._poll_serial)
 
+        # ==========================
+        # --- SENSOR DATA
+        self._ext_pressure_pub = create_publisher_for_topic(
+            self, UUVTopics.EXTERNAL_PRESSURE
+        )
+        self._tank_pressure_pub = create_publisher_for_topic(
+            self, UUVTopics.BCU_PRESSURE
+        )
+        self._int_pressure_pub = create_publisher_for_topic(
+            self, UUVTopics.INTERNAL_PRESSURE
+        )
+        self._ext_temp_pub = create_publisher_for_topic(
+            self, UUVTopics.EXTERNAL_TEMPERATURE
+        )
+        self._int_temp_pub = create_publisher_for_topic(
+            self, UUVTopics.INTERNAL_TEMPERATURE
+        )
+        self._leak_pub = create_publisher_for_topic(self, UUVTopics.INTERNAL_LEAK)
+
     def _on_rpm(self, msg) -> None:
         self._latest_rpm = int(msg.data)
 
@@ -85,7 +135,7 @@ class STMComNode(Node):
 
             if len(self._rx_buf) < 1 + HEADER_LEN:
                 return  # wait for the rest of the header
-            _var_id, length = struct.unpack(
+            var_id, length = struct.unpack(
                 HEADER_FMT, self._rx_buf[1 : 1 + HEADER_LEN]
             )
 
@@ -93,14 +143,69 @@ class STMComNode(Node):
             if len(self._rx_buf) < frame_len:
                 return  # wait for the rest of the payload
 
+            payload = bytes(self._rx_buf[1 + HEADER_LEN : frame_len])
             del self._rx_buf[:frame_len]
+
+            self._dispatch(var_id, payload)
+            # Every framed message from the STM is also the poll cue for
+            # us to push the latest RPM setpoint back down.
             self._send_rpm()
+
+    def _dispatch(self, var_id: int, payload: bytes) -> None:
+        if var_id == EXT_PRESSURE_VAR_ID:
+            self._publish_pressure(self._ext_pressure_pub, payload)
+        elif var_id == TANK_PRESSURE_VAR_ID:
+            # Gauge relative to hull, so on a sealed tank at hull pressure
+            # it sits near zero until the BCU actually pumps. Forward it
+            # anyway so BCU_PRESSURE stays populated for liveness.
+            self._publish_pressure(self._tank_pressure_pub, payload)
+        elif var_id == INT_PRESSURE_VAR_ID:
+            self._publish_pressure(self._int_pressure_pub, payload)
+        elif var_id == EXT_TEMP_VAR_ID:
+            self._publish_temperature(self._ext_temp_pub, payload)
+        elif var_id == INT_TEMP_VAR_ID:
+            self._publish_temperature(self._int_temp_pub, payload)
+        elif var_id == LEAKS_VAR_ID:
+            self._publish_leaks(payload)
+        else:
+            self.get_logger().debug(
+                f"unknown var_id=0x{var_id:04x} len={len(payload)}"
+            )
+
+    def _publish_pressure(self, pub, payload: bytes) -> None:
+        if len(payload) != UINT16_LEN:
+            self.get_logger().warning(
+                f"pressure payload wrong length: {len(payload)}"
+            )
+            return
+        (raw,) = struct.unpack(UINT16_FMT, payload)
+        pub.publish(Int32(data=raw * STM_PRESSURE_LSB_PA))
+
+    def _publish_temperature(self, pub, payload: bytes) -> None:
+        if len(payload) != INT16_LEN:
+            self.get_logger().warning(
+                f"temperature payload wrong length: {len(payload)}"
+            )
+            return
+        (raw,) = struct.unpack(INT16_FMT, payload)
+        msg = Temperature()
+        msg.temperature = float(raw) * STM_TEMPERATURE_LSB_C
+        pub.publish(msg)
+
+    def _publish_leaks(self, payload: bytes) -> None:
+        if len(payload) != UINT8_LEN:
+            self.get_logger().warning(f"leak payload wrong length: {len(payload)}")
+            return
+        (raw,) = struct.unpack(UINT8_FMT, payload)
+        self._leak_pub.publish(UInt8MultiArray(data=[raw]))
+        if raw:
+            self.get_logger().warning(f"leak detected, bitmask=0x{raw:02x}")
 
     def _send_rpm(self) -> None:
         packet = (
             SYNC_BYTE
             + struct.pack(HEADER_FMT, BCU_RPM_VAR_ID, BCU_RPM_PAYLOAD_LEN)
-            + struct.pack(BCU_RPM_PAYLOAD_FMT, self._latest_rpm)
+            + struct.pack(PAYLOAD_FMT, self._latest_rpm)
         )
         self._ser.write(packet)
         self.get_logger().debug(f"tx bcu rpm: {self._latest_rpm}")

@@ -77,3 +77,18 @@ ACU_ROLL_MAX_EFFORT_NM = 10.0
 # Both the producer (pid/acu_node.py) and the HAL bridge
 # (nautilus_hal/acu_sim_bridge.py) read this constant.
 ACU_ROLL_CDEG_PER_DEG = 100
+
+# ---------------------------------------------------------------------------
+# STM32 UART wire scales
+# ---------------------------------------------------------------------------
+# Per-LSB resolution of the housekeeping telemetry the STM streams up over
+# UART. Fixed by the firmware's variable encoding -- if the STM-side scale
+# changes, this constant moves in lockstep. Consumed by stm_com_node when
+# converting raw words into the absolute-Pa / °C / bitmask contracts of
+# the matching uuv_ros_core topics.
+
+# Pressures (var_id 0x2400 ext, 0x2401 tank, 0x2402 int) are uint16 mbar.
+STM_PRESSURE_LSB_PA = 100
+
+# Temperatures (var_id 0x2410 ext, 0x2411 int) are int16 centi-°C.
+STM_TEMPERATURE_LSB_C = 0.01

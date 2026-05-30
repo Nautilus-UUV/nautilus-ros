@@ -60,33 +60,20 @@ class UUVTopics:
     # CAN communication
     CAN_OUT = "/can/out"
 
-    # Debug / bench overrides (manual injection points; bypass closed-loop control)
+    # Debug / bench overrides
     DEBUG_BCU_RPM = "/debug/bcu/rpm"
-    # Manual BCU valve state, full bitmask (bit0=v1, bit1=v2). Owned by
-    # bcu_debug while a valve command is active.
+    DEBUG_BCU_RPM_UNTIL_PRESSURE = "/debug/bcu/rpm_until_pressure"
     DEBUG_BCU_VALVES = "/debug/bcu/valves"
-    # Manual ACU setpoints, same wire formats as the actuator topics they
-    # feed: pitch in mm, roll in centidegrees. Held by acu_debug.
     DEBUG_ACU_PITCH = "/debug/acu/pitch"
     DEBUG_ACU_ROLL = "/debug/acu/roll"
-    # Blow ballast and surface now. True engages (max inflate until at the
-    # surface); False cancels. The operator UI raises the override first.
     DEBUG_EMERGENCY_SURFACE = "/debug/emergency_surface"
 
     # Control-graph coordination
-    # Operator-owned manual-mode flag: the mission UI raises it (through the
-    # MQTT bridge) when entering manual control. While True, depth_node stands
-    # down on /bcu/rpm + /bcu/valves and bcu_debug is the only BCU driver;
-    # while False, bcu_debug stays silent and depth_node owns the wire.
     CONTROL_MANUAL_OVERRIDE = "/control/manual_override"
     # ACU twin of CONTROL_MANUAL_OVERRIDE. Kept separate so the two loops can
-    # be silenced independently if ever needed; the operator UI drives both
-    # from one slider. acu_node honours it; acu_debug gates on it.
+    # be silenced independently if ever needed
     CONTROL_ACU_OVERRIDE = "/control/acu_override"
-    # One-shot "drop everything and go fresh" signal. depth_node / acu_node
-    # clear their target back to None and wipe controller state (integrators,
-    # filters, publish guards) so they sit exactly as they did at boot before
-    # any mission. pathfinding emits it when the Do-Nothing mission starts.
+    # Put ACU and BCU in initial state
     CONTROL_RESET = "/control/reset"
 
     # System status

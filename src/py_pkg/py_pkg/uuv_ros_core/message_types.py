@@ -13,7 +13,11 @@ Example:
 from can_msgs.msg import Frame
 from diagnostic_msgs.msg import DiagnosticArray
 from geometry_msgs.msg import Pose
-from nautilus_msgs.msg import BcuPumpCommand, MissionCommand
+from nautilus_msgs.msg import (
+    BcuPumpCommand,
+    BcuPumpUntilPressureCommand,
+    MissionCommand,
+)
 from sensor_msgs.msg import Imu, Temperature
 from std_msgs.msg import (
     Bool,
@@ -57,6 +61,7 @@ TOPIC_MESSAGE_MAP = {
     UUVTopics.COMMAND: String,
     UUVTopics.CAN_OUT: Frame,
     UUVTopics.DEBUG_BCU_RPM: BcuPumpCommand,
+    UUVTopics.DEBUG_BCU_RPM_UNTIL_PRESSURE: BcuPumpUntilPressureCommand,
     # Same wire types as the actuator topics these debug injection points feed.
     UUVTopics.DEBUG_BCU_VALVES: UInt8,
     UUVTopics.DEBUG_ACU_PITCH: Int16,
