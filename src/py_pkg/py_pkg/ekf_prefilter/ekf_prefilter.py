@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import rclpy
-from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from sensor_msgs.msg import Imu
 
@@ -8,6 +7,7 @@ from py_pkg.uuv_ros_core.node_factory import (
     create_publisher_for_topic,
     create_subscription_for_topic,
 )
+from py_pkg.uuv_ros_core.node_runtime import spin_node
 from py_pkg.uuv_ros_core.topics import UUVTopics
 
 
@@ -90,17 +90,9 @@ class EkfPrefilter(Node):
 
 
 def main():
-    # Catch SIGINT/SIGTERM so the process exits 0 instead of 1 on Ctrl-C —
-    # otherwise launch_testing's exit-code check intermittently fails.
     rclpy.init()
     node = EkfPrefilter()
-    try:
-        rclpy.spin(node)
-    except (KeyboardInterrupt, ExternalShutdownException):
-        pass
-    finally:
-        node.destroy_node()
-        rclpy.try_shutdown()
+    spin_node(node)
 
 
 if __name__ == "__main__":

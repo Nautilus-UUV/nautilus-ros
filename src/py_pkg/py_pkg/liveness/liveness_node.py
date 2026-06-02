@@ -17,7 +17,6 @@ from dataclasses import dataclass
 
 import rclpy
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus
-from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 
 from py_pkg.liveness.watchdog import LivenessWatchdog
@@ -25,6 +24,7 @@ from py_pkg.uuv_ros_core import (
     UUVTopics,
     create_publisher_for_topic,
     create_subscription_for_topic,
+    spin_node,
 )
 
 
@@ -115,13 +115,7 @@ class LivenessNode(Node):
 def main(args=None) -> None:
     rclpy.init(args=args)
     node = LivenessNode()
-    try:
-        rclpy.spin(node)
-    except (KeyboardInterrupt, ExternalShutdownException):
-        pass
-    finally:
-        node.destroy_node()
-        rclpy.try_shutdown()
+    spin_node(node)
 
 
 if __name__ == "__main__":

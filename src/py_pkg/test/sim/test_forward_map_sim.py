@@ -72,7 +72,7 @@ def generate_forward_map_scenario(drag_multiplier: float) -> str:
     knobs["C_d_c"] *= drag_multiplier
     knobs["C_p_base"] *= drag_multiplier
     
-    hydro_spec = forward_map(knobs, jitter_seed=0, jitter_sigma=0.0)
+    hydro_spec = forward_map(knobs)
     
     if "rig" not in scenario:
         scenario["rig"] = {}

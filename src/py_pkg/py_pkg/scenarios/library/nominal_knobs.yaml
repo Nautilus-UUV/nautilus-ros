@@ -6,6 +6,10 @@ fluid_constants:
   nu: 1.05e-6
   u_ref: 0.3
 
+# Structural constants: fixed geometry read from the SDF, not sampled.
+structural_constants:
+  z_r: 0.119  # rudder root z-offset from the roll axis (model.sdf joint pose)
+
 physics_knobs:
   L: 1.50
   D: 0.15

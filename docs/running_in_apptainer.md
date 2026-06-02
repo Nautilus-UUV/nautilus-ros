@@ -2,6 +2,14 @@
 
 ## Sample Coefficients
 
+PID Search:
+```bash
+python3 src/nautilus-ros/scripts/lhs_sample.py \
+  --spec src/nautilus-ros/scripts/sweeps/pid_calibration.yaml \
+  --out ./scenarios --name nominal_pid_sweep
+```
+
+Physics:
 ```bash
 ./src/nautilus-ros/scripts/lhs_sample.py \
   --spec src/nautilus-ros/scripts/sweeps/bcu_hydro_coarse.yaml \

@@ -31,10 +31,9 @@ import socket
 import struct
 
 import rclpy
-from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 
-from py_pkg.uuv_ros_core import UUVTopics, create_subscription_for_topic
+from py_pkg.uuv_ros_core import UUVTopics, create_subscription_for_topic, spin_node
 
 # <H h h B B> -> pitch(u16), bcu(i16), roll(i16), valves(u8), reserved(u8).
 PDO_FMT = "<HhhBB"
@@ -138,13 +137,7 @@ class CANComNode(Node):
 def main(args=None) -> None:
     rclpy.init(args=args)
     node = CANComNode()
-    try:
-        rclpy.spin(node)
-    except (KeyboardInterrupt, ExternalShutdownException):
-        pass
-    finally:
-        node.destroy_node()
-        rclpy.try_shutdown()
+    spin_node(node)
 
 
 if __name__ == "__main__":

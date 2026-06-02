@@ -25,11 +25,10 @@ without that side effect.
 
 import rclpy
 from nautilus_msgs.msg import MissionCommand
-from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from std_msgs.msg import String
 
-from py_pkg.uuv_ros_core import UUVTopics, create_publisher_for_topic
+from py_pkg.uuv_ros_core import UUVTopics, create_publisher_for_topic, spin_node
 
 
 class AutoMission(Node):
@@ -89,13 +88,7 @@ class AutoMission(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = AutoMission()
-    try:
-        rclpy.spin(node)
-    except (KeyboardInterrupt, ExternalShutdownException):
-        pass
-    finally:
-        node.destroy_node()
-        rclpy.try_shutdown()
+    spin_node(node)
 
 
 if __name__ == "__main__":

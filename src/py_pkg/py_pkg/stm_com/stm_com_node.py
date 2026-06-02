@@ -20,10 +20,9 @@ import struct
 
 import rclpy
 import serial
-from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 
-from py_pkg.uuv_ros_core import UUVTopics, create_subscription_for_topic
+from py_pkg.uuv_ros_core import UUVTopics, create_subscription_for_topic, spin_node
 
 SYNC_BYTE = b"\xaa"
 HEADER_FMT = ">HB"  # big-endian uint16 var_id, uint8 length
@@ -116,13 +115,7 @@ class STMComNode(Node):
 def main(args=None) -> None:
     rclpy.init(args=args)
     node = STMComNode()
-    try:
-        rclpy.spin(node)
-    except (KeyboardInterrupt, ExternalShutdownException):
-        pass
-    finally:
-        node.destroy_node()
-        rclpy.try_shutdown()
+    spin_node(node)
 
 
 if __name__ == "__main__":

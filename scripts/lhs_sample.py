@@ -39,6 +39,7 @@ from scipy.stats import qmc
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src/py_pkg"))
 from py_pkg.scenarios.compile import forward_map
+from py_pkg.scenarios.spec.rig import FinAeroSpec, HydrodynamicsSpec
 
 SAMPLER_VERSION = "1.0.0"
 
@@ -169,6 +170,57 @@ def draw_samples(spec: SweepSpec) -> np.ndarray:
     return scaled
 
 
+def jitter_hydrodynamics(
+    spec: HydrodynamicsSpec, sigma: float, seed: int
+) -> HydrodynamicsSpec:
+    """Multiply each scalable coefficient by exp(N(0, sigma^2)).
+
+    This is the §12.7 isotropic off-manifold knob, deliberately kept *out* of
+    the deterministic `forward_map` and applied only here, for the FDI
+    training distribution. Geometry-exact slots are left untouched: fin
+    `area` stays exactly b*c, and the SDF-default stalls / a0 aren't jittered.
+    So only added mass, hull linear damping, and per-fin cla/cda/alpha_stall
+    move.
+    """
+    if sigma <= 0.0:
+        return spec
+    rng = np.random.default_rng(seed)
+
+    def n() -> float:
+        return math.exp(rng.normal(0.0, sigma))
+
+    # The 12 body coefficients are exactly the float-valued fields on the
+    # spec (the fins are sub-models, `knobs` is None), so we don't have to
+    # re-list their names here.
+    body = {
+        name: getattr(spec, name) * n()
+        for name in spec.model_fields
+        if isinstance(getattr(spec, name), float)
+    }
+
+    def jit_fin(fin: FinAeroSpec, cla_n: float, cda_n: float, stall_n: float) -> FinAeroSpec:
+        return fin.model_copy(
+            update={
+                "cla": fin.cla * cla_n,
+                "cda": fin.cda * cda_n,
+                "alpha_stall": fin.alpha_stall * stall_n,
+            }
+        )
+
+    # The horizontal fins are a mirror pair (identical in the canonical SDF
+    # and in the deterministic map), so they share one draw per coefficient —
+    # jitter must not invent a left/right asymmetry. The rudder draws its own.
+    h_cla, h_cda, h_stall = n(), n(), n()
+    return spec.model_copy(
+        update={
+            **body,
+            "left_fin": jit_fin(spec.left_fin, h_cla, h_cda, h_stall),
+            "right_fin": jit_fin(spec.right_fin, h_cla, h_cda, h_stall),
+            "top_rudder": jit_fin(spec.top_rudder, n(), n(), n()),
+        }
+    )
+
+
 def render_scenario(
     base: dict, spec: SweepSpec, row: Sequence[float], idx: int
 ) -> dict:
@@ -186,11 +238,11 @@ def render_scenario(
             set_dotted(scenario, dim.path, float(value))
     elif spec.sampling_mode == "physics":
         knobs = {dim.path: float(value) for dim, value in zip(spec.dimensions, row)}
-        hydro_spec = forward_map(
-            knobs,
-            jitter_seed=scenario["seed"],
-            jitter_sigma=spec.isotropic_jitter_sigma,
-        )
+        hydro_spec = forward_map(knobs)
+        if spec.isotropic_jitter_sigma > 0.0:
+            hydro_spec = jitter_hydrodynamics(
+                hydro_spec, spec.isotropic_jitter_sigma, seed=scenario["seed"]
+            )
         if "rig" not in scenario:
             scenario["rig"] = {}
         scenario["rig"]["hydrodynamics"] = hydro_spec.model_dump()
