@@ -12,9 +12,11 @@ Wire format (matches the STM firmware's switch on variable id):
 
 Outbound (Pi -> STM):
     0x2102  BCU_RPM        int16   motor RPM setpoint
+    0x2106  VALVES_TARGET  uint8   desired valve bitmap (bit0=valve1, bit1=valve2)
 
 Inbound (STM -> Pi):
     0x2103  BCU_STATUS     int16   motor's currently reported RPM (~1 Hz)
+    0x2107  VALVES_STATUS  uint8   actual valve bitmap the firmware reports back
     0x2400  EXT_PRESSURE   uint16  absolute, 100 Pa / LSB
     0x2401  TANK_PRESSURE  uint16  gauge relative to hull, 100 Pa / LSB
     0x2402  INT_PRESSURE   uint16  absolute, 100 Pa / LSB
@@ -22,8 +24,9 @@ Inbound (STM -> Pi):
     0x2411  INT_TEMP       int16   0.01 °C / LSB
     0x2420  LEAKS          uint8   bitmask; any nonzero bit = water detected
 
-Until the depth PID has published a single RPM we send 0 -- safe default,
-keeps the motor off if the STM polls before the control stack is up.
+Until the depth PID has published a single RPM (and the BCU a valve bitmap)
+we send 0 -- safe default: motor off, valves closed, if the STM polls before
+the control stack is up.
 """
 
 import struct
@@ -33,7 +36,7 @@ import serial
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from sensor_msgs.msg import Temperature
-from std_msgs.msg import Int16, Int32, UInt8MultiArray
+from std_msgs.msg import Int16, Int32, UInt8, UInt8MultiArray
 
 from py_pkg.robot_specs import STM_PRESSURE_LSB_PA, STM_TEMPERATURE_LSB_C
 from py_pkg.uuv_ros_core import (
@@ -47,6 +50,8 @@ HEADER_FMT = ">HB"  # big-endian uint16 var_id, uint8 length
 HEADER_LEN = struct.calcsize(HEADER_FMT)
 
 BCU_RPM_VAR_ID = 0x2102
+VALVES_TARGET_VAR_ID = 0x2106  # <B — uint8, us → STM, desired valve bitmap
+VALVES_STATUS_VAR_ID = 0x2107  # <B — uint8, STM → us, actual valve bitmap
 BCU_STATUS_VAR_ID = 0x2103  # <h — int16, STM → us, ~1 Hz measured motor RPM
 EXT_PRESSURE_VAR_ID = 0x2400  # <H — uint16
 TANK_PRESSURE_VAR_ID = 0x2401  # <H — uint16  → BCU_PRESSURE
@@ -89,9 +94,13 @@ class STMComNode(Node):
         self.get_logger().info(f"stm_com opened {port} @ {baud}")
 
         self._latest_rpm: int = 0
+        # Valve bitmap we beat down to the STM (bit0=valve1, bit1=valve2; 1=open).
+        # 0 until the BCU first commands -- safe default, valves closed.
+        self._latest_valves: int = 0
         self._rx_buf = bytearray()
 
         create_subscription_for_topic(self, UUVTopics.BCU_RPM, self._on_rpm)
+        create_subscription_for_topic(self, UUVTopics.BCU_VALVES, self._on_valves)
         self.create_timer(poll_period, self._poll_serial)
 
         # ==========================
@@ -118,9 +127,18 @@ class STMComNode(Node):
         self._bcu_feedback_rpm_pub = create_publisher_for_topic(
             self, UUVTopics.BCU_FEEDBACK_RPM
         )
+        # Actual valve bitmap the STM reports on 0x2107. Same topic the sim HAL
+        # bridge echoes, so liveness + UI see the same shape sim vs hardware.
+        self._bcu_feedback_valves_pub = create_publisher_for_topic(
+            self, UUVTopics.BCU_FEEDBACK_VALVES
+        )
 
     def _on_rpm(self, msg) -> None:
         self._latest_rpm = int(msg.data)
+
+    def _on_valves(self, msg) -> None:
+        # Mask to a byte like can_com does; the firmware re-applies VALVE_MASK.
+        self._latest_valves = int(msg.data) & 0xFF
 
     def _poll_serial(self) -> None:
         # Drain whatever's queued in one shot. STM frames are tiny (4-5 B)
@@ -156,8 +174,8 @@ class STMComNode(Node):
 
             self._dispatch(var_id, payload)
             # Every framed message from the STM is also the poll cue for
-            # us to push the latest RPM setpoint back down.
-            self._send_rpm()
+            # us to push the latest actuator setpoints back down.
+            self._send_setpoints()
 
     def _dispatch(self, var_id: int, payload: bytes) -> None:
         if var_id == EXT_PRESSURE_VAR_ID:
@@ -177,6 +195,8 @@ class STMComNode(Node):
             self._publish_leaks(payload)
         elif var_id == BCU_STATUS_VAR_ID:
             self._publish_bcu_rpm_feedback(payload)
+        elif var_id == VALVES_STATUS_VAR_ID:
+            self._publish_valves_feedback(payload)
         else:
             self.get_logger().debug(
                 f"unknown var_id=0x{var_id:04x} len={len(payload)}"
@@ -211,6 +231,15 @@ class STMComNode(Node):
         (rpm,) = struct.unpack(INT16_FMT, payload)
         self._bcu_feedback_rpm_pub.publish(Int16(data=rpm))
 
+    def _publish_valves_feedback(self, payload: bytes) -> None:
+        if len(payload) != UINT8_LEN:
+            self.get_logger().warning(
+                f"valve status payload wrong length: {len(payload)}"
+            )
+            return
+        (bitmap,) = struct.unpack(UINT8_FMT, payload)
+        self._bcu_feedback_valves_pub.publish(UInt8(data=bitmap))
+
     def _publish_leaks(self, payload: bytes) -> None:
         if len(payload) != UINT8_LEN:
             self.get_logger().warning(f"leak payload wrong length: {len(payload)}")
@@ -220,6 +249,12 @@ class STMComNode(Node):
         if raw:
             self.get_logger().warning(f"leak detected, bitmask=0x{raw:02x}")
 
+    def _send_setpoints(self) -> None:
+        # The STM treats every frame from us as a cue to latch the latest
+        # setpoints, so we push RPM and valves together on each poll cue.
+        self._send_rpm()
+        self._send_valves()
+
     def _send_rpm(self) -> None:
         packet = (
             SYNC_BYTE
@@ -228,6 +263,15 @@ class STMComNode(Node):
         )
         self._ser.write(packet)
         self.get_logger().debug(f"tx bcu rpm: {self._latest_rpm}")
+
+    def _send_valves(self) -> None:
+        packet = (
+            SYNC_BYTE
+            + struct.pack(HEADER_FMT, VALVES_TARGET_VAR_ID, UINT8_LEN)
+            + struct.pack(UINT8_FMT, self._latest_valves)
+        )
+        self._ser.write(packet)
+        self.get_logger().debug(f"tx valves: {self._latest_valves:#04x}")
 
     def destroy_node(self) -> bool:
         try:
