@@ -128,6 +128,35 @@ class TestStartRaceTolerance:
         h.spin_until(lambda: len(h.received_targets) >= 1, timeout=1.0)
         assert h.node._start_pending is False
 
+    def test_redelivered_path_does_not_unseat_running_mission(
+        self, pathfinding_node_harness
+    ):
+        # `/path` is latched, so the same MissionCommand can be redelivered on
+        # discovery re-matching. Once we're RUNNING, a duplicate must be a no-op:
+        # the original bug reloaded the mission, dropped back to LOADED and
+        # nulled `_mission_t0_s`, which silently stranded `_tick` so the glider
+        # got no setpoints and just drifted at spawn.
+        h = pathfinding_node_harness
+        h.publish_mission_command(TRIM, target_pressure_pa=50_000.0)
+        h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
+        h.spin_until(lambda: h.node._current_pressure_pa is not None, timeout=1.0)
+        h.publish_command("start")
+        h.spin_until(lambda: h.node._mode == "RUNNING", timeout=1.0)
+        t0_before = h.node._mission_t0_s
+        assert t0_before is not None
+
+        # Redeliver the identical mission, then keep feeding pressure so the
+        # timer has everything it needs to publish.
+        h.publish_mission_command(TRIM, target_pressure_pa=50_000.0)
+        before = len(h.received_targets)
+        for _ in range(8):
+            h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
+            h.spin_for(0.05)
+
+        assert h.node._mode == "RUNNING"
+        assert h.node._mission_t0_s == t0_before  # mission clock not reset
+        assert len(h.received_targets) > before  # setpoints still flowing
+
     def test_stop_clears_pending_start(self, pathfinding_node_harness):
         h = pathfinding_node_harness
         h.publish_command("start")

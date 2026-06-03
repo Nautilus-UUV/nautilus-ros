@@ -70,15 +70,19 @@ class PlantSpec(StrictModel):
 
 
 class FaultInjectorSpec(StrictModel):
-    """Per-injector knobs. Defaults match BaseFaultInjector hardcoded defaults."""
+    """Per-injector knobs for the monotonic degradation ladder.
 
-    probability_per_sec: float = 0.05
-    duration_sec: float = 5.0
-    # Degraded-state multiplier: BCU applies this to the RPM command.
-    # 0.5 = "produce half the commanded flow."
-    degraded_factor: float = 0.5
-    # Severe-state multiplier: 0.0 = "produce zero flow."
-    severe_factor: float = 0.0
+    The actuator walks down `num_levels` equal effectiveness steps
+    (100 % -> 0 %) and never recovers; each step is an independent
+    Poisson event with mean `mttf_sec`. Defaults are fault-free.
+    """
+
+    # Mean time between successive degradation steps (s). <= 0 disables
+    # faults entirely (the actuator stays at 100 % forever).
+    mttf_sec: float = 0.0
+    # Effectiveness ladder resolution: N steps from healthy (level 0,
+    # 100 %) to fully broken (level N, 0 %). 5 => 100/80/60/40/20/0.
+    num_levels: int = 5
 
 
 class FaultsSpec(StrictModel):

@@ -1,5 +1,5 @@
 description: "Coarse hyperbox sampling of physics knobs for hydrodynamics robustness evaluation"
-n_samples: 1024
+n_samples: 512
 seed: 420
 base_scenario: "nominal_with_hydrodynamics.yaml"
 sampling_mode: "physics"

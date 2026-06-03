@@ -67,6 +67,18 @@ class PathfindingNode(Node):
             self._handle_start()
 
     def _on_path(self, msg: MissionCommand) -> None:
+        # `/path` is latched (transient-local), so the same MissionCommand can be
+        # redelivered on discovery re-matching. Reloading unconditionally would
+        # knock a running mission back to LOADED and null `_mission_t0_s`, which
+        # then strands `_tick` (it only publishes while RUNNING) -- the glider
+        # never gets a setpoint and just drifts. Ignore a redelivery of the
+        # mission we're already loaded on / running.
+        if (
+            self._mission_cmd is not None
+            and msg.mission_id == self._mission_cmd.mission_id
+            and self._mode in ("LOADED", "RUNNING")
+        ):
+            return
         try:
             self._mission = create_mission(msg.mission_id)
         except ValueError as exc:

@@ -53,10 +53,9 @@ rig:
     bcu_motor_max_rpm: 4000
   faults:
     bcu_rpm:
-      probability_per_sec: 0.0
-      duration_sec: 10.0
-      degraded_factor: 0.5
-      severe_factor: 0.0
+      # Fault injection disabled (mttf_sec <= 0 never steps the ladder).
+      mttf_sec: 0.0
+      num_levels: 5
   bridges:
     bcu:
       publish_rate_hz: 10

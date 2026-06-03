@@ -5,5 +5,4 @@ seed: 2
 rig:
   faults:
     bcu_rpm:
-      probability_per_sec: 0.0
-      duration_sec: 0.0
+      mttf_sec: 0.0
