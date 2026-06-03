@@ -22,7 +22,7 @@ Physics:
 ```bash
 cd /home/$USER/dave_ws
 
-docker compose build   # ~10–20 min
+docker compose build   # ~5 min
 docker save -o dave_nautilus_image.tar dave_nautilus_image:latest
 apptainer build nautilus_sim.sif docker-archive://dave_nautilus_image.tar
 ```
@@ -60,16 +60,15 @@ All three arguments should be advertised.
 ### Physics Parameters with Failures
 
 
-
 ```bash
 ./src/nautilus-ros/scripts/run_sweep.py \
-      --scenarios-dir ./scenarios/bcu_hydro_coarse \
-      --sif nautilus_sim.sif \
-      --concurrency 8 \
-      --cpu-budget 0-31 \
-      --per-run-timeout 1200 \
-      --launch sawtooth_sim.launch.py \
-      --launch-args target_pressure_pa:=100000.0 angle_rad:=0.6109 n_resurfaces:=30
+  --scenarios-dir ./scenarios/bcu_fault_dataset \
+  --sif nautilus_sim.sif \
+  --concurrency 8 \
+  --cpu-budget 0-31 \
+  --per-run-timeout 6400 \
+  --launch sawtooth_sim.launch.py \
+  --launch-args target_pressure_pa:=100000.0 angle_rad:=0.6109 n_resurfaces:=30
 ```
 
 ### Visualization

@@ -1,0 +1,72 @@
+description: "We perturbe the physics coefficients together with the error rate to create a dataset for anomaly detection."
+n_samples: 128
+seed: 420
+base_scenario: "nominal_with_hydrodynamics.yaml"
+sampling_mode: "physics"
+isotropic_jitter_sigma: 0.05
+dimensions:
+  - path: L
+    distribution: loguniform
+    low: 1.470
+    high: 1.530
+  - path: D
+    distribution: loguniform
+    low: 0.1455
+    high: 0.1545
+  - path: nabla
+    distribution: loguniform
+    low: 0.01782
+    high: 0.01818
+  - path: b_f
+    distribution: loguniform
+    low: 0.3135
+    high: 0.3465
+  - path: c_f
+    distribution: loguniform
+    low: 0.2090
+    high: 0.2310
+  - path: x_f
+    distribution: loguniform
+    low: 0.6650
+    high: 0.7350
+  - path: b_r
+    distribution: loguniform
+    low: 0.2090
+    high: 0.2310
+  - path: c_r
+    distribution: loguniform
+    low: 0.1045
+    high: 0.1155
+  - path: x_r
+    distribution: loguniform
+    low: 0.89205
+    high: 0.98595
+  - path: t_over_c
+    distribution: loguniform
+    low: 0.0840
+    high: 0.1560
+  - path: alpha_stall_horiz
+    distribution: loguniform
+    low: 0.1360
+    high: 0.2040
+  - path: alpha_stall_rudder
+    distribution: loguniform
+    low: 0.1360
+    high: 0.2040
+  - path: C_d_c
+    distribution: loguniform
+    low: 0.9350
+    high: 1.2650
+  - path: one_plus_k
+    distribution: loguniform
+    low: 1.0200
+    high: 1.3800
+  - path: C_p_base
+    distribution: loguniform
+    low: 0.0560
+    high: 0.1040
+  - path: C_La_mult
+    distribution: loguniform
+    low: 0.8250
+    high: 1.3750
+  - { path: rig.faults.bcu_rpm.mttf_sec, distribution: loguniform, low: 1200.0, high: 1800.0 }

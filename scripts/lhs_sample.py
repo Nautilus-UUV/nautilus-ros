@@ -39,9 +39,15 @@ from scipy.stats import qmc
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src/py_pkg"))
 from py_pkg.scenarios.compile import forward_map
-from py_pkg.scenarios.spec.rig import FinAeroSpec, HydrodynamicsSpec
+from py_pkg.scenarios.spec.rig import FinAeroSpec, HydrodynamicsSpec, PhysicsKnobs
 
 SAMPLER_VERSION = "1.0.0"
+
+# The bare-name dimensions a "physics" sweep feeds to the deterministic
+# forward map. Any dimension whose path is *not* one of these is treated as a
+# plain scenario dot-path overlay (e.g. rig.faults.bcu_rpm.mttf_sec), so a
+# sweep can perturb the plant geometry and a scenario knob in one joint LHS.
+_PHYSICS_KNOB_FIELDS = frozenset(PhysicsKnobs.model_fields)
 
 SUPPORTED_DISTRIBUTIONS = ("uniform", "loguniform")
 
@@ -237,15 +243,22 @@ def render_scenario(
             # scalars don't end up serialized as `!!python/object/apply`.
             set_dotted(scenario, dim.path, float(value))
     elif spec.sampling_mode == "physics":
-        knobs = {dim.path: float(value) for dim, value in zip(spec.dimensions, row)}
+        # Split the row: bare PhysicsKnobs names drive the deterministic
+        # forward map; any dotted path is a plain scenario overlay, exactly as
+        # in lhs mode. This lets one joint LHS perturb the plant geometry *and*
+        # a scenario knob like the fault MTTF together.
+        knobs: dict[str, float] = {}
+        for dim, value in zip(spec.dimensions, row):
+            if dim.path in _PHYSICS_KNOB_FIELDS:
+                knobs[dim.path] = float(value)
+            else:
+                set_dotted(scenario, dim.path, float(value))
         hydro_spec = forward_map(knobs)
         if spec.isotropic_jitter_sigma > 0.0:
             hydro_spec = jitter_hydrodynamics(
                 hydro_spec, spec.isotropic_jitter_sigma, seed=scenario["seed"]
             )
-        if "rig" not in scenario:
-            scenario["rig"] = {}
-        scenario["rig"]["hydrodynamics"] = hydro_spec.model_dump()
+        scenario.setdefault("rig", {})["hydrodynamics"] = hydro_spec.model_dump()
     else:
         raise ValueError(f"Unsupported sampling_mode: {spec.sampling_mode}")
 
