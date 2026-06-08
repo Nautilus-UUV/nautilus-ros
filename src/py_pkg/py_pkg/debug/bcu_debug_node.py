@@ -65,6 +65,7 @@ from py_pkg.uuv_ros_core import (
     UUVTopics,
     create_publisher_for_topic,
     create_subscription_for_topic,
+    spin_node,
 )
 
 MAX_PUMP_S = 300.0
@@ -432,13 +433,7 @@ class BcuDebugNode(Node):
 def main(args=None) -> None:
     rclpy.init(args=args)
     node = BcuDebugNode()
-    try:
-        rclpy.spin(node)
-    except (KeyboardInterrupt, ExternalShutdownException):
-        pass
-    finally:
-        node.destroy_node()
-        rclpy.try_shutdown()
+    spin_node(node)
 
 
 if __name__ == "__main__":

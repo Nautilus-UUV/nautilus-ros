@@ -31,7 +31,6 @@ import math
 import rclpy
 from geometry_msgs.msg import Pose
 from rclpy.callback_groups import ReentrantCallbackGroup
-from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from std_msgs.msg import Bool, Empty, Int16, Int32
 
@@ -44,6 +43,7 @@ from py_pkg.uuv_ros_core import (
     UUVTopics,
     create_publisher_for_topic,
     create_subscription_for_topic,
+    spin_node,
 )
 
 
@@ -220,17 +220,9 @@ class ACUControlNode(Node):
 
 
 def main(args=None):
-    # Catch SIGINT/SIGTERM so the process exits 0 instead of 1 on Ctrl-C —
-    # otherwise launch_testing's exit-code check intermittently fails.
     rclpy.init(args=args)
     node = ACUControlNode()
-    try:
-        rclpy.spin(node)
-    except (KeyboardInterrupt, ExternalShutdownException):
-        pass
-    finally:
-        node.destroy_node()
-        rclpy.try_shutdown()
+    spin_node(node)
 
 
 if __name__ == "__main__":

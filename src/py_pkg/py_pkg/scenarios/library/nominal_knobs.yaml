@@ -1,0 +1,29 @@
+# Nominal operating point for the hydrodynamic forward map.
+# These values generate SDF coefficients that reproduce the canonical SDF.
+
+fluid_constants:
+  rho: 1025.0
+  nu: 1.05e-6
+  u_ref: 0.3
+
+# Structural constants: fixed geometry read from the SDF, not sampled.
+structural_constants:
+  z_r: 0.119  # rudder root z-offset from the roll axis (model.sdf joint pose)
+
+physics_knobs:
+  L: 1.50
+  D: 0.15
+  nabla: 0.018
+  b_f: 0.33
+  c_f: 0.22
+  x_f: 0.70
+  b_r: 0.22
+  c_r: 0.11
+  x_r: 0.939
+  t_over_c: 0.12
+  alpha_stall_horiz: 0.17
+  alpha_stall_rudder: 0.17
+  C_d_c: 1.10
+  one_plus_k: 1.20
+  C_p_base: 0.08
+  C_La_mult: 1.10

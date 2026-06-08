@@ -208,10 +208,14 @@ class SurfaceSimTest(unittest.TestCase):
         """SURFACE mission -> gauge pressure ~0, then mission completes."""
         startup_timeout_s = 60.0
         post_ready_settle_s = 2.0
-        # 5 m ascent (BCU-bladder rate-limited) + 10 s dwell + margin. The
-        # trim test budgets 120 s for ~1.5 m, so 120 s for ~10 m of ascent
-        # plus the dwell window is the conservative ballpark.
-        mission_duration_s = 120.0
+        # ~5 m ascent (BCU-bladder rate-limited) + 10 s surface dwell + margin.
+        # Spawn is z=-5 (~49 kPa gauge); the BCU surfaces at the bladder-limited
+        # rate measured in sim (~300-340 Pa/s, ~0.03 m/s), so gauge pressure
+        # crosses SURFACE_THRESHOLD_PA (5 kPa) ~150 s after `start`, and the
+        # dwell completes ~10 s after that. 220 s leaves comfortable margin on
+        # top of the ~160 s the full ascent + dwell actually needs. (The trim
+        # test only moves ~1.5 m, so its 120 s budget doesn't transfer here.)
+        mission_duration_s = 220.0
         drain_s = 2.0
         # Last 5 s of the mission window — the dwell guarantees the glider
         # has been at the surface for at least 10 s by then.

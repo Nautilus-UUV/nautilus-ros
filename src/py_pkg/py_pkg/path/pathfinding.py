@@ -12,7 +12,6 @@ at 10 Hz. `/command` (start/stop/abort) drives the state machine.
 import rclpy
 from geometry_msgs.msg import Pose
 from nautilus_msgs.msg import MissionCommand
-from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from std_msgs.msg import Empty, String
 
@@ -21,6 +20,7 @@ from ..uuv_ros_core import (
     UUVTopics,
     create_publisher_for_topic,
     create_subscription_for_topic,
+    spin_node,
 )
 from .missions import MissionProfile, MissionState, create_mission
 
@@ -67,6 +67,18 @@ class PathfindingNode(Node):
             self._handle_start()
 
     def _on_path(self, msg: MissionCommand) -> None:
+        # `/path` is latched (transient-local), so the same MissionCommand can be
+        # redelivered on discovery re-matching. Reloading unconditionally would
+        # knock a running mission back to LOADED and null `_mission_t0_s`, which
+        # then strands `_tick` (it only publishes while RUNNING) -- the glider
+        # never gets a setpoint and just drifts. Ignore a redelivery of the
+        # mission we're already loaded on / running.
+        if (
+            self._mission_cmd is not None
+            and msg.mission_id == self._mission_cmd.mission_id
+            and self._mode in ("LOADED", "RUNNING")
+        ):
+            return
         try:
             self._mission = create_mission(msg.mission_id)
         except ValueError as exc:
@@ -165,17 +177,9 @@ class PathfindingNode(Node):
 
 
 def main(args=None):
-    # Catch SIGINT/SIGTERM so the process exits 0 instead of 1 on Ctrl-C —
-    # otherwise launch_testing's exit-code check intermittently fails.
     rclpy.init(args=args)
     node = PathfindingNode()
-    try:
-        rclpy.spin(node)
-    except (KeyboardInterrupt, ExternalShutdownException):
-        pass
-    finally:
-        node.destroy_node()
-        rclpy.try_shutdown()
+    spin_node(node)
 
 
 if __name__ == "__main__":

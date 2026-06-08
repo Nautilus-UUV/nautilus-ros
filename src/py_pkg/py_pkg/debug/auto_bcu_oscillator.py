@@ -14,11 +14,10 @@ The override is dropped on shutdown so depth_node would resume cleanly.
 """
 
 import rclpy
-from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from std_msgs.msg import Bool, Int16
 
-from py_pkg.uuv_ros_core import UUVTopics, create_publisher_for_topic
+from py_pkg.uuv_ros_core import UUVTopics, create_publisher_for_topic, spin_node
 
 
 class AutoBcuOscillator(Node):
@@ -78,13 +77,7 @@ class AutoBcuOscillator(Node):
 def main(args=None) -> None:
     rclpy.init(args=args)
     node = AutoBcuOscillator()
-    try:
-        rclpy.spin(node)
-    except (KeyboardInterrupt, ExternalShutdownException):
-        pass
-    finally:
-        node.destroy_node()
-        rclpy.try_shutdown()
+    spin_node(node)
 
 
 if __name__ == "__main__":

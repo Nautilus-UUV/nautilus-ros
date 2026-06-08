@@ -33,7 +33,6 @@ import struct
 
 import rclpy
 import serial
-from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from sensor_msgs.msg import Temperature
 from std_msgs.msg import Int16, Int32, UInt8, UInt8MultiArray
@@ -47,6 +46,7 @@ from py_pkg.uuv_ros_core import (
     UUVTopics,
     create_publisher_for_topic,
     create_subscription_for_topic,
+    spin_node
 )
 
 SYNC_BYTE = b"\xaa"
@@ -288,13 +288,7 @@ class STMComNode(Node):
 def main(args=None) -> None:
     rclpy.init(args=args)
     node = STMComNode()
-    try:
-        rclpy.spin(node)
-    except (KeyboardInterrupt, ExternalShutdownException):
-        pass
-    finally:
-        node.destroy_node()
-        rclpy.try_shutdown()
+    spin_node(node)
 
 
 if __name__ == "__main__":
