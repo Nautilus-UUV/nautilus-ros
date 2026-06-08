@@ -2,6 +2,8 @@
 
 total runs: 125  (3 surface-floaters dropped)
 total dive hours: 222.47
+dive time per run: 1.78 h
+MTBF interval: 1200–1799 s
 
 | level | effectiveness | dive hours | % of dive hrs | runs reached |
 |------:|:-------------:|-----------:|--------------:|-------------:|

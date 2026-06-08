@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Iterable
 
 import numpy as np
+import yaml
 
 _TIMESTAMP_SUFFIX = re.compile(r"_\d{4}_\d{2}_\d{2}-\d{2}_\d{2}_\d{2}$")
 
@@ -128,3 +129,55 @@ def read_launch_args(sweep_dir: Path) -> dict[str, str]:
     return dict(
         tok.split(":=", 1) for tok in p.read_text().split() if ":=" in tok
     )
+
+
+def read_scenario_faults(
+    entry: RunEntry, *, sweep_dir: Path | None = None
+) -> dict[str, float] | None:
+    """The BCU fault-injector knobs a run was *initialised* with.
+
+    Reads `rig.faults.bcu_rpm` from the run's scenario YAML and returns
+    `{"mttf_sec": ..., "num_levels": ...}` — the configured mean time between
+    successive degradation steps, as opposed to the ladder actually realised in
+    the bag (`read_fault_levels`). `mttf_sec <= 0` means faults were disabled.
+
+    `entry.scenario_yaml_path` is recorded relative to the sweep's launch cwd
+    (the workspace root), so we try it verbatim and then against each parent of
+    `sweep_dir`, letting analysis run from any working directory. Returns None
+    when the path is missing, unresolvable, or carries no `bcu_rpm` fault block.
+    """
+    path = _resolve_scenario_yaml(entry.scenario_yaml_path, sweep_dir)
+    if path is None:
+        return None
+    doc = yaml.safe_load(path.read_text()) or {}
+    bcu = ((doc.get("rig") or {}).get("faults") or {}).get("bcu_rpm") or {}
+    if "mttf_sec" not in bcu:
+        return None
+    return {
+        "mttf_sec": float(bcu["mttf_sec"]),
+        "num_levels": int(bcu.get("num_levels", 5)),
+    }
+
+
+def _resolve_scenario_yaml(
+    yaml_path: str | None, sweep_dir: Path | None
+) -> Path | None:
+    """Locate the scenario YAML named by a (usually relative) `yaml_path`.
+
+    Tries it as-is (absolute, or relative to the cwd) first, then joined onto
+    each parent of `sweep_dir` — the workspace root is one of those parents, and
+    that is what the relative path is anchored to. None if nothing resolves.
+    """
+    if not yaml_path:
+        return None
+    p = Path(yaml_path)
+    if p.is_absolute():
+        return p if p.is_file() else None
+    bases = [Path.cwd()]
+    if sweep_dir is not None:
+        bases += list(Path(sweep_dir).resolve().parents)
+    for base in bases:
+        cand = base / p
+        if cand.is_file():
+            return cand
+    return None
