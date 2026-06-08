@@ -92,5 +92,5 @@ class UUVTopics:
     # System status
     # Per-subsystem health, one DiagnosticArray published by the liveness node
     # from a freshness watchdog over the steady glider-side feedback/sensor
-    # streams. The MQTT bridge forwards it to the operator UI.
+    # streams.
     STATUS_LIVENESS = "/status/liveness"

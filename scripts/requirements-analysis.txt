@@ -1,0 +1,8 @@
+# Host-side deps for plot_sweep.py (the sweep trajectory plotter). Like the
+# sampler/orchestrator, this runs *outside* the SIF — it reads recorded MCAP
+# bags off disk and renders a PNG — so these don't need to be baked into the
+# container image.
+matplotlib
+rosbags        # MCAP reader + ROS 2 typestore (bag_reader.py)
+numpy
+scipy>=1.10    # scipy.spatial.transform.Rotation (quaternion -> euler)

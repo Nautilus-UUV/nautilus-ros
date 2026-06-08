@@ -28,10 +28,6 @@ setup(
         "test": [
             "pytest",
         ],
-        "analysis": [
-            "matplotlib",
-            "rosbags",
-        ],
     },
     entry_points={
         "console_scripts": [
@@ -48,7 +44,6 @@ setup(
             "acu_debug_node = py_pkg.debug.acu_debug_node:main",
             "auto_bcu_oscillator = py_pkg.debug.auto_bcu_oscillator:main",
             "auto_mission = py_pkg.debug.auto_mission:main",
-            "plot_sweep = py_pkg.analysis.cli:main",
         ],
     },
 )
