@@ -1,0 +1,132 @@
+@startuml bcu_debug_states
+title bcu_debug_node — operator pump/valve state machine\nSourced from src/py_pkg/py_pkg/debug/bcu_debug_node.py
+
+' ----------------------------------------------------------------------------
+' Layout & style
+' ----------------------------------------------------------------------------
+skinparam wrapWidth 240
+skinparam defaultFontSize 12
+skinparam ArrowFontSize 11
+skinparam padding 6
+skinparam roundCorner 6
+
+skinparam state {
+  BackgroundColor<<normal>>      #BDE0FE
+  BorderColor<<normal>>          #1864AB
+  BackgroundColor<<emergency>>   #FFC9C9
+  BorderColor<<emergency>>       #C92A2A
+  BackgroundColor<<idle>>        #E9ECEF
+  BorderColor<<idle>>            #495057
+  BackgroundColor<<silent>>      #F1F3F5
+  BorderColor<<silent>>          #868E96
+  FontStyle<<silent>>            italic
+}
+
+legend bottom right
+  | Style          | Meaning |
+  | blue           | manual-override on, operator drives /bcu/rpm |
+  | red            | emergency surface (ignores override gate) |
+  | grey           | not driving the wire (depth_node owns it) |
+  | edge label     | trigger / guard / effect |
+  Every "active" state re-publishes /bcu/rpm at 10 Hz via _on_tick.
+  MAX_PUMP_S = 30 s; EMERGENCY_MAX_S = 120 s; SURFACE_GAUGE_EPS_PA = 2000 Pa.
+endlegend
+
+[*] --> Silent
+
+' ============================================================================
+' Normal mode — gated by CONTROL_MANUAL_OVERRIDE
+' ============================================================================
+
+state "Silent\n<size:10>depth_node owns /bcu/rpm + /bcu/valves\n_held_rpm=0, no deadline, no target</size>" as Silent <<silent>>
+
+state ManualMode <<normal>> {
+  state "Idle\n<size:10>override on, no pump session\nvalves may still be latched separately</size>" as Idle <<idle>>
+
+  state PumpSession <<normal>> {
+    state "Timed\n<size:10>_held_rpm, _pump_deadline_s = now + duration\n_target_pressure_pa = None</size>" as Timed
+    state "PressureTargeted\n<size:10>_held_rpm, _target_pressure_pa,\n_pump_deadline_s = now + MAX_PUMP_S (safety floor)</size>" as PressureTargeted
+  }
+}
+
+' ============================================================================
+' Emergency surface — ignores the override gate (safety path)
+' ============================================================================
+
+state Emergency <<emergency>> {
+  state "EmergencyPumping\n<size:10>BCU_MOTOR_MAX_RPM + valve 1 open\nblowing ballast</size>" as EmgPumping
+  state "EmergencySurfaced\n<size:10>gauge ≤ SURFACE_GAUGE_EPS_PA\nmotor 0, valves closed\n(re-pumps if it sinks back)</size>" as EmgSurfaced
+  state "EmergencyTimedOut\n<size:10>EMERGENCY_MAX_S elapsed without surfacing\nmotor 0, valves closed, warned once</size>" as EmgTimedOut
+}
+
+' ============================================================================
+' Transitions — Normal mode
+' ============================================================================
+
+' Override gates the entire normal lane.
+Silent --> Idle             : CONTROL_MANUAL_OVERRIDE ↑ True
+ManualMode --> Silent       : CONTROL_MANUAL_OVERRIDE ↓ False\n_clear_pump_state(), drop valve mask,\n_publish_rpm(0)
+
+' Arming the timed pump.
+Idle --> Timed              : DEBUG_BCU_RPM\n[duration > 0]\nhold rpm, set deadline
+' Arming the pressure-targeted pump.
+Idle --> PressureTargeted   : DEBUG_BCU_RPM_UNTIL_PRESSURE\n[rpm ≠ 0 ∧ tank known ∧\n not already past target]\nhold rpm, target, MAX_PUMP_S deadline
+
+' Either pump-session callback supersedes the other (mutually exclusive).
+Timed --> PressureTargeted  : DEBUG_BCU_RPM_UNTIL_PRESSURE [valid]
+PressureTargeted --> Timed  : DEBUG_BCU_RPM [duration > 0]
+
+' Stop paths (all run _clear_pump_state() + _publish_rpm(0)).
+Timed --> Idle              : _on_tick: now ≥ deadline
+Timed --> Idle              : DEBUG_BCU_RPM [duration = 0]\n(explicit stop)
+PressureTargeted --> Idle   : _on_tick: tank crossed target
+PressureTargeted --> Idle   : _on_tick: now ≥ deadline\n(MAX_PUMP_S safety floor;\n logs warn — target not reached)
+PressureTargeted --> Idle   : DEBUG_BCU_RPM_UNTIL_PRESSURE\n[rpm = 0]  (explicit stop)
+PressureTargeted --> Idle   : DEBUG_BCU_RPM_UNTIL_PRESSURE\n[already past target]\n(refuse + publish 0)
+
+' Refused commands while session active — no state change but worth noting.
+Timed -[#888,dashed]-> Timed             : DEBUG_BCU_RPM_UNTIL_PRESSURE\n[no tank sample yet]\nlog warn, ignore
+Idle  -[#888,dashed]-> Idle              : *any cmd*\n[_emergency = True]\nlog warn, ignore
+
+' ============================================================================
+' Transitions — Emergency (ignores override; always acts)
+' ============================================================================
+
+Silent       --> EmgPumping  : DEBUG_EMERGENCY_SURFACE ↑ True
+ManualMode   --> EmgPumping  : DEBUG_EMERGENCY_SURFACE ↑ True\n_clear_pump_state() first
+
+' Within the emergency lane, _tick_emergency drives the substate transitions.
+EmgPumping  --> EmgSurfaced  : _on_tick: gauge ≤ SURFACE_GAUGE_EPS_PA\n_publish_rpm(0), _publish_valves(0)
+EmgSurfaced --> EmgPumping   : _on_tick: gauge > eps\n(sank back below surface threshold)
+EmgPumping  --> EmgTimedOut  : _on_tick: now ≥ emergency_deadline_s\n(EMERGENCY_MAX_S elapsed)
+
+' Emergency cancel — UI sends False; returns to Silent (the UI keeps
+' override raised while surfacing, so override-state on exit is "on" —
+' but the cancel path zeroes the wire either way and Silent re-enters
+' ManualMode on the next override tick if it's still raised).
+Emergency --> Silent         : DEBUG_EMERGENCY_SURFACE ↓ False\n_clear_pump_state(), drop valve mask,\n_publish_rpm(0), _publish_valves(0)
+
+' ============================================================================
+' Notes
+' ============================================================================
+
+note right of PumpSession
+  Both sub-states share _held_rpm + _pump_deadline_s
+  and the same 10 Hz heartbeat in _on_tick.
+  The only difference is the stop condition:
+    Timed           → now ≥ deadline
+    PressureTargeted → tank crossed target
+                       (or MAX_PUMP_S safety floor)
+  _clear_pump_state() drops both modes' state as a unit
+  so every stop path leaves a clean slate.
+end note
+
+note bottom of ManualMode
+  Valve bitmask (_valve_mask) is latched **independently**
+  of the pump session via DEBUG_BCU_VALVES. mask=0 hands
+  /bcu/valves back to depth_node; mask≠0 is re-asserted
+  on every tick alongside the RPM heartbeat. Not modelled
+  as a sub-state to keep this diagram focused on the pump.
+end note
+
+@enduml

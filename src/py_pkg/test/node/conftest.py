@@ -22,7 +22,11 @@ import time
 import pytest
 import rclpy
 from geometry_msgs.msg import Pose
-from nautilus_msgs.msg import BcuPumpCommand, MissionCommand
+from nautilus_msgs.msg import (
+    BcuPumpCommand,
+    BcuPumpUntilPressureCommand,
+    MissionCommand,
+)
 from py_pkg.debug.acu_debug_node import AcuDebugNode
 from py_pkg.debug.bcu_debug_node import BcuDebugNode
 from py_pkg.path.pathfinding import PathfindingNode
@@ -462,6 +466,12 @@ class _BcuDebugTesterNode(Node):
         self.received_valves: list[int] = []
 
         self.cmd_pub = create_publisher_for_topic(self, UUVTopics.DEBUG_BCU_RPM)
+        self.pump_until_pub = create_publisher_for_topic(
+            self, UUVTopics.DEBUG_BCU_RPM_UNTIL_PRESSURE
+        )
+        self.tank_pressure_pub = create_publisher_for_topic(
+            self, UUVTopics.BCU_PRESSURE
+        )
         self.valves_cmd_pub = create_publisher_for_topic(
             self, UUVTopics.DEBUG_BCU_VALVES
         )
@@ -492,6 +502,17 @@ class _BcuDebugTesterNode(Node):
         msg.rpm = int(rpm)
         msg.duration_s = float(duration_s)
         self.cmd_pub.publish(msg)
+
+    def publish_pump_until_pressure(self, rpm: int, target_pressure_pa: int) -> None:
+        msg = BcuPumpUntilPressureCommand()
+        msg.rpm = int(rpm)
+        msg.target_pressure_pa = int(target_pressure_pa)
+        self.pump_until_pub.publish(msg)
+
+    def publish_tank_pressure(self, value_pa: int) -> None:
+        msg = Int32()
+        msg.data = int(value_pa)
+        self.tank_pressure_pub.publish(msg)
 
     def publish_valves(self, mask: int) -> None:
         msg = UInt8()
@@ -535,6 +556,12 @@ class BcuDebugNodeHarness(NodeHarness):
     def publish_pump(self, rpm: int, duration_s: float) -> None:
         self.tester.publish_pump(rpm, duration_s)
 
+    def publish_pump_until_pressure(self, rpm: int, target_pressure_pa: int) -> None:
+        self.tester.publish_pump_until_pressure(rpm, target_pressure_pa)
+
+    def publish_tank_pressure(self, value_pa: int) -> None:
+        self.tester.publish_tank_pressure(value_pa)
+
     def publish_valves(self, mask: int) -> None:
         self.tester.publish_valves(mask)
 
@@ -575,9 +602,7 @@ class _AcuDebugTesterNode(Node):
         self.received_pitch_mm: list[int] = []
         self.received_roll_cdeg: list[int] = []
 
-        self.pitch_cmd_pub = create_publisher_for_topic(
-            self, UUVTopics.DEBUG_ACU_PITCH
-        )
+        self.pitch_cmd_pub = create_publisher_for_topic(self, UUVTopics.DEBUG_ACU_PITCH)
         self.roll_cmd_pub = create_publisher_for_topic(self, UUVTopics.DEBUG_ACU_ROLL)
         self.acu_override_pub = create_publisher_for_topic(
             self, UUVTopics.CONTROL_ACU_OVERRIDE

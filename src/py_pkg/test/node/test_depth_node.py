@@ -283,25 +283,26 @@ class TestValveEmission:
 class TestValveSelection:
     """End-to-end: pressure + descent intent shape the BCU_VALVES bitmask.
 
-    Bitmask layout: bit0 = valve 1 (pump path), bit1 = valve 2 (passive
-    vent). The cascaded PID needs several ticks to settle, so assertions
-    use the last emission after spin.
+    Bitmask layout: bit0 = motor way (operator "valve 2", pump path),
+    bit1 = free/bypass way (operator "valve 1", passive vent). The cascaded
+    PID needs several ticks to settle, so assertions use the last emission
+    after spin.
     """
 
-    def test_shallow_descend_uses_valve1(self, depth_node_harness):
+    def test_shallow_descend_uses_motor_valve(self, depth_node_harness):
         # At surface with target deep → pump active driving descent
-        # → valve1=1, valve2=0 → bitmask = 0b01.
+        # → motor=1, free=0 → bitmask = 0b01.
         h = depth_node_harness
         h.publish_target_pressure(TARGET_PA_70M)
         h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
         h.spin_until(lambda: len(h.received_valves) >= 4, timeout=1.5)
         assert h.received_valves[-1] == 0b01, (
-            f"expected pump-via-valve1 (0b01), got history {h.received_valves}"
+            f"expected pump-via-motor-valve (0b01), got history {h.received_valves}"
         )
 
     def test_deep_descend_passively_vents(self, depth_node_harness):
         # Below threshold with descent intent → pump forced off and
-        # valve 2 vents → bitmask = 0b10, RPM = 0.
+        # the free/bypass way vents → bitmask = 0b10, RPM = 0.
         h = depth_node_harness
         h.publish_target_pressure(TARGET_PA_100M)
         h.publish_external_pressure(PRESSURE_FOR_DEEP_PA)  # current ≈ +50 m gauge Pa
@@ -313,15 +314,15 @@ class TestValveSelection:
             f"deep-descend must zero the pump, got rpm history {h.received_rpm}"
         )
 
-    def test_deep_ascend_uses_valve1(self, depth_node_harness):
-        # Below threshold but ascending → pump active, valve 1 carries
-        # flow, valve 2 closed → bitmask = 0b01.
+    def test_deep_ascend_uses_motor_valve(self, depth_node_harness):
+        # Below threshold but ascending → pump active, the motor way carries
+        # flow, the free/bypass way closed → bitmask = 0b01.
         h = depth_node_harness
         h.publish_target_pressure(0.0)
         h.publish_external_pressure(PRESSURE_FOR_DEEP_PA)  # current ≈ +50 m gauge Pa
         h.spin_until(lambda: len(h.received_valves) >= 4, timeout=1.5)
         assert h.received_valves[-1] == 0b01, (
-            f"expected pump-via-valve1 (0b01), got history {h.received_valves}"
+            f"expected pump-via-motor-valve (0b01), got history {h.received_valves}"
         )
 
     def test_quiescent_closes_both_valves(self, depth_node_harness):
@@ -342,7 +343,7 @@ class TestValveSelection:
         # Boundary on the strict `q > 0` in select_pump_and_valves. Deep +
         # target == current settles to q ≈ 0; strict `>` keeps the vent
         # closed, but a `>=` slip — or a cascade sign flip producing a
-        # tiny positive q at zero error — would open valve 2 here. The
+        # tiny positive q at zero error — would open the free vent here. The
         # shallow-quiescent test above can't catch this because deep=False
         # short-circuits the q-sign branch entirely.
         h = depth_node_harness
@@ -364,9 +365,10 @@ class TestValveSelection:
             f"(full history {h.received_rpm})"
         )
 
-    def test_valve2_implies_zero_rpm(self, depth_node_harness):
-        # Cross-check the invariant from select_pump_and_valves: any
-        # sample where valve 2 is open must have a zero pump command.
+    def test_passive_vent_implies_zero_rpm(self, depth_node_harness):
+        # Cross-check the invariant from select_pump_and_valves: any sample
+        # where the free/bypass vent (bit1) is open must have a zero pump
+        # command.
         h = depth_node_harness
         h.publish_target_pressure(TARGET_PA_100M)
         h.publish_external_pressure(PRESSURE_FOR_DEEP_PA)
@@ -376,7 +378,7 @@ class TestValveSelection:
         for rpm, valves in zip(h.received_rpm, h.received_valves):
             if valves & 0b10:
                 assert rpm == 0, (
-                    f"valve2 open with non-zero rpm={rpm} "
+                    f"passive vent open with non-zero rpm={rpm} "
                     f"(rpm history {h.received_rpm}, "
                     f"valves history {h.received_valves})"
                 )

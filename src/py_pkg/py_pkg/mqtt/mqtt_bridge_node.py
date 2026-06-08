@@ -80,6 +80,11 @@ INGRESS_MAP: tuple[IngressMapping, ...] = (
     IngressMapping(UUVTopics.COMMAND, "nautilus/cmd/command", 1),
     IngressMapping(UUVTopics.PATH, "nautilus/cmd/path", 1),
     IngressMapping(UUVTopics.DEBUG_BCU_RPM, "nautilus/cmd/debug/bcu/rpm", 1),
+    IngressMapping(
+        UUVTopics.DEBUG_BCU_RPM_UNTIL_PRESSURE,
+        "nautilus/cmd/debug/bcu/rpm_until_pressure",
+        1,
+    ),
     IngressMapping(UUVTopics.DEBUG_BCU_VALVES, "nautilus/cmd/debug/bcu/valves", 1),
     IngressMapping(UUVTopics.DEBUG_ACU_PITCH, "nautilus/cmd/debug/acu/pitch", 1),
     IngressMapping(UUVTopics.DEBUG_ACU_ROLL, "nautilus/cmd/debug/acu/roll", 1),

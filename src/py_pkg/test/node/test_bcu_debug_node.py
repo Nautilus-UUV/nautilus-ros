@@ -10,15 +10,17 @@ Asserts the behaviours the bench operator depends on:
 * once in manual mode the requested rpm reaches /bcu/rpm immediately,
 * a 0 follows after the requested duration (motor stops),
 * a fresh command supersedes an in-flight stop without a 0 in between,
-* dropping the override zeros the motor and silences the heartbeat,
+* while in manual the node heartbeats the current command (0 when idle) so the
+  reset-to-0 always reaches the throttled UI stream,
+* dropping the override zeros the motor and goes silent (depth_node takes over),
+* pump-until-pressure runs without a feasibility pre-check and stops when the
+  tank reading crosses the target,
 * valve commands latch and are re-asserted by the heartbeat,
 * emergency surface blows ballast until surfaced, regardless of the flag.
 """
 
 from py_pkg.physics import ATMOSPHERIC_PRESSURE_PA
-from py_pkg.robot_specs import BCU_MOTOR_MAX_RPM
-
-VALVE1_OPEN_MASK = 0b01
+from py_pkg.robot_specs import BCU_MOTOR_MAX_RPM, BCU_MOTOR_VALVE_MASK
 
 
 def _enter_manual(h) -> None:
@@ -52,14 +54,20 @@ def test_pump_publishes_rpm_then_zero(bcu_debug_node_harness):
         timeout=1.5,
     )
 
-    assert h.received_rpm[0] == 500
+    # In manual mode the node heartbeats the commanded value (0 once idle), so
+    # the stream is padded with leading/trailing 0s -- the only *nonzero*
+    # command must be the requested 500, and it must end at 0.
+    nonzero = [r for r in h.received_rpm if r != 0]
+    assert nonzero and all(r == 500 for r in nonzero), (
+        f"only 500 should have been commanded: {h.received_rpm}"
+    )
     assert h.received_rpm[-1] == 0
 
 
 def test_negative_rpm_passes_through(bcu_debug_node_harness):
     # "Pump out" sends a negative rpm; the debug node must not flip the
-    # sign or otherwise interpret it -- the motor driver downstream does
-    # the only direction-aware thing in the stack.
+    # sign or otherwise interpret it -- the wire-level direction flip lives in
+    # stm_com, not here.
     h = bcu_debug_node_harness
     _enter_manual(h)
     h.publish_pump(rpm=-300, duration_s=0.15)
@@ -70,7 +78,10 @@ def test_negative_rpm_passes_through(bcu_debug_node_harness):
         timeout=1.5,
     )
 
-    assert h.received_rpm[0] == -300
+    nonzero = [r for r in h.received_rpm if r != 0]
+    assert nonzero and all(r == -300 for r in nonzero), (
+        f"debug node must pass the negative rpm through unchanged: {h.received_rpm}"
+    )
     assert h.received_rpm[-1] == 0
 
 
@@ -95,10 +106,14 @@ def test_second_command_cancels_pending_stop(bcu_debug_node_harness):
     )
 
     rpms = h.received_rpm
-    assert rpms[0] == 400
+    idx_400 = rpms.index(400)
     idx_800 = rpms.index(800)
-    # Nothing -- and crucially no stop-0 -- between the two commands.
-    assert all(v != 0 for v in rpms[:idx_800]), (
+    assert idx_400 < idx_800
+    # Crucially no stop-0 between the two commands: while the first pump is
+    # active the heartbeat re-asserts 400, it never drops to 0 until the
+    # (cancelled) timer would have fired. Leading 0s from the idle heartbeat
+    # before the first command are fine.
+    assert all(v != 0 for v in rpms[idx_400:idx_800]), (
         f"unexpected stop fired before the second command was honoured: {rpms}"
     )
     assert rpms[-1] == 0
@@ -128,14 +143,14 @@ def test_valve_command_latches_and_heartbeats(bcu_debug_node_harness):
     # re-asserted by the heartbeat so it survives the bridge egress throttle.
     h = bcu_debug_node_harness
     _enter_manual(h)
-    h.publish_valves(VALVE1_OPEN_MASK)
+    h.publish_valves(BCU_MOTOR_VALVE_MASK)
 
-    h.spin_until(lambda: VALVE1_OPEN_MASK in h.received_valves, timeout=1.0)
+    h.spin_until(lambda: BCU_MOTOR_VALVE_MASK in h.received_valves, timeout=1.0)
 
     h.received_valves.clear()
     h.spin_for(0.3)
     assert h.received_valves, "valve mask should be re-asserted by the heartbeat"
-    assert all(v == VALVE1_OPEN_MASK for v in h.received_valves)
+    assert all(v == BCU_MOTOR_VALVE_MASK for v in h.received_valves)
 
 
 def test_pump_only_does_not_clobber_valves(bcu_debug_node_harness):
@@ -158,11 +173,63 @@ def test_emergency_surface_blows_ballast_regardless_of_override(bcu_debug_node_h
     h.spin_for(0.1)
     h.publish_emergency(True)
 
-    # Blow ballast: full positive RPM with valve 1 open.
+    # Blow ballast: full positive RPM with valve 2 (the motor way) open.
     h.spin_until(lambda: BCU_MOTOR_MAX_RPM in h.received_rpm, timeout=1.0)
-    h.spin_until(lambda: VALVE1_OPEN_MASK in h.received_valves, timeout=1.0)
+    h.spin_until(lambda: BCU_MOTOR_VALVE_MASK in h.received_valves, timeout=1.0)
 
     # Report we've reached the surface -> the pump must stop.
     h.publish_external_pressure(int(ATMOSPHERIC_PRESSURE_PA))
     h.spin_until(lambda: h.received_rpm and h.received_rpm[-1] == 0, timeout=2.0)
+    assert h.received_rpm[-1] == 0
+
+
+def test_idle_manual_heartbeats_zero(bcu_debug_node_harness):
+    # Issue 5: while in manual with no active pump, the node heartbeats 0 every
+    # tick. Without this the lone terminal 0 after a pump can lose the race
+    # against the UI egress throttle and the strip chart freezes at the last
+    # nonzero rpm.
+    h = bcu_debug_node_harness
+    _enter_manual(h)
+    h.spin_for(0.4)  # several tick periods
+    assert h.received_rpm, "expected a 0 heartbeat while idle in manual mode"
+    assert all(r == 0 for r in h.received_rpm), (
+        f"idle manual mode should heartbeat only 0: {h.received_rpm}"
+    )
+
+
+def test_pump_until_pressure_runs_without_preflight_refusal(bcu_debug_node_harness):
+    # Issue 4: the bench bug. With the tank reading near 0 and a target like
+    # 110000 Pa, "pump in" (positive rpm) is "already past" (tank <= target),
+    # which the old code refused outright. It must now run the command (emit the
+    # requested rpm) rather than instantly zeroing.
+    h = bcu_debug_node_harness
+    _enter_manual(h)
+    h.publish_tank_pressure(0)  # hardware tank sits near zero gauge
+    h.spin_until(lambda: h.node._tank_pa is not None, timeout=1.0)
+
+    h.publish_pump_until_pressure(rpm=500, target_pressure_pa=110000)
+    # The command must reach the wire -- proof we did not pre-refuse.
+    h.spin_until(lambda: 500 in h.received_rpm, timeout=1.0)
+    assert 500 in h.received_rpm
+
+
+def test_pump_until_pressure_stops_when_target_crossed(bcu_debug_node_harness):
+    # Closed-loop stop: inflate (positive rpm) until the tank reading drops to
+    # the target. Starts above target (keeps pumping), then a fresh sample
+    # below the target ends it.
+    h = bcu_debug_node_harness
+    _enter_manual(h)
+    h.publish_tank_pressure(8000)
+    h.spin_until(lambda: h.node._tank_pa is not None, timeout=1.0)
+
+    h.publish_pump_until_pressure(rpm=500, target_pressure_pa=5000)
+    h.spin_until(lambda: 500 in h.received_rpm, timeout=1.0)
+
+    # Tank crosses below the target -> the pump must stop.
+    h.publish_tank_pressure(4000)
+    h.spin_until(lambda: h.received_rpm and h.received_rpm[-1] == 0, timeout=1.5)
+    nonzero = [r for r in h.received_rpm if r != 0]
+    assert nonzero and all(r == 500 for r in nonzero), (
+        f"only the commanded 500 should appear: {h.received_rpm}"
+    )
     assert h.received_rpm[-1] == 0

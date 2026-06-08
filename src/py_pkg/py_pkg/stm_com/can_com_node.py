@@ -12,7 +12,7 @@ Wire format (CAN ID 0x181, standard 11-bit, 8 data bytes, little-endian):
     bytes 0-1  ACU_pitch   uint16  (mm of prismatic travel)
     bytes 2-3  BCU         int16   (rpm; negative = deflate / sink)
     bytes 4-5  ACU_roll    int16   (centidegrees, +/-3000 = +/-30 deg)
-    byte  6    Valves      uint8   bitmask (bit0=valve1, bit1=valve2; 1=open)
+    byte  6    Valves      uint8   bitmask (bit0=valve2/motor, bit1=valve1/free; 1=open)
     byte  7    reserved    0       (spare for future BCU state info)
 
     struct.pack("<HhhBB", pitch_mm, bcu_rpm, acu_roll_cdeg, valves, 0)
@@ -34,6 +34,7 @@ import rclpy
 from rclpy.node import Node
 
 from py_pkg.uuv_ros_core import UUVTopics, create_subscription_for_topic, spin_node
+from py_pkg.robot_specs import STM_BCU_RPM_SIGN
 
 # <H h h B B> -> pitch(u16), bcu(i16), roll(i16), valves(u8), reserved(u8).
 PDO_FMT = "<HhhBB"
@@ -59,12 +60,8 @@ class CANComNode(Node):
         self.declare_parameter("tx_period_s", 1.0)  # 1 Hz heartbeat
 
         channel = self.get_parameter("channel").get_parameter_value().string_value
-        self._can_id = (
-            self.get_parameter("can_id").get_parameter_value().integer_value
-        )
-        tx_period = (
-            self.get_parameter("tx_period_s").get_parameter_value().double_value
-        )
+        self._can_id = self.get_parameter("can_id").get_parameter_value().integer_value
+        tx_period = self.get_parameter("tx_period_s").get_parameter_value().double_value
 
         # Attach to the already-up SocketCAN interface. bind() raises if the
         # interface isn't there -- fail fast, same as stm_com on a missing
@@ -108,8 +105,13 @@ class CANComNode(Node):
 
     def _send_pdo(self) -> None:
         pitch = max(PITCH_MIN, min(PITCH_MAX, self._pitch_mm))
+        # Same physical pump-wiring polarity flip as stm_com (STM_BCU_RPM_SIGN).
+        # NOTE: this CAN/CU path was not part of the bench test that found the
+        # reversal -- verify against the CU board firmware (it may already
+        # handle direction) before trusting it on that hardware.
+        wire_rpm = STM_BCU_RPM_SIGN * self._bcu_rpm
         payload = struct.pack(
-            PDO_FMT, pitch, self._bcu_rpm, self._roll_cdeg, self._valves, 0
+            PDO_FMT, pitch, wire_rpm, self._roll_cdeg, self._valves, 0
         )
         # 0x181 fits in 11 bits so the id needs no flags; an extended id would
         # OR in socket.CAN_EFF_FLAG here.
@@ -122,7 +124,7 @@ class CANComNode(Node):
             self.get_logger().warning(f"can tx failed: {exc}")
             return
         self.get_logger().debug(
-            f"tx pdo pitch={pitch} rpm={self._bcu_rpm} "
+            f"tx pdo pitch={pitch} rpm={wire_rpm} (ros {self._bcu_rpm}) "
             f"roll={self._roll_cdeg} valves={self._valves:#04x}"
         )
 

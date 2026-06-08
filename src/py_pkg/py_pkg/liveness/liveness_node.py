@@ -8,7 +8,7 @@ and "offline" once it goes stale (see ``py_pkg.liveness.watchdog``).
 The MQTT bridge forwards the array to the operator UI. The UI keys off each
 ``DiagnosticStatus.message`` ("online"/"offline"), *not* the byte ``level`` --
 ``level`` is a ROS ``byte`` that the egress JSON path turns into a control-char
-string rather than a number, so it can't be compared against 0 on the far side.
+string.
 ``level`` is still set correctly here for native ROS consumers (``ros2 topic
 echo``, ``rqt_robot_monitor``).
 """
@@ -92,8 +92,7 @@ class LivenessNode(Node):
         )
 
     def _now(self) -> float:
-        # Same clock the timer runs on, so freshness stays internally
-        # consistent under both wall time and sim time.
+        # Same clock the timer runs on, consistent under both wall time and sim time.
         return self.get_clock().now().nanoseconds * 1e-9
 
     def _publish_liveness(self) -> None:
