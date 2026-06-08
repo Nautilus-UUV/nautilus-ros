@@ -42,12 +42,19 @@ BCU_MOTOR_MIN_RPM = 0
 # Gauge pressure above which the pump can no longer push oil out into the
 # bladder against the surrounding water (inflating only gets harder the
 # deeper we are). When we are deeper than this AND the controller wants to
-# descend further, we skip the pump entirely — open valve 2 and let the high
-# external pressure squeeze oil out of the bladder back into the tank for us,
-# free of pump energy. At shallower depths, the pump can still drive flow in
-# either direction through valve 1, so no special-casing is needed.
+# descend further, we skip the pump entirely — open valve 1 (the free/bypass
+# way) and let the high external pressure squeeze oil out of the bladder back
+# into the tank for us, free of pump energy. At shallower depths, the pump can
+# still drive flow in either direction through valve 2 (the motor way), so no
+# special-casing is needed.
 
 BCU_DEEP_THRESHOLD_PA = 301_534.5  # = 30 m * 1025 kg/m^3 * 9.806 m/s^2
+
+# BCU valve wire bitmask. The STM/CAN PDO carries valve state as two bits, and
+# everyone who packs or reads that byte -- depth_node (producer), bcu_debug_node,
+# the bridges, and their tests -- goes through these masks.
+BCU_MOTOR_VALVE_MASK = 0b01  # bit0 -- pump flow path ("valve 2" in the UI)
+BCU_FREE_VALVE_MASK = 0b10  # bit1 -- passive free/bypass vent ("valve 1")
 
 # ---------------------------------------------------------------------------
 # ACU mechanics
@@ -92,3 +99,10 @@ STM_PRESSURE_LSB_PA = 100
 
 # Temperatures (var_id 0x2410 ext, 0x2411 int) are int16 centi-°C.
 STM_TEMPERATURE_LSB_C = 0.01
+
+# Physical polarity of the BCU pump motor as wired on the hardware. The whole
+# control stack speaks one convention -- positive BCU_RPM inflates the bladder
+# (vehicle rises), negative deflates (sinks) -- and the simulator honors it
+# directly. The bench hardware's motor is wired the opposite way, so this flip
+# lives ONLY at the STM/CAN wire boundary.
+STM_BCU_RPM_SIGN = -1

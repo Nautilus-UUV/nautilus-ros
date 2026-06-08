@@ -43,7 +43,7 @@ TOPIC_MESSAGE_MAP = {
     UUVTopics.BCU_VOLUME: Int32,
     UUVTopics.BCU_FLOW_RATE: Float32,
     UUVTopics.BCU_RPM: Int16,
-    # Bit 0 = valve 1, bit 1 = valve 2; 1 = open, 0 = closed.
+    # Bit 0 = valve 2 (motor way), bit 1 = valve 1 (free way); 1 = open, 0 = closed.
     UUVTopics.BCU_VALVES: UInt8,
     UUVTopics.BCU_FEEDBACK_RPM: Int16,
     UUVTopics.BCU_FEEDBACK_VALVES: UInt8,

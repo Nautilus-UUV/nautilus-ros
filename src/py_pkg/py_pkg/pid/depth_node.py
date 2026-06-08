@@ -10,7 +10,11 @@ from std_msgs.msg import Bool, Empty, Int16, UInt8
 from py_pkg.math_utils import deadband_snap
 from py_pkg.physics import gauge_pressure_pa, q_to_rpm
 from py_pkg.pid import depth_control_system as ControlSystem
-from py_pkg.robot_specs import BCU_DEEP_THRESHOLD_PA
+from py_pkg.robot_specs import (
+    BCU_DEEP_THRESHOLD_PA,
+    BCU_FREE_VALVE_MASK,
+    BCU_MOTOR_VALVE_MASK,
+)
 from py_pkg.scenarios.compile import depth_spec_from_node
 from py_pkg.uuv_ros_core import (
     UUVTopics,
@@ -31,16 +35,18 @@ def select_pump_and_valves(
     enough that the surrounding water pressure is above
     ``deep_threshold_pa`` AND the controller is asking to go deeper
     still (``q > 0``), we don't run the pump at all. We just open
-    valve 2 and let the high ambient pressure squeeze oil out of the
-    bladder back into the tank on its own. The bladder deflates, the
-    glider displaces less water, and we sink — without spending any
-    pump energy.
+    valve 1 (the free/bypass way) and let the high ambient pressure
+    squeeze oil out of the bladder back into the tank on its own. The
+    bladder deflates, the glider displaces less water, and we sink —
+    without spending any pump energy.
 
     Otherwise the rule is simple: when the pump is actually running,
-    valve 1 is open to carry the flow; when the pump is idle, both
-    valves stay shut so the bladder holds whatever volume it has.
+    valve 2 (the motor way) is open to carry the flow; when the pump is
+    idle, both valves stay shut so the bladder holds whatever volume it
+    has.
 
-    Returns ``(pump_rpm, valve1_open, valve2_open)``.
+    Returns ``(pump_rpm, motor_open, free_open)`` -- motor_open is bit0
+    of the wire bitmask (valve 2), free_open is bit1 (valve 1).
     """
     deep = current_pressure_pa > deep_threshold_pa
     wants_to_descend = q > 0
@@ -220,7 +226,7 @@ class DepthControlNode(Node):
         # inflates (rise). Negate so a descend command goes out as negative RPM.
         pump_rpm = int(-1 * self.motor_rpm)
 
-        pump_rpm, valve1_open, valve2_open = select_pump_and_valves(
+        pump_rpm, motor_open, free_open = select_pump_and_valves(
             self.current_pressure_pa,
             self.control_output,
             pump_rpm,
@@ -228,7 +234,9 @@ class DepthControlNode(Node):
         )
         msg.data = pump_rpm
         valves_msg = UInt8()
-        valves_msg.data = valve1_open | (valve2_open << 1)
+        valves_msg.data = (BCU_MOTOR_VALVE_MASK if motor_open else 0) | (
+            BCU_FREE_VALVE_MASK if free_open else 0
+        )
 
         # RPM very shortly before valves: same callback, no sleep — the
         # publish ordering on the wire follows the call order here.
@@ -239,7 +247,8 @@ class DepthControlNode(Node):
         )
         self.get_logger().debug(f"Command to motor in RPM: {self.motor_rpm}")
         self.get_logger().debug(
-            f"Valves bitmask (bit0=v1, bit1=v2): {valves_msg.data:#04b}"
+            f"Valves bitmask (bit0=motor/valve2, bit1=free/valve1): "
+            f"{valves_msg.data:#04b}"
         )
 
 

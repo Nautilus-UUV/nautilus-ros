@@ -33,9 +33,6 @@ class UUVTopics:
     BCU_FLOW_RATE = "/bcu/flow_rate"
     BCU_VALVES = "/bcu/valves"
     BCU_RPM = "/bcu/rpm"
-    # Actuator feedback the BCU bridge pings back so an idle pump/valves still
-    # prove they're alive. RPM is the fault-adjusted effective value; valves
-    # echo the latest commanded bitmask (bit0=v1, bit1=v2).
     BCU_FEEDBACK_RPM = "/bcu/feedback/rpm"
     BCU_FEEDBACK_VALVES = "/bcu/feedback/valves"
 

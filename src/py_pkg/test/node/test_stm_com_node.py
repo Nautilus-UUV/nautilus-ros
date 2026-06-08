@@ -19,8 +19,10 @@ from rclpy.node import Node
 from std_msgs.msg import Int16, UInt8
 
 import py_pkg.stm_com.stm_com_node as stm
+from py_pkg.robot_specs import STM_BCU_RPM_SIGN
 from py_pkg.stm_com.stm_com_node import (
     BCU_RPM_VAR_ID,
+    BCU_STATUS_VAR_ID,
     HEADER_FMT,
     HEADER_LEN,
     STMComNode,
@@ -94,15 +96,21 @@ class _STMTesterNode(Node):
     def __init__(self):
         super().__init__("stm_com_tester")
         self.received_valves: list[int] = []
-        self.received_rpm: list[int] = []
+        self.received_feedback_rpm: list[int] = []
         self.valves_cmd_pub = create_publisher_for_topic(self, UUVTopics.BCU_VALVES)
         self.rpm_cmd_pub = create_publisher_for_topic(self, UUVTopics.BCU_RPM)
         create_subscription_for_topic(
             self, UUVTopics.BCU_FEEDBACK_VALVES, self._on_valves
         )
+        create_subscription_for_topic(
+            self, UUVTopics.BCU_FEEDBACK_RPM, self._on_feedback_rpm
+        )
 
     def _on_valves(self, msg: UInt8) -> None:
         self.received_valves.append(int(msg.data))
+
+    def _on_feedback_rpm(self, msg: Int16) -> None:
+        self.received_feedback_rpm.append(int(msg.data))
 
     def command_valves(self, bitmap: int) -> None:
         self.valves_cmd_pub.publish(UInt8(data=bitmap))
@@ -178,6 +186,8 @@ class TestSTMValves:
 
     def test_rpm_still_sent_on_same_cue(self, stm_harness):
         # Guards the _send_setpoints refactor: valves didn't displace RPM.
+        # The wire carries the hardware-polarity-flipped value (see
+        # STM_BCU_RPM_SIGN), not the raw ROS-side command.
         h = stm_harness
         h.tester.command_rpm(123)
         h.spin_for(0.1)
@@ -186,4 +196,33 @@ class TestSTMValves:
         sent = _decode_frames(bytes(h.fake.tx))
         rpm_frames = [p for vid, p in sent if vid == BCU_RPM_VAR_ID]
         assert rpm_frames, "no 0x2102 rpm frame was sent"
-        assert struct.unpack("<h", rpm_frames[-1])[0] == 123
+        assert struct.unpack("<h", rpm_frames[-1])[0] == STM_BCU_RPM_SIGN * 123
+
+
+class TestSTMRpmSign:
+    """The BCU pump is wired reversed on the bench, so stm_com flips the RPM
+    sign at the wire (STM_BCU_RPM_SIGN) on both the commanded setpoint and the
+    measured feedback, keeping the whole ROS graph on one convention."""
+
+    def _last_rpm_on_wire(self, h) -> int:
+        sent = _decode_frames(bytes(h.fake.tx))
+        rpm_frames = [p for vid, p in sent if vid == BCU_RPM_VAR_ID]
+        assert rpm_frames, "no 0x2102 rpm frame was sent"
+        return struct.unpack("<h", rpm_frames[-1])[0]
+
+    def test_commanded_rpm_sign_flipped_on_wire(self, stm_harness):
+        h = stm_harness
+        for ros_rpm in (500, -500):
+            h.tester.command_rpm(ros_rpm)
+            h.spin_for(0.1)
+            h.fake.inject(_frame(VALVES_STATUS_VAR_ID, struct.pack("<B", 0)))
+            h.spin_for(0.1)
+            assert self._last_rpm_on_wire(h) == STM_BCU_RPM_SIGN * ros_rpm
+
+    def test_feedback_rpm_sign_flipped(self, stm_harness):
+        # 0x2103 BCU_STATUS carries the motor's measured RPM in the hardware's
+        # reversed polarity; the node flips it back before publishing feedback.
+        h = stm_harness
+        h.fake.inject(_frame(BCU_STATUS_VAR_ID, struct.pack("<h", 800)))
+        h.spin_until(lambda: len(h.tester.received_feedback_rpm) > 0, timeout=2.0)
+        assert h.tester.received_feedback_rpm[-1] == STM_BCU_RPM_SIGN * 800

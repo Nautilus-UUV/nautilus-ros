@@ -12,7 +12,7 @@ Wire format (matches the STM firmware's switch on variable id):
 
 Outbound (Pi -> STM):
     0x2102  BCU_RPM        int16   motor RPM setpoint
-    0x2106  VALVES_TARGET  uint8   desired valve bitmap (bit0=valve1, bit1=valve2)
+    0x2106  VALVES_TARGET  uint8   desired valve bitmap (bit0=valve2/motor, bit1=valve1/free)
 
 Inbound (STM -> Pi):
     0x2103  BCU_STATUS     int16   motor's currently reported RPM (~1 Hz)
@@ -38,7 +38,11 @@ from rclpy.node import Node
 from sensor_msgs.msg import Temperature
 from std_msgs.msg import Int16, Int32, UInt8, UInt8MultiArray
 
-from py_pkg.robot_specs import STM_PRESSURE_LSB_PA, STM_TEMPERATURE_LSB_C
+from py_pkg.robot_specs import (
+    STM_BCU_RPM_SIGN,
+    STM_PRESSURE_LSB_PA,
+    STM_TEMPERATURE_LSB_C,
+)
 from py_pkg.uuv_ros_core import (
     UUVTopics,
     create_publisher_for_topic,
@@ -94,7 +98,7 @@ class STMComNode(Node):
         self.get_logger().info(f"stm_com opened {port} @ {baud}")
 
         self._latest_rpm: int = 0
-        # Valve bitmap we beat down to the STM (bit0=valve1, bit1=valve2; 1=open).
+        # Valve bitmap we beat down to the STM (bit0=valve2/motor, bit1=valve1/free; 1=open).
         # 0 until the BCU first commands -- safe default, valves closed.
         self._latest_valves: int = 0
         self._rx_buf = bytearray()
@@ -161,9 +165,7 @@ class STMComNode(Node):
 
             if len(self._rx_buf) < 1 + HEADER_LEN:
                 return  # wait for the rest of the header
-            var_id, length = struct.unpack(
-                HEADER_FMT, self._rx_buf[1 : 1 + HEADER_LEN]
-            )
+            var_id, length = struct.unpack(HEADER_FMT, self._rx_buf[1 : 1 + HEADER_LEN])
 
             frame_len = 1 + HEADER_LEN + length
             if len(self._rx_buf) < frame_len:
@@ -198,15 +200,11 @@ class STMComNode(Node):
         elif var_id == VALVES_STATUS_VAR_ID:
             self._publish_valves_feedback(payload)
         else:
-            self.get_logger().debug(
-                f"unknown var_id=0x{var_id:04x} len={len(payload)}"
-            )
+            self.get_logger().debug(f"unknown var_id=0x{var_id:04x} len={len(payload)}")
 
     def _publish_pressure(self, pub, payload: bytes) -> None:
         if len(payload) != UINT16_LEN:
-            self.get_logger().warning(
-                f"pressure payload wrong length: {len(payload)}"
-            )
+            self.get_logger().warning(f"pressure payload wrong length: {len(payload)}")
             return
         (raw,) = struct.unpack(UINT16_FMT, payload)
         pub.publish(Int32(data=raw * STM_PRESSURE_LSB_PA))
@@ -229,7 +227,9 @@ class STMComNode(Node):
             )
             return
         (rpm,) = struct.unpack(INT16_FMT, payload)
-        self._bcu_feedback_rpm_pub.publish(Int16(data=rpm))
+        # Flip back into the ROS-side convention so feedback matches the
+        # commanded sign (see STM_BCU_RPM_SIGN -- the pump is wired reversed).
+        self._bcu_feedback_rpm_pub.publish(Int16(data=STM_BCU_RPM_SIGN * rpm))
 
     def _publish_valves_feedback(self, payload: bytes) -> None:
         if len(payload) != UINT8_LEN:
@@ -256,13 +256,17 @@ class STMComNode(Node):
         self._send_valves()
 
     def _send_rpm(self) -> None:
+        # Flip into the hardware's wiring polarity at the wire (see
+        # STM_BCU_RPM_SIGN). The cached _latest_rpm stays in the ROS-side
+        # convention; only the bytes on the UART carry the reversed sign.
+        wire_rpm = STM_BCU_RPM_SIGN * self._latest_rpm
         packet = (
             SYNC_BYTE
             + struct.pack(HEADER_FMT, BCU_RPM_VAR_ID, BCU_RPM_PAYLOAD_LEN)
-            + struct.pack(PAYLOAD_FMT, self._latest_rpm)
+            + struct.pack(PAYLOAD_FMT, wire_rpm)
         )
         self._ser.write(packet)
-        self.get_logger().debug(f"tx bcu rpm: {self._latest_rpm}")
+        self.get_logger().debug(f"tx bcu rpm: {wire_rpm} (ros {self._latest_rpm})")
 
     def _send_valves(self) -> None:
         packet = (

@@ -12,15 +12,16 @@ Command surfaces:
 
 * Emergency surface (``DEBUG_EMERGENCY_SURFACE``) -- the one exception to the
   override gate: it always acts (safety path). Blow ballast: full positive
-  RPM with valve 1 open until the external pressure says we're at the surface,
-  then stop the pump. The UI raises the override before arming it, so
+  RPM with valve 2 (the motor way) open until the external pressure says we're
+  at the surface, then stop the pump. The UI raises the override before arming
+  it, so
   depth_node is already standing down. It also re-pumps if the vehicle sinks
   back below the surface threshold. Send ``False`` to stand down.
 
 * Pump for X seconds (``DEBUG_BCU_RPM``) -- run the motor at a requested RPM
-  for a bounded window, then stop. Pumping needs valve 1 open to carry the
-  flow; if it isn't, we warn (but still pump -- this is a debug knob, and
-  the operator UI carries the same warning).
+  for a bounded window, then stop. Pumping needs valve 2 (the motor way) open
+  to carry the flow; if it isn't, we warn (but still pump -- this is a debug
+  knob, and the operator UI carries the same warning).
 
 * Pump until tank pressure target (``DEBUG_BCU_RPM_UNTIL_PRESSURE``) --
   closed-loop sibling of the timed pump: run the motor at a requested RPM
@@ -28,12 +29,16 @@ Command surfaces:
   the sign of the RPM implies (positive inflates -> tank drops -> stop
   when tank_pa <= target; negative deflates -> tank rises -> stop when
   tank_pa >= target). Mutually exclusive with the timed pump on this node:
-  arming either replaces the other. The same ``MAX_PUMP_S`` cap fires as
-  a safety floor if the target is never reached. If the tank is already
-  past the target for the requested direction, we refuse and zero the motor
-  rather than running uselessly.
+  arming either replaces the other. We don't pre-judge feasibility: the
+  command just runs in the commanded direction and stops when the live tank
+  reading crosses the target. If the target is unreachable it runs until the
+  operator stops it (or the ``MAX_PUMP_S`` runaway backstop fires). The
+  operator picks an achievable target from the live tank readout in the UI --
+  so the absolute calibration of the tank sensor doesn't matter, only that
+  the chosen number lies on the reachable side in the pumped direction.
 
-* Valves (``DEBUG_BCU_VALVES``) -- latch a valve bitmask (bit0=v1, bit1=v2).
+* Valves (``DEBUG_BCU_VALVES``) -- latch a valve bitmask (bit0=valve2/motor,
+  bit1=valve1/free).
   We only touch ``/bcu/valves`` once a valve command has actually arrived, so
   a pump-only session never slams the valves shut underneath the operator.
   Sending mask 0 closes them.
@@ -43,8 +48,9 @@ side is a rate-limit-and-drop throttle, so a lone publish can lose the race
 against depth_node's stream; a steady heartbeat keeps the topic fresh on the
 wire (and the STM fed) for as long as the operator asked.
 
-The pump duration is clamped to ``MAX_PUMP_S`` so a typo'd UI input (3000
-instead of 3) can't leave the motor running for half an hour.
+The timed pump duration is clamped to ``MAX_PUMP_S`` so a typo'd UI input
+(3000 instead of 3) can't leave the motor running far longer than intended.
+The same cap is the runaway backstop for the pressure-targeted mode.
 """
 
 import rclpy
@@ -54,14 +60,14 @@ from rclpy.node import Node
 from std_msgs.msg import Bool, Int16, Int32, UInt8
 
 from py_pkg.physics import gauge_pressure_pa
-from py_pkg.robot_specs import BCU_MOTOR_MAX_RPM
+from py_pkg.robot_specs import BCU_MOTOR_MAX_RPM, BCU_MOTOR_VALVE_MASK
 from py_pkg.uuv_ros_core import (
     UUVTopics,
     create_publisher_for_topic,
     create_subscription_for_topic,
 )
 
-MAX_PUMP_S = 30.0
+MAX_PUMP_S = 300.0
 
 # Re-publish cadence while a command is active. 10 Hz matches depth_node's
 # control loop and the MQTT egress throttle, so each tick refreshes the
@@ -76,9 +82,6 @@ EMERGENCY_MAX_S = 120.0
 
 # Gauge pressure at/under which we call it "surfaced" (~0.2 m of fresh water).
 SURFACE_GAUGE_EPS_PA = 2000.0
-
-# Valve bitmask with valve 1 (the pump flow path, "motor way") open.
-VALVE1_OPEN_MASK = 0b01
 
 
 def _clamp_duration(duration_s: float, max_s: float = MAX_PUMP_S) -> float:
@@ -200,10 +203,10 @@ class BcuDebugNode(Node):
         self._clear_pump_state()
         self._held_rpm = int(msg.rpm)
         self._pump_deadline_s = self._now_s() + duration
-        if self._held_rpm != 0 and not self._valve1_open():
+        if self._held_rpm != 0 and not self._motor_valve_open():
             self.get_logger().warn(
-                f"pumping at {self._held_rpm} rpm with valve 1 not commanded "
-                "open -- open valve 1 (motor way) to carry the flow"
+                f"pumping at {self._held_rpm} rpm with valve 2 not commanded "
+                "open -- open valve 2 (motor way) to carry the flow"
             )
         self._publish_rpm(self._held_rpm)
 
@@ -236,30 +239,22 @@ class BcuDebugNode(Node):
             )
             return
 
-        # Refuse to pump if the tank is already past the target in the direction
-        # this RPM would push -- it would just hit the safety floor doing nothing.
-        already_past = (rpm > 0 and self._tank_pa <= float(target)) or (
-            rpm < 0 and self._tank_pa >= float(target)
-        )
-        if already_past:
-            self.get_logger().warn(
-                f"pump-until-pressure refused -- tank already at "
-                f"{self._tank_pa:.0f} Pa, past target {target} Pa for "
-                f"rpm={rpm}; not pumping"
-            )
-            self._clear_pump_state()
-            self._publish_rpm(0)
-            return
-
+        # No feasibility pre-check. Just run in the commanded direction and let
+        # the per-tick stop condition end it when the tank reading crosses the
+        # target. If the target sits on the wrong side (unreachable in the
+        # pumped direction), it runs until the operator stops it or the
+        # MAX_PUMP_S backstop fires -- the intended manual contract. This is
+        # what makes the feature calibration-agnostic: the operator reads the
+        # live tank pressure and picks a number on the reachable side.
         # New pressure-targeted session supersedes any timed window.
         self._clear_pump_state()
         self._held_rpm = rpm
         self._target_pressure_pa = target
         self._pump_deadline_s = self._now_s() + MAX_PUMP_S
-        if not self._valve1_open():
+        if not self._motor_valve_open():
             self.get_logger().warn(
-                f"pumping at {self._held_rpm} rpm with valve 1 not commanded "
-                "open -- open valve 1 (motor way) to carry the flow"
+                f"pumping at {self._held_rpm} rpm with valve 2 not commanded "
+                "open -- open valve 2 (motor way) to carry the flow"
             )
         self._publish_rpm(self._held_rpm)
 
@@ -316,9 +311,10 @@ class BcuDebugNode(Node):
             return
 
         # Pump session bookkeeping. The pressure-target check runs first so
-        # the operator's stop condition wins over the safety floor on the same
-        # tick they coincide. Either stop reason clears the whole session so
-        # the next callback (timed or targeted) starts from a clean slate.
+        # the operator's stop condition wins over the backstop on the same
+        # tick they coincide. Either stop reason clears the whole session
+        # (dropping _held_rpm to 0) so the next callback starts clean -- and
+        # the heartbeat below carries the stop out as a 0.
         if self._pump_deadline_s is not None:
             target_reached = (
                 self._target_pressure_pa is not None
@@ -341,19 +337,23 @@ class BcuDebugNode(Node):
                     "-- pump stopped"
                 )
                 self._clear_pump_state()
-                self._publish_rpm(0)
             elif now >= self._pump_deadline_s:
                 if self._target_pressure_pa is not None:
                     self.get_logger().warn(
-                        f"pump-until-pressure hit the {MAX_PUMP_S:.0f} s safety "
-                        f"cap before reaching target {self._target_pressure_pa} Pa "
+                        f"pump-until-pressure hit the {MAX_PUMP_S:.0f} s runaway "
+                        f"backstop before reaching target {self._target_pressure_pa} Pa "
                         f"(tank={self._tank_pa if self._tank_pa is not None else 'n/a'} Pa) "
                         "-- pump stopped"
                     )
                 self._clear_pump_state()
-                self._publish_rpm(0)
-            else:
-                self._publish_rpm(self._held_rpm)
+
+        # Heartbeat the current commanded RPM every tick while we own the wire.
+        # _held_rpm is the active pump setpoint, or 0 once a session ends (or
+        # when idle in manual mode). Publishing it unconditionally keeps the
+        # 10 Hz stream alive so the throttled MQTT egress always carries the
+        # reset-to-0 to the UI strip chart, and keeps the STM fed -- a single
+        # terminal 0 could otherwise lose the race against the egress throttle.
+        self._publish_rpm(self._held_rpm)
 
         # Re-assert held valves (None == not ours; 0 was already published on
         # the close command and the mask cleared).
@@ -384,9 +384,9 @@ class BcuDebugNode(Node):
             self._publish_valves(0)
             return
 
-        # Still down: blow ballast -- full inflate through valve 1.
+        # Still down: blow ballast -- full inflate through valve 2 (motor way).
         self._publish_rpm(BCU_MOTOR_MAX_RPM)
-        self._publish_valves(VALVE1_OPEN_MASK)
+        self._publish_valves(BCU_MOTOR_VALVE_MASK)
 
     # --- helpers --------------------------------------------------------
 
@@ -404,9 +404,9 @@ class BcuDebugNode(Node):
     def _now_s(self) -> float:
         return self.get_clock().now().nanoseconds * 1e-9
 
-    def _valve1_open(self) -> bool:
+    def _motor_valve_open(self) -> bool:
         return self._valve_mask is not None and bool(
-            self._valve_mask & VALVE1_OPEN_MASK
+            self._valve_mask & BCU_MOTOR_VALVE_MASK
         )
 
     def _publish_rpm(self, rpm: int) -> None:
