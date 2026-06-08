@@ -1,7 +1,11 @@
-# Analysis tooling revamp — `scripts/analysis/` + `plot_sweep.py`
+# Analysis tooling revamp — `scripts/analysis/` + `run_analysis.py`
 
 > Status: implemented (2026-06-08). This records the plan and the verification
 > findings that shaped it.
+>
+> Update: the CLI was later renamed `plot_sweep.py` → `run_analysis.py` and now
+> always writes a markdown statistics report (`analysis/dataset_stats.py`,
+> `<sweep>_stats.md`) in addition to the plots.
 
 ## Context
 
@@ -9,7 +13,7 @@ The analysis tooling under `scripts/analysis/` grew a verbose, single-purpose po
 plotter plus a heavily-flagged CLI. It was reorganized into a `plotting/` package
 (one script per plot), a second plot showing how the BCU fault labels distribute
 over time, a sweep loader that drops runs which failed on startup, and a
-3-argument `plot_sweep.py`. Driving dataset: `sim_data/bcu_fault_dataset/`
+3-argument `run_analysis.py`. Driving dataset: `sim_data/bcu_fault_dataset/`
 (128 LHS runs of the BCU fault ladder).
 
 ## Verified findings (against all 128 runs)
@@ -39,11 +43,12 @@ over time, a sweep loader that drops runs which failed on startup, and a
 
 ```
 scripts/
-  plot_sweep.py                  # 3-arg CLI, dispatches to plotting/
+  run_analysis.py                # 3-arg CLI, writes stats + dispatches to plotting/
   analysis/
     __init__.py
     bag_reader.py                # read_odometry + read_fault_levels
     sweep_loader.py              # discover_sweep + select_dived_runs (floater filter)
+    dataset_stats.py             # summarize_dataset (markdown stats table)
     plotting/
       __init__.py
       pose_multi_plot.py         # plot_pose_multi (winners kept)
@@ -53,7 +58,7 @@ scripts/
 ## CLI
 
 ```
-plot_sweep.py INPUT_PATH [--output-path DIR] [--plot {pose_multi_plot,error_box_plot,all}]
+run_analysis.py INPUT_PATH [--output-path DIR] [--plot {pose_multi_plot,error_box_plot,all}]
 ```
 - `INPUT_PATH` — dataset dir (form of `sim_data/bcu_fault_dataset/`).
 - `--output-path` — default `scripts/output/`, treated as a directory.
@@ -66,7 +71,7 @@ returns trajectories for reuse) → `plot_pose_multi` (target depth from
 ## Verification (run host-side with `/usr/bin/python3.12`)
 
 ```bash
-/usr/bin/python3.12 src/nautilus-ros/scripts/plot_sweep.py sim_data/bcu_fault_dataset --plot all
+/usr/bin/python3.12 src/nautilus-ros/scripts/run_analysis.py sim_data/bcu_fault_dataset --plot all
 ```
 - Drops exactly `lhs_0067, lhs_0090, lhs_0111`; 125 runs plotted.
 - `bcu_fault_dataset_pose_multi_plot.png` — overlay + winner highlights, 125/125

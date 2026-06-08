@@ -73,18 +73,19 @@ All three arguments should be advertised.
 
 ### Visualization
 
-`plot_sweep.py` runs host-side (outside the SIF) — it reads the recorded MCAP bags
-off disk and renders a PNG. Use `/usr/bin/python3` (the system interpreter that
-carries `rosbags`/`matplotlib`, not the conda one on `$PATH`); install its deps once
-with `/usr/bin/python3 -m pip install -r src/nautilus-ros/scripts/requirements-analysis.txt`,
+`run_analysis.py` runs host-side (outside the SIF) — it reads the recorded MCAP bags
+off disk, writes a markdown statistics report (always) and renders the plot PNG(s).
+Use `/usr/bin/python3` (the system interpreter that carries `rosbags`/`matplotlib`,
+not the conda one on `$PATH`); install its deps once with
+`/usr/bin/python3 -m pip install -r src/nautilus-ros/scripts/requirements-analysis.txt`,
 then, from the workspace root:
 
 ```bash
-/usr/bin/python3 src/nautilus-ros/scripts/plot_sweep.py sim_data/nominal_pid_sweep_with_min_rpm \
-  --include-failed \
-  --all-winners \
-  --out tmp/nominal_pid_sweep_with_min_rpm.png
+/usr/bin/python3 src/nautilus-ros/scripts/run_analysis.py sim_data/nominal_pid_sweep_with_min_rpm
 ```
+
+This writes `<sweep>_stats.md` plus the plots to `scripts/output/`; pass
+`--plot {pose_multi_plot,error_box_plot,all}` to pick which plots to render.
 
 
 ### Canonical Invocation

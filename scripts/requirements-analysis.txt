@@ -1,4 +1,4 @@
-# Host-side deps for plot_sweep.py (the sweep trajectory plotter). Like the
+# Host-side deps for run_analysis.py (the sweep stats + trajectory plotter). Like the
 # sampler/orchestrator, this runs *outside* the SIF — it reads recorded MCAP
 # bags off disk and renders a PNG — so these don't need to be baked into the
 # container image.

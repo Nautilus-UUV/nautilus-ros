@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""`plot_sweep` CLI: render analysis plots for a ros-collected sweep dataset.
+"""`run_analysis` CLI: summarise + plot a ros-collected sweep dataset.
 
 Discovers the runs in a dataset dir (form of `sim_data/bcu_fault_dataset/`), drops
-the ones that failed on startup (floated at the surface, never dived), and writes
-the requested plot(s).
+the ones that failed on startup (floated at the surface, never dived), then always
+writes a markdown statistics report and, on top of that, the requested plot(s).
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ _SCRIPTS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_SCRIPTS_DIR.parent / "src/py_pkg"))
 
 from analysis.bag_reader import read_fault_levels
+from analysis.dataset_stats import summarize_dataset
 from analysis.plotting.error_box_plot import plot_error_box
 from analysis.plotting.pose_multi_plot import plot_pose_multi
 from analysis.sweep_loader import discover_sweep, read_launch_args, select_dived_runs
@@ -37,13 +38,13 @@ def main(argv: list[str] | None = None) -> int:
         "--output-path",
         type=Path,
         default=_SCRIPTS_DIR / "output",
-        help="output directory for the PNG(s) (default: scripts/output/)",
+        help="output directory for the stats report + PNG(s) (default: scripts/output/)",
     )
     parser.add_argument(
         "--plot",
         choices=_CHOICES,
         default="all",
-        help="which plot to generate (default: all)",
+        help="which plot to generate (default: all). The stats report is always written.",
     )
     args = parser.parse_args(argv)
 
@@ -66,7 +67,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     if not kept:
         print(
-            "no runs survived the startup-failure filter; nothing to plot",
+            "no runs survived the startup-failure filter; nothing to analyse",
             file=sys.stderr,
         )
         return 1
@@ -74,6 +75,18 @@ def main(argv: list[str] | None = None) -> int:
     out_dir: Path = args.output_path
     out_dir.mkdir(parents=True, exist_ok=True)
     sweep = input_path.resolve().name
+
+    # Fault streams feed both the always-on stats report and the (optional) box
+    # plot; read each bag's fault topic once and share the result.
+    faults = [(entry, read_fault_levels(entry.bag_dir)) for entry, _ in kept]
+
+    # The statistics report runs by default, whichever plots were requested.
+    stats_md = summarize_dataset(kept, faults, title=sweep, n_dropped=len(dropped))
+    stats_path = out_dir / f"{sweep}_stats.md"
+    stats_path.write_text(stats_md)
+    print(stats_md)
+    print(f"wrote {stats_path}  ({len(kept)} runs)")
+
     want_pose = args.plot in ("pose_multi_plot", "all")
     want_box = args.plot in ("error_box_plot", "all")
 
@@ -91,7 +104,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"wrote {written}  ({len(kept)} runs)")
 
     if want_box:
-        faults = [(entry, read_fault_levels(entry.bag_dir)) for entry, _ in kept]
         written = plot_error_box(
             faults, out_dir / f"{sweep}_error_box_plot.png", title=sweep
         )
