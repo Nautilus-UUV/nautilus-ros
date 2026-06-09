@@ -16,7 +16,6 @@ from py_pkg.path.missions import surface as surface_mod
 SAWTOOTH = int(MissionId.SAWTOOTH)
 TRIM = int(MissionId.TRIM_AND_NEUTRAL_BUOYANCY)
 SURFACE = int(MissionId.SURFACE)
-DO_NOTHING = int(MissionId.DO_NOTHING)
 
 # Surface absolute pressure (Pa). gauge_pressure_pa() yields ~0 -> "at surface".
 PRESSURE_AT_SURFACE_PA = 101_325
@@ -48,8 +47,9 @@ class TestWiringSmoke:
         names = [p.topic_name for p in pathfinding_node_harness.node.publishers]
         assert "/position/target" in names
 
-    def test_initial_mode_is_idle(self, pathfinding_node_harness):
-        assert pathfinding_node_harness.node._mode == "IDLE"
+    def test_initial_state_is_idle(self, pathfinding_node_harness):
+        # No mission loaded -> idle.
+        assert pathfinding_node_harness.node._mission is None
 
 
 class TestPathIngress:
@@ -58,7 +58,7 @@ class TestPathIngress:
         h.publish_mission_command(
             SAWTOOTH, target_pressure_pa=200_000.0, angle_rad=0.5, n_resurfaces=2
         )
-        h.spin_until(lambda: h.node._mode == "LOADED", timeout=1.0)
+        h.spin_until(lambda: h.node._mission is not None, timeout=1.0)
         assert h.node._mission is not None
         assert h.node._mission_cmd is not None
         assert h.node._mission_cmd.mission_id == SAWTOOTH
@@ -69,7 +69,7 @@ class TestPathIngress:
         # uint8 max -> well outside the registry.
         h.publish_mission_command(255)
         h.spin_for(0.3)
-        assert h.node._mode == "IDLE"
+        # Bad id rejected -> nothing loaded.
         assert h.node._mission is None
 
 
@@ -78,23 +78,23 @@ class TestStartPreconditions:
         h = pathfinding_node_harness
         h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
         h.spin_until(lambda: h.node._current_pressure_pa is not None, timeout=1.0)
-        h.publish_command("start")
+        h.publish_command(True)
         h.spin_for(0.5)
         assert h.received_targets == []
-        assert h.node._mode == "IDLE"
+        assert h.node._mission is None
         # The start is queued, waiting for a mission to load.
-        assert h.node._start_pending is True
+        assert h.node._run_requested is True
 
     def test_start_without_pressure_stays_loaded(self, pathfinding_node_harness):
         h = pathfinding_node_harness
         h.publish_mission_command(TRIM, target_pressure_pa=50_000.0)
-        h.spin_until(lambda: h.node._mode == "LOADED", timeout=1.0)
-        h.publish_command("start")
+        h.spin_until(lambda: h.node._mission is not None, timeout=1.0)
+        h.publish_command(True)
         h.spin_for(0.5)
         # Start queued -> stays LOADED, never RUNNING, no emissions.
-        assert h.node._mode == "LOADED"
+        assert h.node._mission is not None and h.node._mission_t0_s is None
         assert h.received_targets == []
-        assert h.node._start_pending is True
+        assert h.node._run_requested is True
 
 
 class TestStartRaceTolerance:
@@ -103,30 +103,30 @@ class TestStartRaceTolerance:
 
     def test_start_before_path_fires_on_path(self, pathfinding_node_harness):
         h = pathfinding_node_harness
-        h.publish_command("start")
+        h.publish_command(True)
         h.spin_for(0.2)
-        assert h.node._mode == "IDLE"
-        assert h.node._start_pending is True
+        assert h.node._mission is None
+        assert h.node._run_requested is True
 
         h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
         h.publish_mission_command(TRIM, target_pressure_pa=50_000.0)
-        h.spin_until(lambda: h.node._mode == "RUNNING", timeout=1.0)
+        h.spin_until(lambda: h.node._mission_t0_s is not None, timeout=1.0)
         h.spin_until(lambda: len(h.received_targets) >= 1, timeout=1.0)
-        assert h.node._start_pending is False
+        assert h.node._mission_t0_s is not None
 
     def test_start_before_pressure_fires_on_pressure(self, pathfinding_node_harness):
         h = pathfinding_node_harness
         h.publish_mission_command(TRIM, target_pressure_pa=50_000.0)
-        h.spin_until(lambda: h.node._mode == "LOADED", timeout=1.0)
-        h.publish_command("start")
+        h.spin_until(lambda: h.node._mission is not None, timeout=1.0)
+        h.publish_command(True)
         h.spin_for(0.2)
-        assert h.node._mode == "LOADED"
-        assert h.node._start_pending is True
+        assert h.node._mission is not None and h.node._mission_t0_s is None
+        assert h.node._run_requested is True
 
         h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
-        h.spin_until(lambda: h.node._mode == "RUNNING", timeout=1.0)
+        h.spin_until(lambda: h.node._mission_t0_s is not None, timeout=1.0)
         h.spin_until(lambda: len(h.received_targets) >= 1, timeout=1.0)
-        assert h.node._start_pending is False
+        assert h.node._mission_t0_s is not None
 
     def test_redelivered_path_does_not_unseat_running_mission(
         self, pathfinding_node_harness
@@ -140,8 +140,8 @@ class TestStartRaceTolerance:
         h.publish_mission_command(TRIM, target_pressure_pa=50_000.0)
         h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
         h.spin_until(lambda: h.node._current_pressure_pa is not None, timeout=1.0)
-        h.publish_command("start")
-        h.spin_until(lambda: h.node._mode == "RUNNING", timeout=1.0)
+        h.publish_command(True)
+        h.spin_until(lambda: h.node._mission_t0_s is not None, timeout=1.0)
         t0_before = h.node._mission_t0_s
         assert t0_before is not None
 
@@ -153,42 +153,27 @@ class TestStartRaceTolerance:
             h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
             h.spin_for(0.05)
 
-        assert h.node._mode == "RUNNING"
+        assert h.node._mission_t0_s is not None
         assert h.node._mission_t0_s == t0_before  # mission clock not reset
         assert len(h.received_targets) > before  # setpoints still flowing
 
     def test_stop_clears_pending_start(self, pathfinding_node_harness):
         h = pathfinding_node_harness
-        h.publish_command("start")
-        h.spin_until(lambda: h.node._start_pending is True, timeout=1.0)
-        h.publish_command("stop")
-        h.spin_until(lambda: h.node._mode == "STOPPED", timeout=1.0)
-        assert h.node._start_pending is False
+        h.publish_command(True)
+        h.spin_until(lambda: h.node._run_requested is True, timeout=1.0)
+        h.publish_command(False)
+        # No mission was ever loaded, so the node stays idle throughout; the
+        # stop just drops the latched run intent. Wait on that clearing.
+        h.spin_until(lambda: h.node._run_requested is False, timeout=1.0)
+        assert h.node._mission is None
 
         h.publish_mission_command(TRIM, target_pressure_pa=50_000.0)
         h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
         h.spin_for(0.5)
-        # No auto-start after stop cleared the pending intent.
-        assert h.node._mode == "LOADED"
+        # The stop cleared the run intent, so the new /path loads the mission
+        # but does not auto-fire -- it sits loaded-not-running.
+        assert h.node._mission is not None and h.node._mission_t0_s is None
         assert h.received_targets == []
-
-    def test_abort_clears_pending_start(self, pathfinding_node_harness):
-        h = pathfinding_node_harness
-        h.publish_command("start")
-        h.spin_until(lambda: h.node._start_pending is True, timeout=1.0)
-        h.publish_command("abort")
-        h.spin_until(lambda: h.node._mode == "IDLE", timeout=1.0)
-        # Abort publishes one resurface Pose synchronously.
-        h.spin_until(lambda: len(h.received_targets) >= 1, timeout=1.0)
-        assert h.node._start_pending is False
-        emissions_after_abort = len(h.received_targets)
-
-        h.publish_mission_command(TRIM, target_pressure_pa=50_000.0)
-        h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
-        h.spin_for(0.5)
-        # No auto-start after abort cleared the pending intent.
-        assert h.node._mode == "LOADED"
-        assert len(h.received_targets) == emissions_after_abort
 
 
 class TestStartHappyPath:
@@ -198,15 +183,16 @@ class TestStartHappyPath:
         h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
         h.spin_until(
             lambda: (
-                h.node._mode == "LOADED" and h.node._current_pressure_pa is not None
+                h.node._mission is not None
+                and h.node._current_pressure_pa is not None
             ),
             timeout=1.0,
         )
-        h.publish_command("start")
-        h.spin_until(lambda: h.node._mode == "RUNNING", timeout=1.0)
+        h.publish_command(True)
+        h.spin_until(lambda: h.node._mission_t0_s is not None, timeout=1.0)
         # 10 Hz timer -> ~5 emissions in 0.5 s; 3 is the slack lower bound.
         h.spin_until(lambda: len(h.received_targets) >= 3, timeout=1.0)
-        assert h.node._mode == "RUNNING"
+        assert h.node._mission_t0_s is not None
 
     def test_running_target_carries_mission_setpoint(self, pathfinding_node_harness):
         h = pathfinding_node_harness
@@ -215,11 +201,12 @@ class TestStartHappyPath:
         h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
         h.spin_until(
             lambda: (
-                h.node._mode == "LOADED" and h.node._current_pressure_pa is not None
+                h.node._mission is not None
+                and h.node._current_pressure_pa is not None
             ),
             timeout=1.0,
         )
-        h.publish_command("start")
+        h.publish_command(True)
         h.spin_until(lambda: len(h.received_targets) >= 1, timeout=1.0)
         # TRIM mission -> position.z is the operator-supplied gauge Pa.
         first = h.received_targets[0]
@@ -228,70 +215,36 @@ class TestStartHappyPath:
 
 
 class TestStopCommand:
-    def test_stop_freezes_mode_and_halts_emissions(self, pathfinding_node_harness):
+    def test_stop_idles_clears_mission_and_halts_emissions(
+        self, pathfinding_node_harness
+    ):
         h = pathfinding_node_harness
         h.publish_mission_command(TRIM, target_pressure_pa=50_000.0)
         h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
         h.spin_until(
             lambda: (
-                h.node._mode == "LOADED" and h.node._current_pressure_pa is not None
+                h.node._mission is not None
+                and h.node._current_pressure_pa is not None
             ),
             timeout=1.0,
         )
-        h.publish_command("start")
-        h.spin_until(lambda: h.node._mode == "RUNNING", timeout=1.0)
+        h.publish_command(True)
+        h.spin_until(lambda: h.node._mission_t0_s is not None, timeout=1.0)
         h.spin_until(lambda: len(h.received_targets) >= 1, timeout=1.0)
 
-        h.publish_command("stop")
-        h.spin_until(lambda: h.node._mode == "STOPPED", timeout=1.0)
-        # Drain in-flight emissions queued before STOPPED was observed.
+        # Stop -> clean IDLE: mission/path cleared, no further setpoints, and no
+        # resurface Pose. The controllers reset themselves off the same
+        # /command=false (pathfinding emits nothing to POSITION_TARGET).
+        h.publish_command(False)
+        h.spin_until(lambda: h.node._mission is None, timeout=1.0)
+        assert h.node._mission is None
+        assert h.node._mission_cmd is None
+        # Drain in-flight emissions queued before IDLE was observed.
         h.spin_for(0.4)
         emissions_after_stop = len(h.received_targets)
 
         h.spin_for(1.0)
         assert len(h.received_targets) == emissions_after_stop
-
-
-class TestAbortCommand:
-    def test_abort_resets_state_and_publishes_resurface(self, pathfinding_node_harness):
-        h = pathfinding_node_harness
-        h.publish_mission_command(TRIM, target_pressure_pa=50_000.0)
-        h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
-        h.spin_until(
-            lambda: (
-                h.node._mode == "LOADED" and h.node._current_pressure_pa is not None
-            ),
-            timeout=1.0,
-        )
-        h.publish_command("start")
-        h.spin_until(lambda: h.node._mode == "RUNNING", timeout=1.0)
-        h.spin_until(lambda: len(h.received_targets) >= 1, timeout=1.0)
-        emissions_before_abort = len(h.received_targets)
-
-        h.publish_command("abort")
-        h.spin_until(lambda: h.node._mode == "IDLE", timeout=1.0)
-        # Abort publishes one resurface Pose synchronously, then the timer
-        # no-ops because mode is now IDLE.
-        h.spin_until(
-            lambda: len(h.received_targets) >= emissions_before_abort + 1,
-            timeout=1.0,
-        )
-        assert h.node._mission is None
-        assert h.node._mission_cmd is None
-
-        # Drain anything still in-flight, then confirm timer is quiescent.
-        h.spin_for(0.4)
-        emissions_after_abort = len(h.received_targets)
-        h.spin_for(0.6)
-        assert len(h.received_targets) == emissions_after_abort
-
-        # The abort emission is the resurface Pose: z=0, identity orientation.
-        resurface = h.received_targets[emissions_before_abort]
-        assert resurface.position.z == pytest.approx(0.0, abs=1e-9)
-        assert resurface.orientation.w == pytest.approx(1.0, abs=1e-9)
-        assert resurface.orientation.x == pytest.approx(0.0, abs=1e-9)
-        assert resurface.orientation.y == pytest.approx(0.0, abs=1e-9)
-        assert resurface.orientation.z == pytest.approx(0.0, abs=1e-9)
 
 
 class TestSurfaceMission:
@@ -307,11 +260,12 @@ class TestSurfaceMission:
         h.publish_external_pressure(PRESSURE_AT_DEPTH_PA)
         h.spin_until(
             lambda: (
-                h.node._mode == "LOADED" and h.node._current_pressure_pa is not None
+                h.node._mission is not None
+                and h.node._current_pressure_pa is not None
             ),
             timeout=1.0,
         )
-        h.publish_command("start")
+        h.publish_command(True)
         h.spin_until(lambda: len(h.received_targets) >= 1, timeout=1.0)
         first = h.received_targets[0]
         assert first.position.z == pytest.approx(0.0, abs=1e-9)
@@ -331,19 +285,20 @@ class TestSurfaceMission:
         h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
         h.spin_until(
             lambda: (
-                h.node._mode == "LOADED" and h.node._current_pressure_pa is not None
+                h.node._mission is not None
+                and h.node._current_pressure_pa is not None
             ),
             timeout=1.0,
         )
-        h.publish_command("start")
-        h.spin_until(lambda: h.node._mode == "RUNNING", timeout=1.0)
+        h.publish_command(True)
+        h.spin_until(lambda: h.node._mission_t0_s is not None, timeout=1.0)
         # Keep feeding "at surface" pressure across the dwell window.
         deadline = time.monotonic() + 1.5
-        while time.monotonic() < deadline and h.node._mode == "RUNNING":
+        while time.monotonic() < deadline and h.node._mission_t0_s is not None:
             h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
             h.spin_for(0.05)
         # After the dwell, pathfinding_node returns to IDLE and clears state.
-        h.spin_until(lambda: h.node._mode == "IDLE", timeout=1.0)
+        h.spin_until(lambda: h.node._mission is None, timeout=1.0)
         assert h.node._mission is None
         assert h.node._mission_cmd is None
 
@@ -363,62 +318,21 @@ class TestSurfaceMission:
         h.publish_external_pressure(PRESSURE_AT_DEPTH_PA)
         h.spin_until(
             lambda: (
-                h.node._mode == "LOADED" and h.node._current_pressure_pa is not None
+                h.node._mission is not None
+                and h.node._current_pressure_pa is not None
             ),
             timeout=1.0,
         )
-        h.publish_command("start")
-        h.spin_until(lambda: h.node._mode == "RUNNING", timeout=1.0)
+        h.publish_command(True)
+        h.spin_until(lambda: h.node._mission_t0_s is not None, timeout=1.0)
         # Pump deep-pressure samples for several dwell-windows; mission must
         # stay RUNNING and keep emitting setpoints.
         deadline = time.monotonic() + 1.5
         while time.monotonic() < deadline:
             h.publish_external_pressure(PRESSURE_AT_DEPTH_PA)
             h.spin_for(0.05)
-        assert h.node._mode == "RUNNING"
+        assert h.node._mission_t0_s is not None
         assert len(h.received_targets) >= 5
-
-
-class TestDoNothingMission:
-    """DO_NOTHING keeps the node RUNNING but commands nothing: it emits a
-    CONTROL_RESET on start (so the controllers go fresh) and then never
-    publishes a POSITION_TARGET."""
-
-    def test_start_emits_control_reset(self, pathfinding_node_harness):
-        h = pathfinding_node_harness
-        h.publish_mission_command(DO_NOTHING)
-        h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
-        h.spin_until(
-            lambda: (
-                h.node._mode == "LOADED" and h.node._current_pressure_pa is not None
-            ),
-            timeout=1.0,
-        )
-        h.publish_command("start")
-        h.spin_until(lambda: h.node._mode == "RUNNING", timeout=1.0)
-        h.spin_until(lambda: len(h.received_resets) >= 1, timeout=1.0)
-        assert len(h.received_resets) >= 1
-
-    def test_running_emits_no_targets(self, pathfinding_node_harness):
-        h = pathfinding_node_harness
-        h.publish_mission_command(DO_NOTHING)
-        h.publish_external_pressure(PRESSURE_AT_DEPTH_PA)
-        h.spin_until(
-            lambda: (
-                h.node._mode == "LOADED" and h.node._current_pressure_pa is not None
-            ),
-            timeout=1.0,
-        )
-        h.publish_command("start")
-        h.spin_until(lambda: h.node._mode == "RUNNING", timeout=1.0)
-        # Keep feeding pressure across several tick windows; the mission must
-        # stay RUNNING and never publish a setpoint (reference -> None).
-        deadline = time.monotonic() + 1.0
-        while time.monotonic() < deadline:
-            h.publish_external_pressure(PRESSURE_AT_DEPTH_PA)
-            h.spin_for(0.05)
-        assert h.node._mode == "RUNNING"
-        assert h.received_targets == []
 
 
 class TestTickGating:
@@ -428,11 +342,12 @@ class TestTickGating:
         h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
         h.spin_until(
             lambda: (
-                h.node._mode == "LOADED" and h.node._current_pressure_pa is not None
+                h.node._mission is not None
+                and h.node._current_pressure_pa is not None
             ),
             timeout=1.0,
         )
-        # No `start` command -> mode stays LOADED, timer must no-op.
+        # No `start` command -> stays loaded-not-running, timer must no-op.
         h.spin_for(0.7)
         assert h.received_targets == []
-        assert h.node._mode == "LOADED"
+        assert h.node._mission is not None and h.node._mission_t0_s is None

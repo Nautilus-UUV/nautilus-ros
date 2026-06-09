@@ -85,8 +85,9 @@ SENSORS -down-> PID_DEPTH       : "/external/pressure\nInt32 (SafetyCritical)"
 EKF_PRE -down-> EKF             : "/imu/filtered/left\nImu (Control)"
 
 ' --- Mission ingress (right column, top → down) ---
-' pathfinding subscribes to both /command (one-shot) and /path (waypoint list).
-MQTT -down-> PATH               : "/command\nString (Command)"
+' pathfinding subscribes to both /command (start/stop) and /path (mission).
+' depth_node + acu_node also subscribe to /command and reset on false.
+MQTT -down-> PATH               : "/command\nBool (Command)"
 MQTT -down-> PATH               : "/path\nFloat32MultiArray (Command)"
 
 ' --- Estimation → planning / control ---

@@ -32,7 +32,7 @@ import rclpy
 from geometry_msgs.msg import Pose
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
-from std_msgs.msg import Bool, Empty, Int16, Int32
+from std_msgs.msg import Bool, Int16, Int32
 
 from py_pkg.math_utils import quaternion_to_roll_pitch
 from py_pkg.physics import gauge_pressure_pa
@@ -83,11 +83,6 @@ class ACUControlNode(Node):
         self.target_roll_deg = 0.0
         self.current_roll_deg = 0.0
 
-        # Set by CONTROL_ACU_OVERRIDE. While true, control_loop bails before
-        # publishing -- acu_debug (or a future hand-controller) owns
-        # /acu/pitch and /acu/roll and we must not race it on either topic.
-        self._manual_override = False
-
         self.pitch_pub = create_publisher_for_topic(
             self, UUVTopics.ACU_PITCH, callback_group=self.callback_group
         )
@@ -114,17 +109,13 @@ class ACUControlNode(Node):
             callback_group=self.callback_group,
         )
 
+        # Mission run/stop. /command=false drops the target, neutralizes the
+        # ACU once, and gates control_loop off (silent) so acu_debug can own
+        # the wire; /command=true is a no-op (we wait for POSITION_TARGET).
         create_subscription_for_topic(
             self,
-            UUVTopics.CONTROL_ACU_OVERRIDE,
-            self._on_manual_override,
-            callback_group=self.callback_group,
-        )
-
-        create_subscription_for_topic(
-            self,
-            UUVTopics.CONTROL_RESET,
-            self._on_reset,
+            UUVTopics.COMMAND,
+            self._on_command,
             callback_group=self.callback_group,
         )
 
@@ -133,6 +124,9 @@ class ACUControlNode(Node):
             self.control_loop,
             callback_group=self.callback_group,
         )
+
+        # Leave the ACU wire at neutral at boot, before any target arrives.
+        self._publish_acu_neutral()
 
         self.get_logger().info("ACU control node started (bang-bang pitch, PID roll).")
 
@@ -160,21 +154,6 @@ class ACUControlNode(Node):
         roll, _ = quaternion_to_roll_pitch(q.x, q.y, q.z, q.w)
         self.current_roll_deg = math.degrees(roll)
 
-    def _on_manual_override(self, msg: Bool) -> None:
-        active = bool(msg.data)
-        if active != self._manual_override:
-            self.get_logger().info(
-                f"ACU manual override {'engaged' if active else 'released'} -- "
-                f"acu_node publishing {'paused' if active else 'resumed'}"
-            )
-            if active:
-                # Hand the ACU off to neutral before we go silent: command
-                # pitch + roll to 0 once, so manual mode starts from the
-                # equivalent of nothing instead of leaving the last mission
-                # attitude latched on the wire.
-                self._publish_acu_neutral()
-        self._manual_override = active
-
     def _publish_acu_neutral(self) -> None:
         pitch = Int16()
         pitch.data = 0
@@ -183,20 +162,28 @@ class ACUControlNode(Node):
         roll.data = 0
         self.roll_pub.publish(roll)
 
-    def _on_reset(self, _msg: Empty) -> None:
-        # Drop the setpoint and wipe controller state so pitch re-gates on a
-        # fresh target and roll re-primes from zero -- exactly as at boot, with
-        # no stale setpoint or integral windup from a prior mission.
+    def _on_command(self, msg: Bool) -> None:
+        # /command=true (start) is a no-op -- we wait for POSITION_TARGET.
+        # /command=false (stop) drops the target, wipes the roll PID, gates the
+        # loop off, and commands pitch + roll to neutral ONCE before going
+        # silent. The single neutral matters because the STM re-ships the last
+        # value forever (no staleness watchdog), so silence alone would leave
+        # the last mission attitude latched on the wire.
+        if bool(msg.data):
+            return
         self.roll_axis.reset()
         self.target_pressure_pa = None
         self.target_roll_deg = 0.0
         self.current_roll_deg = 0.0
-        self.get_logger().info("control reset -> no-target hold (fresh state).")
+        self._publish_acu_neutral()
+        self.get_logger().info("stop -> neutral emitted, ACU going silent (fresh state).")
 
     def control_loop(self):
-        if self._manual_override:
-            # A manual driver (acu_debug) owns /acu/pitch and /acu/roll right
-            # now. Skip the whole step so we don't race it on the wire.
+        if self.target_pressure_pa is None:
+            # No active mission target -> stay off /acu/pitch and /acu/roll
+            # entirely (roll PID included) so acu_debug can own the wire after a
+            # stop. The one neutral sample was already emitted on stop/boot.
+            # (Mirrors depth_node's no-target gate -- same None sentinel.)
             return
         self._update_pitch()
         self._update_roll()

@@ -39,7 +39,7 @@ ros2 launch nautilus_hal trim_sim.launch.py \
 - `headless:=false` opens the Gazebo GUI; leave at its default `true` for
   faster CPU-only runs without a window.
 - `mission_autostart:=true` publishes `MissionCommand{mission_id=0,
-  target_pressure_pa=…}` and `/command:start` after an 8/10 s
+  target_pressure_pa=…}` and `/command` Bool `true` (start) after an 8/10 s
 - `target_pressure_pa` is the depth setpoint in **gauge Pa**:
   - 65 332 ≈ 6.5 m
 - `scenario:=<path>` selects the scenario YAML that drives gains, plant,
@@ -68,7 +68,7 @@ ros2 topic pub --once \
 
 ros2 topic pub --once \
     --qos-reliability reliable --qos-durability transient_local \
-    /command std_msgs/msg/String "{data: start}"
+    /command std_msgs/msg/Bool "{data: true}"
 ```
 
 
@@ -108,7 +108,7 @@ ros2 topic pub --once \
 
 ros2 topic pub --once \
     --qos-reliability reliable --qos-durability transient_local \
-    /command std_msgs/msg/String "{data: start}"
+    /command std_msgs/msg/Bool "{data: true}"
 ```
 
 
@@ -130,8 +130,8 @@ ros2 launch nautilus_hal surface_sim.launch.py \
 
 - Spawn is at z=-10 (~10 m), so there's a meaningful ascent to watch.
 - `mission_autostart:=true` publishes `MissionCommand{mission_id=2,
-  target_pressure_pa=0.0, …}` and `/command:start` after an 8/10 s
-  delay.
+  target_pressure_pa=0.0, …}` and `/command` Bool `true` (start) after an
+  8/10 s delay.
 - SURFACE has no operator-tunable parameters — `target_pressure_pa`,
   `angle_rad`, and `n_resurfaces` are all ignored.
 
@@ -146,44 +146,17 @@ ros2 topic pub --once \
 
 ros2 topic pub --once \
     --qos-reliability reliable --qos-durability transient_local \
-    /command std_msgs/msg/String "{data: start}"
+    /command std_msgs/msg/Bool "{data: true}"
 ```
 
 
-### 4. Do Nothing Mission Profile
----
-
-
-
-```bash
-ros2 launch nautilus_hal do_nothing_sim.launch.py \
-    headless:=false \
-    mission_autostart:=true
-```
-
-- `mission_autostart:=true` publishes `MissionCommand{mission_id=3}` and
-  `/command:start` after an 8/10 s delay, which also resets the
-  controllers to their fresh, no-mission state.
-- Even with `mission_autostart:=false` (the default) the control does
-  nothing: no mission is loaded, so `depth_node` holds 0 RPM with the
-  valves shut and `acu_node` never commands pitch. Autostart just makes
-  the Do-Nothing state explicit and resets any prior mission's state.
-- DO_NOTHING has no operator-tunable parameters — `target_pressure_pa`,
-  `angle_rad`, and `n_resurfaces` are all ignored.
-
-
-#### Re-firing mid-run
-
-```bash
-ros2 topic pub --once \
-    --qos-reliability reliable --qos-durability transient_local \
-    /path nautilus_msgs/msg/MissionCommand \
-    "{mission_id: 3, target_pressure_pa: 0.0, angle_rad: 0.0, n_resurfaces: 0}"
-
-ros2 topic pub --once \
-    --qos-reliability reliable --qos-durability transient_local \
-    /command std_msgs/msg/String "{data: start}"
-```
+> To stop any running mission and reset the stack to its clean initial state
+> (no RPM, valves closed, no mission loaded), publish a Bool `false` on
+> `/command`:
+>
+> ```bash
+> ros2 topic pub --once /command std_msgs/msg/Bool "{data: false}"
+> ```
 
 ### Inspecting state
 

@@ -64,14 +64,10 @@ class UUVTopics:
     DEBUG_ACU_PITCH = "/debug/acu/pitch"
     DEBUG_ACU_ROLL = "/debug/acu/roll"
     DEBUG_EMERGENCY_SURFACE = "/debug/emergency_surface"
-
-    # Control-graph coordination
-    CONTROL_MANUAL_OVERRIDE = "/control/manual_override"
-    # ACU twin of CONTROL_MANUAL_OVERRIDE. Kept separate so the two loops can
-    # be silenced independently if ever needed
-    CONTROL_ACU_OVERRIDE = "/control/acu_override"
-    # Put ACU and BCU in initial state
-    CONTROL_RESET = "/control/reset"
+    # All-stop for the debug nodes: zero RPM, close valves, neutral ACU, cancel
+    # any emergency surface, then go silent. Published by the operator's red
+    # Reset button. The mission/controller stop rides /command=false instead.
+    DEBUG_RESET = "/debug/reset"
 
     # System status
     # Per-subsystem health, one DiagnosticArray published by the liveness node

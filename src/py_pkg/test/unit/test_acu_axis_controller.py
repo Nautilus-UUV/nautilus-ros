@@ -208,8 +208,8 @@ class TestPIDPathWired:
 
 class TestReset:
     """`reset()` returns the axis to construction state: PID memory wiped
-    and the publish guard re-armed so the next update re-primes (Do-Nothing
-    mission)."""
+    and the publish guard re-armed so the next update re-primes (mission
+    stop)."""
 
     def test_reset_rearms_prime_and_clears_guard(self):
         axis = make_axis(kp=0.5, command_tolerance=0.0)

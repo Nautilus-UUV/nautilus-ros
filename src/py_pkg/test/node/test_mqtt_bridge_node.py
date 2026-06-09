@@ -424,36 +424,23 @@ class TestMissionMirror:
                 "n_resurfaces": 2,
             },
         )
-        h.receive_mqtt("nautilus/cmd/command", {"data": "start"})
+        h.receive_mqtt("nautilus/cmd/command", {"data": True})
         states = _mission_states(h)
         assert states[-1] == "RUNNING"
 
-    def test_stop_returns_to_idle_but_keeps_cache(self, bridge_harness):
+    def test_stop_returns_to_idle_and_clears_cache(self, bridge_harness):
         h = bridge_harness
         h.receive_mqtt(
             "nautilus/cmd/path",
             {"mission_id": 0, "target_pressure_pa": 75383.0,
              "angle_rad": 0.0, "n_resurfaces": 0},
         )
-        h.receive_mqtt("nautilus/cmd/command", {"data": "start"})
-        h.receive_mqtt("nautilus/cmd/command", {"data": "stop"})
+        h.receive_mqtt("nautilus/cmd/command", {"data": True})
+        h.receive_mqtt("nautilus/cmd/command", {"data": False})
         last = json.loads(h.fake.publishes_on(MISSION_ACTIVE_TOPIC)[-1].payload)
         assert last["state"] == "IDLE"
-        # Stop preserves the cached mission so the UI can show what was
-        # loaded; abort would clear it.
-        assert last["mission_id"] == 0
-
-    def test_abort_clears_cache(self, bridge_harness):
-        h = bridge_harness
-        h.receive_mqtt(
-            "nautilus/cmd/path",
-            {"mission_id": 0, "target_pressure_pa": 75383.0,
-             "angle_rad": 0.0, "n_resurfaces": 0},
-        )
-        h.receive_mqtt("nautilus/cmd/command", {"data": "start"})
-        h.receive_mqtt("nautilus/cmd/command", {"data": "abort"})
-        last = json.loads(h.fake.publishes_on(MISSION_ACTIVE_TOPIC)[-1].payload)
-        assert last["state"] == "IDLE"
+        # Stop clears the cached mission too, mirroring pathfinding clearing
+        # its loaded mission on /command=false.
         assert last["mission_id"] is None
 
     def test_start_without_loaded_mission_is_noop(self, bridge_harness):
@@ -463,7 +450,7 @@ class TestMissionMirror:
         h = bridge_harness
         # Note: pre-existing seed publish on connect won't have fired
         # here because the fake's on_connect was never invoked.
-        h.receive_mqtt("nautilus/cmd/command", {"data": "start"})
+        h.receive_mqtt("nautilus/cmd/command", {"data": True})
         states = _mission_states(h)
         # Either no mirror publish at all (nothing changed) or, if one
         # exists, it must not be RUNNING.

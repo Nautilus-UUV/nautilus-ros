@@ -64,7 +64,7 @@ class AxisController:
 
         Clears the PID's integrator/filter/timing and the redundant-publish
         guard so the next `update` re-primes exactly as it did at boot. Used
-        when the ACU is told to go fresh (Do-Nothing mission).
+        when the ACU is told to go fresh (mission stop).
         """
         self.pid.reset()
         self.current_pos = 0.0

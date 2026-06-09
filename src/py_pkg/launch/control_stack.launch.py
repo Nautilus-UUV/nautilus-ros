@@ -17,24 +17,27 @@ Composition (inputs -> outputs):
     /position/target +  -> acu_node      -> /acu/pitch + /acu/roll
       /position/estimation
     /path + /command    -> pathfinding_node -> /position/target
+      (/command is std_msgs/Bool: true=start, false=stop. depth_node and
+       acu_node also subscribe to /command and reset to a safe-silent state
+       on false.)
     feedback + sensors  -> liveness_node -> /status/liveness (per-subsystem
                                             DiagnosticArray; freshness watchdog)
     MQTT nautilus/cmd/* -> mqtt_bridge   -> /command + /path + /debug/*
-                                            + /control/{manual,acu}_override
-    /debug/bcu/rpm +    -> bcu_debug     -> /bcu/rpm + /bcu/valves, but only
-      /debug/bcu/valves +                   while /control/manual_override is
-      /debug/emergency_surface              True (operator-owned); emergency
-                                            surface always acts.
-    /debug/acu/pitch +  -> acu_debug     -> /acu/pitch + /acu/roll, but only
-      /debug/acu/roll                       while /control/acu_override is True.
+                                            + /debug/reset
+    /debug/bcu/rpm +    -> bcu_debug     -> /bcu/rpm + /bcu/valves; drives the
+      /debug/bcu/valves +                   wire whenever it holds a command
+      /debug/emergency_surface              (emergency surface always acts).
+    /debug/acu/pitch +  -> acu_debug     -> /acu/pitch + /acu/roll; drives the
+      /debug/acu/roll                       wire whenever it holds a setpoint.
     /bcu/rpm            -> stm_com       -> UART (hardware only; gated by
                                             enable_stm_com:= launch arg)
     /bcu/* + /acu/*     -> can_com       -> CAN PDO 0x181 (hardware only;
                                             gated by enable_can_com:= launch arg)
 
-The manual-override flags are owned by the operator UI (raised through the
-MQTT bridge), not by the debug nodes. depth_node / acu_node stand down while
-their flag is True; bcu_debug / acu_debug drive the wire only while it is True.
+There is no manual-override flag. A controller drives its actuator only while
+it has an active mission target; on /command=false it emits one safe-stop and
+goes silent, freeing the wire for a debug node. The operator's red Reset button
+publishes /debug/reset to all-stop the debug nodes.
 """
 
 import os

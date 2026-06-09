@@ -290,64 +290,37 @@ class TestRollQuiescence:
         )
 
 
-class TestManualOverride:
-    """Engaging CONTROL_ACU_OVERRIDE hands the ACU off to neutral -- one
-    0-pitch + 0-roll command -- then silences the controller so acu_debug can
-    own /acu/pitch and /acu/roll without the loop racing it on the wire."""
+class TestStopResetsAndSilences:
+    """/command=false drops the held target, re-primes the roll axis, emits ONE
+    neutral (0 pitch + 0 roll), then gates the whole loop off -- exactly as at
+    boot before any mission. Silence (pitch AND roll) frees the ACU wire for
+    acu_debug with no contention."""
 
-    def test_engage_commands_neutral_then_suppresses(self, acu_node_harness):
+    def test_stop_emits_neutral_then_silent(self, acu_node_harness):
         h = acu_node_harness
-        h.publish_acu_override(True)
-        h.spin_until(lambda: h.node._manual_override is True, timeout=1.0)
-        h.spin_for(0.2)  # let the one-shot neutral emissions land
-
-        assert h.received_pitch_mm and h.received_pitch_mm[-1] == 0
-        assert h.received_roll_cdeg and h.received_roll_cdeg[-1] == 0
-
-        # After neutral the loop stays silent even with fresh inputs.
-        h.received_pitch_mm.clear()
-        h.received_roll_cdeg.clear()
+        # Drive a pitch + roll command first (shallower than target -> diving).
         h.publish_target(roll_deg=20.0, target_pressure_pa=80000.0)
-        h.publish_external_pressure(_abs_pa_for_gauge(20000.0))
-        h.spin_for(0.6)
-        assert h.received_pitch_mm == []
-        assert h.received_roll_cdeg == []
-
-    def test_release_resumes_publishing(self, acu_node_harness):
-        h = acu_node_harness
-        h.publish_acu_override(True)
-        h.spin_until(lambda: h.node._manual_override is True, timeout=1.0)
-        h.spin_for(0.2)  # drain the engage neutral
-        h.received_pitch_mm.clear()
-
-        h.publish_acu_override(False)
-        h.publish_target(roll_deg=20.0, target_pressure_pa=80000.0)
-        h.publish_external_pressure(_abs_pa_for_gauge(20000.0))
-        h.spin_until(lambda: len(h.received_pitch_mm) >= 1, timeout=1.5)
-        assert len(h.received_pitch_mm) >= 1
-
-
-class TestControlReset:
-    """CONTROL_RESET drops the held target and re-primes the roll axis, so
-    the bang-bang pitch loop re-gates on a fresh target -- exactly as at
-    boot before any mission (Do-Nothing mission)."""
-
-    def test_reset_clears_target_and_gates_pitch_off(self, acu_node_harness):
-        h = acu_node_harness
-        # Drive a pitch command first (current shallower than target -> diving).
-        h.publish_target(target_pressure_pa=80000.0)
         h.publish_external_pressure(_abs_pa_for_gauge(20000.0))
         h.spin_until(lambda: len(h.received_pitch_mm) >= 2, timeout=1.5)
 
-        h.publish_reset()
+        # Stop -> target cleared, one neutral (0/0) emitted, loop gated off.
+        h.publish_command(False)
         h.spin_until(lambda: h.node.target_pressure_pa is None, timeout=1.0)
         assert h.node.target_pressure_pa is None
+        h.spin_for(0.2)  # let the one-shot neutral land
+        assert h.received_pitch_mm and h.received_pitch_mm[-1] == 0
+        assert h.received_roll_cdeg and h.received_roll_cdeg[-1] == 0
 
-        # With the target cleared, the bang-bang pitch loop is gated off: no
-        # new pitch emissions even though pressure is still flowing.
-        pitch_before = len(h.received_pitch_mm)
-        h.spin_for(0.4)
-        assert len(h.received_pitch_mm) == pitch_before, (
-            f"pitch must stay silent after reset, got "
-            f"{h.received_pitch_mm[pitch_before:]}"
+        # The loop is fully silent now (pitch AND roll), even with pressure
+        # still flowing -- no new target has arrived to re-arm it.
+        h.received_pitch_mm.clear()
+        h.received_roll_cdeg.clear()
+        for _ in range(8):
+            h.publish_external_pressure(_abs_pa_for_gauge(20000.0))
+            h.spin_for(0.05)
+        assert h.received_pitch_mm == [], (
+            f"pitch must stay silent after stop, got {h.received_pitch_mm}"
+        )
+        assert h.received_roll_cdeg == [], (
+            f"roll must stay silent after stop, got {h.received_roll_cdeg}"
         )

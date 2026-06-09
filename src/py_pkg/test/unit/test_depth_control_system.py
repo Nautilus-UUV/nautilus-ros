@@ -86,7 +86,7 @@ class TestCalcAccSign:
 
 class TestReset:
     """`reset()` returns the controller to construction state so no PID
-    windup or stale setpoint carries over (Do-Nothing mission)."""
+    windup or stale setpoint carries over (mission stop)."""
 
     def test_reset_clears_target_to_surface(self):
         cs = _make_system(target_pressure_pa=_gauge_pa_for_depth(70.0))

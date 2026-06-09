@@ -22,8 +22,8 @@ class MissionState:
 
     pose: Pose | None = None
     target_pressure_pa: float = 0.0  # TRIM_AND_NEUTRAL_BUOYANCY hold-depth
-    angle_rad: float = 0.0           # SAWTOOTH glide pitch magnitude
-    n_resurfaces: int = 0            # SAWTOOTH termination count
+    angle_rad: float = 0.0  # SAWTOOTH glide pitch magnitude
+    n_resurfaces: int = 0  # SAWTOOTH termination count
 
 
 class MissionProfile(Protocol):
@@ -47,10 +47,10 @@ class MissionProfile(Protocol):
         actuator).
 
         Returning `None` means "no setpoint this tick": the executor
-        publishes nothing, so the controllers fall back to their
-        no-target safe hold (depth_node holds 0 RPM with valves shut;
-        acu_node skips pitch). That's how the Do-Nothing mission keeps
-        the stack live while commanding the glider not at all.
+        publishes nothing, so the controllers hold their last target
+        (the SURFACE/SAWTOOTH missions decline to command between phases
+        this way). It does NOT silence the controllers — that only
+        happens on an explicit /command=false stop.
         """
 
     def is_done(self, mission_t: float) -> bool:

@@ -1,22 +1,24 @@
 """Manual BCU driver -- bypasses pathfinding + the depth PID.
 
-Drives the contested BCU actuator topics (``/bcu/rpm`` and ``/bcu/valves``)
-by hand so an operator can poke the pump and valves. Whether it's *allowed*
-to touch the wire is owned entirely by the operator's manual-override slider:
-``CONTROL_MANUAL_OVERRIDE`` is raised by the mission UI (through the MQTT
-bridge), depth_node stands down while it's True, and this node only relays /
-heartbeats its commands during that window. When the override drops we zero
-the motor once and hand ``/bcu/rpm`` + ``/bcu/valves`` back to depth_node.
+Drives the BCU actuator topics (``/bcu/rpm`` and ``/bcu/valves``) by hand so
+an operator can poke the pump and valves. Contention with depth_node is avoided by the
+mission being stopped first -- the UI publishes ``/command``=false when the
+operator engages a manual command, which makes depth_node emit one safe-stop
+and go silent -- so this node is free to own the BCU. While a command is held
+we heartbeat it; when idle we go silent (after a short trailing-zero flush) so
+depth_node can reclaim the wire on the next mission.
+
+``DEBUG_RESET`` is the operator's red all-stop: cancel any pump session, close
+valves, cancel an in-progress emergency surface, command 0 RPM + closed valves
+once, then go silent.
 
 Command surfaces:
 
-* Emergency surface (``DEBUG_EMERGENCY_SURFACE``) -- the one exception to the
-  override gate: it always acts (safety path). Blow ballast: full positive
-  RPM with valve 2 (the motor way) open until the external pressure says we're
-  at the surface, then stop the pump. The UI raises the override before arming
-  it, so
-  depth_node is already standing down. It also re-pumps if the vehicle sinks
-  back below the surface threshold. Send ``False`` to stand down.
+* Emergency surface (``DEBUG_EMERGENCY_SURFACE``) -- the safety path. Blow
+  ballast: full positive RPM with valve 2 (the motor way) open until the
+  external pressure says we're at the surface, then stop the pump. It also
+  re-pumps if the vehicle sinks back below the surface threshold. Send
+  ``False`` to stand down (or ``DEBUG_RESET`` to cancel).
 
 * Pump for X seconds (``DEBUG_BCU_RPM``) -- run the motor at a requested RPM
   for a bounded window, then stop. Pumping needs valve 2 (the motor way) open
@@ -28,14 +30,7 @@ Command surfaces:
   until ``/bcu/pressure`` crosses ``target_pressure_pa`` in the direction
   the sign of the RPM implies (positive inflates -> tank drops -> stop
   when tank_pa <= target; negative deflates -> tank rises -> stop when
-  tank_pa >= target). Mutually exclusive with the timed pump on this node:
-  arming either replaces the other. We don't pre-judge feasibility: the
-  command just runs in the commanded direction and stops when the live tank
-  reading crosses the target. If the target is unreachable it runs until the
-  operator stops it (or the ``MAX_PUMP_S`` runaway backstop fires). The
-  operator picks an achievable target from the live tank readout in the UI --
-  so the absolute calibration of the tank sensor doesn't matter, only that
-  the chosen number lies on the reachable side in the pumped direction.
+  tank_pa >= target). Mutually exclusive with the timed pump on this node.
 
 * Valves (``DEBUG_BCU_VALVES``) -- latch a valve bitmask (bit0=valve2/motor,
   bit1=valve1/free).
@@ -44,9 +39,10 @@ Command surfaces:
   Sending mask 0 closes them.
 
 While a command is held we re-publish it at 10 Hz. The MQTT bridge's egress
-side is a rate-limit-and-drop throttle, so a lone publish can lose the race
-against depth_node's stream; a steady heartbeat keeps the topic fresh on the
-wire (and the STM fed) for as long as the operator asked.
+side is a rate-limit-and-drop throttle, so a lone publish can lose the race; a
+steady heartbeat -- plus a short trailing-zero flush when a command ends --
+keeps the topic fresh on the wire (and the STM fed), so the reset-to-0 reliably
+reaches the UI strip chart before we fall silent.
 
 The timed pump duration is clamped to ``MAX_PUMP_S`` so a typo'd UI input
 (3000 instead of 3) can't leave the motor running far longer than intended.
@@ -55,9 +51,8 @@ The same cap is the runaway backstop for the pressure-targeted mode.
 
 import rclpy
 from nautilus_msgs.msg import BcuPumpCommand, BcuPumpUntilPressureCommand
-from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from std_msgs.msg import Bool, Int16, Int32, UInt8
+from std_msgs.msg import Bool, Empty, Int16, Int32, UInt8
 
 from py_pkg.physics import gauge_pressure_pa
 from py_pkg.robot_specs import BCU_MOTOR_MAX_RPM, BCU_MOTOR_VALVE_MASK
@@ -83,6 +78,11 @@ EMERGENCY_MAX_S = 120.0
 
 # Gauge pressure at/under which we call it "surfaced" (~0.2 m of fresh water).
 SURFACE_GAUGE_EPS_PA = 2000.0
+
+# How many ticks to keep carrying the terminal 0/closed after a command ends
+# before going silent. 5 ticks @ 10 Hz = 0.5 s, comfortably above the egress
+# throttle so the reset-to-0 always lands on the UI chart.
+FLUSH_TICKS = 5
 
 
 def _clamp_duration(duration_s: float, max_s: float = MAX_PUMP_S) -> float:
@@ -121,11 +121,8 @@ class BcuDebugNode(Node):
         create_subscription_for_topic(
             self, UUVTopics.BCU_PRESSURE, self._on_tank_pressure
         )
-        # The operator's manual-override slider gates everything except the
-        # emergency path: we only drive the wire while this is True.
-        create_subscription_for_topic(
-            self, UUVTopics.CONTROL_MANUAL_OVERRIDE, self._on_override
-        )
+        # Red all-stop from the operator UI.
+        create_subscription_for_topic(self, UUVTopics.DEBUG_RESET, self._on_reset)
 
         # A pump "session" is either timed (set by DEBUG_BCU_RPM) or
         # pressure-targeted (set by DEBUG_BCU_RPM_UNTIL_PRESSURE). Both share
@@ -136,42 +133,45 @@ class BcuDebugNode(Node):
         self._held_rpm: int = 0
         self._pump_deadline_s: float | None = None
         self._target_pressure_pa: int | None = None
+
         # Latched valve bitmask. None means we don't own /bcu/valves (depth_node
         # has it); an int means we're holding that mask.
         self._valve_mask: int | None = None
+
         # Emergency surface.
         self._emergency = False
         self._emergency_deadline_s: float | None = None
         self._emergency_timeout_warned = False
+
         # Latest external pressure as gauge Pa; None until the first reading.
         self._gauge_pa: float | None = None
+
         # Latest tank pressure in absolute Pa; None until the first reading.
         # Drives the stop check for the pressure-targeted pump mode.
         self._tank_pa: float | None = None
-        # Whether the operator slider currently has us in manual mode.
-        self._manual_override = False
+
+        # Trailing-zero flush countdown. When a session ends (or on reset) we
+        # carry the terminal 0/closed for a few ticks so the throttled MQTT
+        # egress reliably lands it, then go silent.
+        self._flush_ticks: int = 0
 
         self._timer = self.create_timer(PUBLISH_PERIOD_S, self._on_tick)
 
     # --- command callbacks ----------------------------------------------
 
-    def _on_override(self, msg: Bool) -> None:
-        active = bool(msg.data)
-        if active == self._manual_override:
-            return
-        self._manual_override = active
-        if not active:
-            # Slider off -> hand /bcu/rpm + /bcu/valves back to depth_node.
-            # Drop any held pump/valve state and zero the motor once so we
-            # leave a clean wire; emergency is left untouched (it ignores the
-            # gate and the UI keeps the override up while surfacing).
-            self._clear_pump_state()
-            self._valve_mask = None
-            self._publish_rpm(0)
-        self.get_logger().info(
-            f"manual override {'engaged' if active else 'released'} -- "
-            f"bcu_debug {'driving' if active else 'silent'}"
-        )
+    def _on_reset(self, _msg: Empty) -> None:
+        # Red all-stop: cancel any pump session, drop valves, cancel an
+        # in-progress emergency surface, and command 0 RPM + closed valves once.
+        # Arm the trailing-zero flush so the terminal 0/closed reliably lands on
+        # the throttled egress, then go silent.
+        self._emergency = False
+        self._emergency_deadline_s = None
+        self._clear_pump_state()
+        self._valve_mask = None
+        self._publish_rpm(0)
+        self._publish_valves(0)
+        self._arm_flush()
+        self.get_logger().info("debug reset -- BCU all-stop (0 RPM, valves closed)")
 
     def _on_pressure(self, msg: Int32) -> None:
         # EXTERNAL_PRESSURE is absolute Pa; the surface check works in gauge.
@@ -187,17 +187,13 @@ class BcuDebugNode(Node):
         if self._emergency:
             self.get_logger().warn("pump command ignored -- emergency surface active")
             return
-        if not self._manual_override:
-            self.get_logger().warn(
-                "pump command ignored -- manual override is off (depth_node owns the BCU)"
-            )
-            return
 
         duration = _clamp_duration(float(msg.duration_s))
         if duration == 0.0:
-            # Explicit stop: zero the motor and clear the window.
+            # Explicit stop: zero the motor, clear the window, flush, go silent.
             self._clear_pump_state()
             self._publish_rpm(0)
+            self._arm_flush()
             return
 
         # New timed window supersedes any pressure-targeted session.
@@ -217,12 +213,6 @@ class BcuDebugNode(Node):
                 "pump-until-pressure ignored -- emergency surface active"
             )
             return
-        if not self._manual_override:
-            self.get_logger().warn(
-                "pump-until-pressure ignored -- manual override is off "
-                "(depth_node owns the BCU)"
-            )
-            return
 
         rpm = int(msg.rpm)
         target = int(msg.target_pressure_pa)
@@ -231,6 +221,7 @@ class BcuDebugNode(Node):
             # Treat as explicit stop, same as duration=0 on the timed command.
             self._clear_pump_state()
             self._publish_rpm(0)
+            self._arm_flush()
             return
 
         if self._tank_pa is None:
@@ -244,10 +235,7 @@ class BcuDebugNode(Node):
         # the per-tick stop condition end it when the tank reading crosses the
         # target. If the target sits on the wrong side (unreachable in the
         # pumped direction), it runs until the operator stops it or the
-        # MAX_PUMP_S backstop fires -- the intended manual contract. This is
-        # what makes the feature calibration-agnostic: the operator reads the
-        # live tank pressure and picks a number on the reachable side.
-        # New pressure-targeted session supersedes any timed window.
+        # MAX_PUMP_S backstop fires.
         self._clear_pump_state()
         self._held_rpm = rpm
         self._target_pressure_pa = target
@@ -263,17 +251,13 @@ class BcuDebugNode(Node):
         if self._emergency:
             self.get_logger().warn("valve command ignored -- emergency surface active")
             return
-        if not self._manual_override:
-            self.get_logger().warn(
-                "valve command ignored -- manual override is off (depth_node owns the BCU)"
-            )
-            return
 
         mask = int(msg.data) & 0b11
         if mask == 0:
-            # Close up and hand /bcu/valves back to depth_node.
+            # Close up; flush the terminal closed-valves out, then go silent.
             self._publish_valves(0)
             self._valve_mask = None
+            self._arm_flush()
             return
 
         self._valve_mask = mask
@@ -295,27 +279,23 @@ class BcuDebugNode(Node):
             self._valve_mask = None
             self._publish_rpm(0)
             self._publish_valves(0)
+            self._arm_flush()
             self.get_logger().info("emergency surface cancelled")
 
     # --- periodic heartbeat ---------------------------------------------
 
     def _on_tick(self) -> None:
         now = self._now_s()
-        # Emergency always acts -- it's the safety path and ignores the gate.
+        # Emergency always acts -- it's the safety path.
         if self._emergency:
             self._tick_emergency(now)
-            return
-
-        # Outside emergency we only touch the wire while the operator slider
-        # has us in manual mode; otherwise depth_node owns the BCU.
-        if not self._manual_override:
             return
 
         # Pump session bookkeeping. The pressure-target check runs first so
         # the operator's stop condition wins over the backstop on the same
         # tick they coincide. Either stop reason clears the whole session
-        # (dropping _held_rpm to 0) so the next callback starts clean -- and
-        # the heartbeat below carries the stop out as a 0.
+        # (dropping _held_rpm to 0) and arms the trailing-zero flush so the
+        # stop carries out as a 0 before we go silent.
         if self._pump_deadline_s is not None:
             target_reached = (
                 self._target_pressure_pa is not None
@@ -338,6 +318,7 @@ class BcuDebugNode(Node):
                     "-- pump stopped"
                 )
                 self._clear_pump_state()
+                self._arm_flush()
             elif now >= self._pump_deadline_s:
                 if self._target_pressure_pa is not None:
                     self.get_logger().warn(
@@ -347,19 +328,28 @@ class BcuDebugNode(Node):
                         "-- pump stopped"
                     )
                 self._clear_pump_state()
+                self._arm_flush()
 
-        # Heartbeat the current commanded RPM every tick while we own the wire.
-        # _held_rpm is the active pump setpoint, or 0 once a session ends (or
-        # when idle in manual mode). Publishing it unconditionally keeps the
-        # 10 Hz stream alive so the throttled MQTT egress always carries the
-        # reset-to-0 to the UI strip chart, and keeps the STM fed -- a single
-        # terminal 0 could otherwise lose the race against the egress throttle.
-        self._publish_rpm(self._held_rpm)
-
-        # Re-assert held valves (None == not ours; 0 was already published on
-        # the close command and the mask cleared).
-        if self._valve_mask:
-            self._publish_valves(self._valve_mask)
+        # Drive the wire only while a command is actually held; otherwise go
+        # silent so depth_node can own the BCU. A pump session is live while
+        # _pump_deadline_s is set; a valve hold while _valve_mask is set.
+        pump_live = self._pump_deadline_s is not None
+        valves_held = self._valve_mask is not None
+        if pump_live or valves_held:
+            # Heartbeat the held command. _held_rpm is the active pump setpoint
+            # (0 for a valve-only hold); re-assert the mask if we hold valves.
+            self._publish_rpm(self._held_rpm)
+            if self._valve_mask:
+                self._publish_valves(self._valve_mask)
+        elif self._flush_ticks > 0:
+            # A session/reset just ended: carry the terminal 0 out for a few
+            # ticks so the rate-throttled /bcu/rpm egress reliably lands it,
+            # then fall silent. RPM only -- /bcu/valves is on-change/retained
+            # (the close was already delivered) and re-publishing it here would
+            # clobber a pump-only session that never touched the valves.
+            self._flush_ticks -= 1
+            self._publish_rpm(0)
+        # else: fully idle -> publish nothing.
 
     def _tick_emergency(self, now: float) -> None:
         timed_out = (
@@ -401,6 +391,10 @@ class BcuDebugNode(Node):
         self._held_rpm = 0
         self._pump_deadline_s = None
         self._target_pressure_pa = None
+
+    def _arm_flush(self) -> None:
+        """Start the trailing-zero flush so a terminal stop reaches the egress."""
+        self._flush_ticks = FLUSH_TICKS
 
     def _now_s(self) -> float:
         return self.get_clock().now().nanoseconds * 1e-9

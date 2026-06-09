@@ -72,7 +72,7 @@ class DepthControlSystem:
 
         Clears the PID's integrator, derivative filter and timing history,
         and re-arms the surface-safe default target. Used when the depth
-        loop is told to go fresh (Do-Nothing mission) so no windup or stale
+        loop is told to go fresh (mission stop) so no windup or stale
         setpoint carries over from a previous mission.
         """
         self.pid_pressure.reset()

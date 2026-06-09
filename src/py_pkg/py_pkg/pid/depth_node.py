@@ -4,7 +4,7 @@ import rclpy
 from geometry_msgs.msg import Pose
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
-from std_msgs.msg import Bool, Empty, Int16, UInt8
+from std_msgs.msg import Bool, Int16, UInt8
 
 from py_pkg.math_utils import deadband_snap
 from py_pkg.physics import gauge_pressure_pa, q_to_rpm
@@ -81,11 +81,6 @@ class DepthControlNode(Node):
         # Held None until the first POSITION_TARGET arrives
         self.target_pressure_pa: float | None = None
         self.current_pressure_pa = 0.0
-        # Set by CONTROL_MANUAL_OVERRIDE. While true, control_loop bails
-        # before publishing -- a manual driver (bcu_debug, future
-        # hand-controller, ...) owns /bcu/rpm and /bcu/valves and we
-        # must not race it on either topic.
-        self._manual_override = False
 
         # Log throttle
         self._target_log_every_n = 10
@@ -117,17 +112,14 @@ class DepthControlNode(Node):
             callback_group=self.callback_group,
         )
 
-        self.manual_override_subscriber = create_subscription_for_topic(
+        # The mission run/stop signal. On /command=false the controller drops
+        # its target, emits one safe-stop and goes silent (freeing the BCU wire
+        # for a debug node); /command=true is a no-op here -- we just wait for
+        # pathfinding's next POSITION_TARGET.
+        self.command_subscriber = create_subscription_for_topic(
             self,
-            UUVTopics.CONTROL_MANUAL_OVERRIDE,
-            self._on_manual_override,
-            callback_group=self.callback_group,
-        )
-
-        self.reset_subscriber = create_subscription_for_topic(
-            self,
-            UUVTopics.CONTROL_RESET,
-            self._on_reset,
+            UUVTopics.COMMAND,
+            self._on_command,
             callback_group=self.callback_group,
         )
 
@@ -136,6 +128,9 @@ class DepthControlNode(Node):
             self.control_loop,
             callback_group=self.callback_group,
         )
+
+        # Leave the BCU wire unambiguously at 0/closed at boot.
+        self._publish_bcu_stop()
 
         self.get_logger().info("Depth control node started.")
 
@@ -155,24 +150,6 @@ class DepthControlNode(Node):
             f"Received current pressure: {self.current_pressure_pa} Pa"
         )
 
-    def _on_manual_override(self, msg: Bool) -> None:
-        active = bool(msg.data)
-        if active != self._manual_override:
-            self.get_logger().info(
-                f"manual override {'engaged' if active else 'released'} -- "
-                f"depth_node BCU publishing {'paused' if active else 'resumed'}"
-            )
-            if active:
-                # Hand the BCU off at a safe stop before we go silent: one
-                # 0-RPM + valves-closed command. Without it the last mission
-                # RPM stays latched on the wire -- on hardware the STM keeps
-                # shipping it (no staleness watchdog), so the pump would keep
-                # running until the operator sends a manual command. The zero
-                # also refreshes the sim bridge's dt clock, avoiding a
-                # one-tick bladder jump when control resumes.
-                self._publish_bcu_stop()
-        self._manual_override = active
-
     def _publish_bcu_stop(self) -> None:
         zero_rpm = Int16()
         zero_rpm.data = 0
@@ -181,28 +158,32 @@ class DepthControlNode(Node):
         valves_off.data = 0
         self.bcu_valves_publisher.publish(valves_off)
 
-    def _on_reset(self, _msg: Empty) -> None:
-        # Drop the setpoint and wipe controller state so the next control_loop
-        # falls into the no-target zero-RPM hold exactly as it did at boot --
-        # no leftover target, no integral windup from a prior mission.
+    def _on_command(self, msg: Bool) -> None:
+        # /command=true (start) is a no-op for the controller -- it just waits
+        # for pathfinding's next POSITION_TARGET. /command=false (stop) wipes
+        # controller state, drops the target, and publishes ONE safe-stop
+        # (0 RPM + valves closed) before control_loop goes silent. That single
+        # safe-stop is mandatory: the STM has no staleness watchdog and re-ships
+        # the last value forever, so going silent without zeroing first would
+        # leave the last mission RPM latched on the wire.
+        if bool(msg.data):
+            return
         self.control_system.reset()
         self.current_bladder_level = self._initial_proportion_full
         self.control_output = 0.0
         self.motor_rpm = 0.0
         self.target_pressure_pa = None
-        self.get_logger().info("control reset -> no-target hold (fresh state).")
+        self._publish_bcu_stop()
+        self.get_logger().info(
+            "stop -> safe-stop emitted, BCU going silent (fresh state)."
+        )
 
     def control_loop(self):
-        if self._manual_override:
-            # A manual driver owns /bcu/rpm and /bcu/valves right now.
-            # Skip both the no-target zero-hold and the full PID step so
-            # we don't race them on the wire.
-            return
-
         if self.target_pressure_pa is None:
-            # No target yet — emit a zero-RPM hold so the BCU bridge
-            # doesn't drift, and skip the cascaded controller work.
-            self._publish_bcu_stop()
+            # No target -> go silent. We do NOT stream a zero hold here: the
+            # safe-stop is emitted once on the /command=false stop (and once at
+            # boot), after which staying off the wire lets a debug node own the
+            # BCU with no contention.
             return
 
         self.current_time = self.get_clock().now().nanoseconds / 1e9

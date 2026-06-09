@@ -57,15 +57,12 @@ TOPIC_QOS_MAP = {
     UUVTopics.DEBUG_ACU_PITCH: UUVQoS.COMMAND,
     UUVTopics.DEBUG_ACU_ROLL: UUVQoS.COMMAND,
     UUVTopics.DEBUG_EMERGENCY_SURFACE: UUVQoS.COMMAND,
-    # Latched control-state flags; TRANSIENT_LOCAL via COMMAND profile so a
-    # late-joining depth_node / acu_node (or the operator UI) sees the current
-    # override state immediately.
-    UUVTopics.CONTROL_MANUAL_OVERRIDE: UUVQoS.COMMAND,
-    UUVTopics.CONTROL_ACU_OVERRIDE: UUVQoS.COMMAND,
-    # A reset is a transient event, not a state to latch — RELIABLE but
-    # volatile, so a controller that (re)starts later doesn't replay an old
-    # reset. The controllers are already fresh on construction anyway.
-    UUVTopics.CONTROL_RESET: UUVQoS.CONTROL,
+    # The debug all-stop is a transient event, not a state to latch — RELIABLE
+    # but volatile, so a debug node that (re)starts later doesn't replay an old
+    # reset. Volatile is safe here precisely because the debug nodes construct
+    # in the silent/idle state: one that's down at publish time isn't driving
+    # the wire and comes up safe, so a missed reset can't strand an actuator.
+    UUVTopics.DEBUG_RESET: UUVQoS.CONTROL,
     # Everything else: control
     UUVTopics.INTERNAL_TEMPERATURE: UUVQoS.CONTROL,
     UUVTopics.INTERNAL_HUMIDITY: UUVQoS.CONTROL,

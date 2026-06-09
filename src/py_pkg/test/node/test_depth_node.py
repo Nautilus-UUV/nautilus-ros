@@ -32,63 +32,6 @@ TARGET_PA_100M = gauge_pressure_pa(depth_to_pressure_pa(100.0))
 TARGET_PA_DEEP_HUGE = gauge_pressure_pa(depth_to_pressure_pa(1000.0))
 
 
-class TestManualOverride:
-    """Engaging CONTROL_MANUAL_OVERRIDE hands the BCU off at a safe stop --
-    one 0-RPM + valves-closed command -- then depth_node goes silent so the
-    manual driver (bcu_debug) owns /bcu/rpm + /bcu/valves without the loop
-    racing it."""
-
-    def test_engage_commands_safe_stop_then_pauses(self, depth_node_harness):
-        h = depth_node_harness
-        h.publish_manual_override(True)
-        h.spin_until(lambda: h.node._manual_override is True, timeout=1.0)
-        h.spin_for(0.2)  # let the one-shot safe-stop emission land
-
-        assert h.received_rpm and h.received_rpm[-1] == 0
-        assert h.received_valves and h.received_valves[-1] == 0
-
-        # After the safe stop the loop stays silent -- no periodic zero-hold.
-        h.received_rpm.clear()
-        h.received_valves.clear()
-        h.spin_for(0.5)  # 5+ control ticks at 10 Hz
-        assert h.received_rpm == [], (
-            f"depth_node must stay silent after the safe stop, got {h.received_rpm}"
-        )
-        assert h.received_valves == []
-
-    def test_engage_mid_pump_commands_safe_stop(self, depth_node_harness):
-        # The point of the safe stop: a mission mid-pump must not leave its
-        # last RPM running when manual mode takes over.
-        h = depth_node_harness
-        h.publish_target_pressure(TARGET_PA_70M)
-        h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
-        h.spin_until(lambda: len(h.received_rpm) >= 4, timeout=1.5)
-        assert h.received_rpm[-1] != 0, "precondition: pump actively commanded"
-
-        h.publish_manual_override(True)
-        h.spin_until(lambda: h.node._manual_override is True, timeout=1.0)
-        h.spin_for(0.2)
-        assert h.received_rpm[-1] == 0, (
-            f"engaging manual mid-pump must command 0 RPM, got {h.received_rpm[-5:]}"
-        )
-        assert h.received_valves[-1] == 0
-
-    def test_publish_resumes_after_override_released(self, depth_node_harness):
-        h = depth_node_harness
-        h.publish_manual_override(True)
-        h.spin_until(lambda: h.node._manual_override is True, timeout=1.0)
-        h.spin_for(0.3)
-
-        h.publish_manual_override(False)
-        h.spin_until(lambda: h.node._manual_override is False, timeout=1.0)
-
-        baseline = len(h.received_rpm)
-        h.spin_for(0.4)
-        assert len(h.received_rpm) > baseline, (
-            "depth_node must resume the zero-hold publish once override is released"
-        )
-
-
 class TestWiringSmoke:
     """Construction + topic graph wiring."""
 
@@ -150,10 +93,10 @@ class TestPressureIngress:
     def test_atmospheric_pressure_yields_zero_gauge(self, depth_node_harness):
         h = depth_node_harness
         h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
-        h.spin_until(
-            lambda: h.node.current_pressure_pa != 0.0 or _seen_any(h),
-            timeout=1.0,
-        )
+        # The node is silent without a target, and atmospheric -> gauge ~0 is
+        # indistinguishable from the init value, so just spin to let the
+        # pressure callback run, then assert the conversion.
+        h.spin_for(0.3)
         # atmospheric → gauge 0 to within float tolerance
         expected = gauge_pressure_pa(PRESSURE_AT_SURFACE_PA)
         assert h.node.current_pressure_pa == pytest.approx(expected, abs=1e-6)
@@ -384,12 +327,13 @@ class TestValveSelection:
                 )
 
 
-class TestControlReset:
-    """CONTROL_RESET drops the held target and wipes controller state, so
-    depth_node falls back to its no-target zero-RPM / valves-closed hold --
-    exactly as it sat at boot before any mission (Do-Nothing mission)."""
+class TestStopResetsAndSilences:
+    """/command=false drops the held target, wipes controller state, emits ONE
+    safe-stop (0 RPM + valves closed), then goes silent -- exactly as the node
+    sat at boot before any mission. Silence frees the BCU wire for a debug
+    node without contention."""
 
-    def test_reset_returns_to_zero_hold(self, depth_node_harness):
+    def test_stop_emits_one_safe_stop_then_silent(self, depth_node_harness):
         h = depth_node_harness
         # Drive a real descent command first.
         h.publish_target_pressure(TARGET_PA_70M)
@@ -397,24 +341,21 @@ class TestControlReset:
         h.spin_until(lambda: len(h.received_rpm) >= 4, timeout=1.5)
         assert h.received_rpm[-1] != 0, "precondition: pump actively commanded"
 
-        # Reset -> target back to None, controller state wiped.
-        h.publish_reset()
+        # Stop -> target back to None, controller state wiped, one safe-stop.
+        h.publish_command(False)
         h.spin_until(lambda: h.node.target_pressure_pa is None, timeout=1.0)
         assert h.node.target_pressure_pa is None
-
-        # Every subsequent emission is the zero-RPM / valves-closed hold.
-        rpm_before = len(h.received_rpm)
-        valves_before = len(h.received_valves)
-        h.spin_for(0.4)
-        post_rpm = h.received_rpm[rpm_before:]
-        post_valves = h.received_valves[valves_before:]
-        assert len(post_rpm) >= 2, "node must keep emitting the zero-hold"
-        assert all(r == 0 for r in post_rpm), f"expected zero-hold, got {post_rpm}"
-        assert all(v == 0 for v in post_valves), (
-            f"expected valves closed, got {post_valves}"
+        h.spin_for(0.2)  # let the one-shot safe-stop land
+        assert h.received_rpm and h.received_rpm[-1] == 0, (
+            f"stop must emit a 0-RPM safe-stop, got {h.received_rpm[-5:]}"
         )
+        assert h.received_valves and h.received_valves[-1] == 0
 
-
-def _seen_any(harness) -> bool:
-    """Helper for spin_until: stop spinning once the timer has emitted at least once."""
-    return len(harness.received_rpm) >= 1
+        # After the safe stop the loop stays silent -- no periodic zero-hold.
+        h.received_rpm.clear()
+        h.received_valves.clear()
+        h.spin_for(0.5)  # 5+ control ticks at 10 Hz
+        assert h.received_rpm == [], (
+            f"depth_node must stay silent after the safe stop, got {h.received_rpm}"
+        )
+        assert h.received_valves == []

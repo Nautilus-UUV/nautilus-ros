@@ -25,7 +25,6 @@ from std_msgs.msg import (
     Float32,
     Int16,
     Int32,
-    String,
     UInt8,
     UInt8MultiArray,
 )
@@ -58,7 +57,9 @@ TOPIC_MESSAGE_MAP = {
     UUVTopics.POSITION_TARGET: Pose,
     UUVTopics.POSITION_ESTIMATION: Pose,
     UUVTopics.PATH: MissionCommand,
-    UUVTopics.COMMAND: String,
+    # Mission run/stop: true = start the loaded mission, false = stop and reset
+    # the stack to its clean initial state.
+    UUVTopics.COMMAND: Bool,
     UUVTopics.CAN_OUT: Frame,
     UUVTopics.DEBUG_BCU_RPM: BcuPumpCommand,
     UUVTopics.DEBUG_BCU_RPM_UNTIL_PRESSURE: BcuPumpUntilPressureCommand,
@@ -67,8 +68,6 @@ TOPIC_MESSAGE_MAP = {
     UUVTopics.DEBUG_ACU_PITCH: Int16,
     UUVTopics.DEBUG_ACU_ROLL: Int16,
     UUVTopics.DEBUG_EMERGENCY_SURFACE: Bool,
-    UUVTopics.CONTROL_MANUAL_OVERRIDE: Bool,
-    UUVTopics.CONTROL_ACU_OVERRIDE: Bool,
-    UUVTopics.CONTROL_RESET: Empty,
+    UUVTopics.DEBUG_RESET: Empty,
     UUVTopics.STATUS_LIVENESS: DiagnosticArray,
 }

@@ -36,7 +36,7 @@ from py_pkg.uuv_ros_core import (
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from sensor_msgs.msg import Imu
-from std_msgs.msg import String
+from std_msgs.msg import Bool
 
 from ._sim_helpers import reap_lingering_gz
 
@@ -164,8 +164,8 @@ class _SawtoothSamplingDriver(Node):
         self.path_pub.publish(cmd)
 
     def publish_start(self) -> None:
-        msg = String()
-        msg.data = "start"
+        msg = Bool()
+        msg.data = True
         self.command_pub.publish(msg)
 
 

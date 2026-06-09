@@ -1,16 +1,17 @@
 """Manual ACU driver -- bypasses the attitude controller.
 
 Drives ``/acu/pitch`` + ``/acu/roll`` by hand so an operator can park the
-pitch mass / roll ring at a position. Whether it's allowed to touch the wire
-is owned by the operator's manual-override slider: the mission UI raises
-``CONTROL_ACU_OVERRIDE`` (through the MQTT bridge), acu_node stands down while
-it's True, and this node only relays / heartbeats its held setpoints during
-that window. Dropping the slider clears the held setpoints, so the heartbeat
-goes silent and acu_node resumes -- turning the slider off *is* the release.
+pitch mass / roll ring at a position. There is no override gate: receiving a
+command means "hold this position." Contention with acu_node is avoided by the
+mission being stopped first -- the UI publishes ``/command``=false when the
+operator engages a manual command, which gates acu_node off -- so this node is
+free to own the ACU. ``DEBUG_RESET`` releases both axes: command neutral (0/0)
+once, then go silent so acu_node can reclaim the wire on the next mission.
 
 While a setpoint is held it's the only thing on the wire, so we re-publish it
 at 10 Hz (same egress-throttle reasoning as bcu_debug -- a lone publish can
-lose the race against the bridge throttle).
+lose the race against the bridge throttle); a short trailing flush carries the
+neutral out after a reset.
 
 Wire formats match the actuator topics: pitch is ``Int16`` millimetres,
 roll is ``Int16`` centidegrees (degrees * 100).
@@ -18,7 +19,7 @@ roll is ``Int16`` centidegrees (degrees * 100).
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Bool, Int16
+from std_msgs.msg import Empty, Int16
 
 from py_pkg.uuv_ros_core import (
     UUVTopics,
@@ -29,6 +30,10 @@ from py_pkg.uuv_ros_core import (
 
 
 PUBLISH_PERIOD_S = 0.1
+
+# Ticks to carry the neutral 0/0 out after a reset before going silent (0.5 s
+# @ 10 Hz, above the MQTT egress throttle).
+FLUSH_TICKS = 5
 
 
 class AcuDebugNode(Node):
@@ -45,64 +50,54 @@ class AcuDebugNode(Node):
         create_subscription_for_topic(
             self, UUVTopics.DEBUG_ACU_ROLL, self._on_roll_cmd
         )
-        # The operator's manual-override slider gates whether we drive the ACU.
-        create_subscription_for_topic(
-            self, UUVTopics.CONTROL_ACU_OVERRIDE, self._on_override
-        )
+        # Red all-stop from the operator UI.
+        create_subscription_for_topic(self, UUVTopics.DEBUG_RESET, self._on_reset)
 
         # Held setpoints. None means "not commanding this axis" -- the axis
         # is left wherever acu_node last put it (we don't fabricate a zero).
         self._pitch_mm: int | None = None
         self._roll_cdeg: int | None = None
-        # Whether the operator slider currently has us in manual mode.
-        self._manual_override = False
+        # Trailing-neutral flush countdown after a reset.
+        self._flush_ticks: int = 0
 
         self._timer = self.create_timer(PUBLISH_PERIOD_S, self._on_tick)
 
     # --- command callbacks ----------------------------------------------
 
-    def _on_override(self, msg: Bool) -> None:
-        active = bool(msg.data)
-        if active == self._manual_override:
-            return
-        self._manual_override = active
-        if not active:
-            # Slider off -> drop the held setpoints so the heartbeat goes
-            # quiet and acu_node owns /acu/pitch + /acu/roll again.
-            self._pitch_mm = None
-            self._roll_cdeg = None
-        self.get_logger().info(
-            f"ACU override {'engaged' if active else 'released'} -- "
-            f"acu_debug {'driving' if active else 'silent'}"
-        )
+    def _on_reset(self, _msg: Empty) -> None:
+        # Release both axes: drop the held setpoints, command neutral once, and
+        # arm the trailing flush so the 0/0 reliably lands on the throttled
+        # egress before we fall silent.
+        self._pitch_mm = None
+        self._roll_cdeg = None
+        self._publish_pitch(0)
+        self._publish_roll(0)
+        self._flush_ticks = FLUSH_TICKS
+        self.get_logger().info("debug reset -- ACU released to neutral (0/0)")
 
     def _on_pitch_cmd(self, msg: Int16) -> None:
-        if not self._manual_override:
-            self.get_logger().warn(
-                "pitch command ignored -- ACU override is off (acu_node owns the ACU)"
-            )
-            return
         self._pitch_mm = int(msg.data)
         self._publish_pitch(self._pitch_mm)
 
     def _on_roll_cmd(self, msg: Int16) -> None:
-        if not self._manual_override:
-            self.get_logger().warn(
-                "roll command ignored -- ACU override is off (acu_node owns the ACU)"
-            )
-            return
         self._roll_cdeg = int(msg.data)
         self._publish_roll(self._roll_cdeg)
 
     # --- periodic heartbeat ---------------------------------------------
 
     def _on_tick(self) -> None:
-        if not self._manual_override:
-            return
-        if self._pitch_mm is not None:
+        pitch_held = self._pitch_mm is not None
+        roll_held = self._roll_cdeg is not None
+        if pitch_held:
             self._publish_pitch(self._pitch_mm)
-        if self._roll_cdeg is not None:
+        if roll_held:
             self._publish_roll(self._roll_cdeg)
+        if not pitch_held and not roll_held and self._flush_ticks > 0:
+            # A reset just neutralized both axes: carry the 0/0 out for a few
+            # ticks so it lands on the throttled egress, then go silent.
+            self._flush_ticks -= 1
+            self._publish_pitch(0)
+            self._publish_roll(0)
 
     # --- helpers --------------------------------------------------------
 

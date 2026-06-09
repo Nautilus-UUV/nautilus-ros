@@ -1,48 +1,39 @@
 """Tier 2: BcuDebugNode end-to-end via in-process rclpy harness.
 
-The override is operator-owned now (the slider raises CONTROL_MANUAL_OVERRIDE),
-so the node is a gated relay: it drives /bcu/rpm + /bcu/valves only while the
-flag is up, and hands the wire back to depth_node when it drops. Emergency
-surface is the one exception -- it acts regardless of the flag.
+There's no override gate now: the node drives /bcu/rpm + /bcu/valves whenever
+it holds a command. Contention with depth_node is avoided upstream (the UI
+stops the mission first, so depth_node goes silent). When idle the node
+publishes nothing; a short trailing-zero flush carries the terminal 0 out after
+a command ends. Emergency surface is the safety path and always acts.
 
 Asserts the behaviours the bench operator depends on:
-* commands are dropped while the override is off (depth_node owns the BCU),
-* once in manual mode the requested rpm reaches /bcu/rpm immediately,
+* a pump command reaches /bcu/rpm immediately (no gate),
 * a 0 follows after the requested duration (motor stops),
 * a fresh command supersedes an in-flight stop without a 0 in between,
-* while in manual the node heartbeats the current command (0 when idle) so the
-  reset-to-0 always reaches the throttled UI stream,
-* dropping the override zeros the motor and goes silent (depth_node takes over),
+* when idle the node is silent (depth_node owns the BCU),
+* a session end flushes trailing zeros so the reset-to-0 reaches the UI stream,
+* /debug/reset all-stops the node (zero, then silent),
 * pump-until-pressure runs without a feasibility pre-check and stops when the
   tank reading crosses the target,
 * valve commands latch and are re-asserted by the heartbeat,
-* emergency surface blows ballast until surfaced, regardless of the flag.
+* a pump-only command never touches the valves,
+* emergency surface blows ballast until surfaced.
 """
 
 from py_pkg.physics import ATMOSPHERIC_PRESSURE_PA
 from py_pkg.robot_specs import BCU_MOTOR_MAX_RPM, BCU_MOTOR_VALVE_MASK
 
 
-def _enter_manual(h) -> None:
-    """Raise the operator override and wait for the node to see it."""
-    h.publish_manual_override(True)
-    h.spin_until(lambda: h.node._manual_override is True, timeout=1.0)
-
-
-def test_command_ignored_without_override(bcu_debug_node_harness):
-    # With the override off, depth_node owns /bcu/rpm -- the debug node must
-    # stay silent rather than racing it (the UI also disables the buttons).
+def test_command_drives_wire_immediately(bcu_debug_node_harness):
+    # No override gate: a pump command reaches /bcu/rpm right away.
     h = bcu_debug_node_harness
     h.publish_pump(rpm=500, duration_s=0.5)
-    h.spin_for(0.3)
-    assert h.received_rpm == [], (
-        f"debug node drove the wire while override was off: {h.received_rpm}"
-    )
+    h.spin_until(lambda: 500 in h.received_rpm, timeout=1.0)
+    assert 500 in h.received_rpm
 
 
 def test_pump_publishes_rpm_then_zero(bcu_debug_node_harness):
     h = bcu_debug_node_harness
-    _enter_manual(h)
     h.publish_pump(rpm=500, duration_s=0.2)
 
     # First, we must see the requested rpm on /bcu/rpm.
@@ -54,9 +45,9 @@ def test_pump_publishes_rpm_then_zero(bcu_debug_node_harness):
         timeout=1.5,
     )
 
-    # In manual mode the node heartbeats the commanded value (0 once idle), so
-    # the stream is padded with leading/trailing 0s -- the only *nonzero*
-    # command must be the requested 500, and it must end at 0.
+    # The node heartbeats the commanded value while the session is live and
+    # flushes trailing 0s when it ends, so the only *nonzero* command must be
+    # the requested 500, and the stream must end at 0.
     nonzero = [r for r in h.received_rpm if r != 0]
     assert nonzero and all(r == 500 for r in nonzero), (
         f"only 500 should have been commanded: {h.received_rpm}"
@@ -69,7 +60,6 @@ def test_negative_rpm_passes_through(bcu_debug_node_harness):
     # sign or otherwise interpret it -- the wire-level direction flip lives in
     # stm_com, not here.
     h = bcu_debug_node_harness
-    _enter_manual(h)
     h.publish_pump(rpm=-300, duration_s=0.15)
 
     h.spin_until(lambda: -300 in h.received_rpm, timeout=1.0)
@@ -88,9 +78,8 @@ def test_negative_rpm_passes_through(bcu_debug_node_harness):
 def test_second_command_cancels_pending_stop(bcu_debug_node_harness):
     # Issue a long pump, then a short one before the first stop fires.
     # The first stop timer must be cancelled, so the sequence reaching
-    # /bcu/rpm is [400, 800, 0] -- no stray 0 between the two rpms.
+    # /bcu/rpm is [400..., 800..., 0] -- no stray 0 between the two rpms.
     h = bcu_debug_node_harness
-    _enter_manual(h)
 
     h.publish_pump(rpm=400, duration_s=2.0)
     h.spin_until(lambda: 400 in h.received_rpm, timeout=1.0)
@@ -109,40 +98,44 @@ def test_second_command_cancels_pending_stop(bcu_debug_node_harness):
     idx_400 = rpms.index(400)
     idx_800 = rpms.index(800)
     assert idx_400 < idx_800
-    # Crucially no stop-0 between the two commands: while the first pump is
-    # active the heartbeat re-asserts 400, it never drops to 0 until the
-    # (cancelled) timer would have fired. Leading 0s from the idle heartbeat
-    # before the first command are fine.
+    # No stop-0 between the two commands: while the first pump is active the
+    # heartbeat re-asserts 400, and the new command supersedes it via
+    # _clear_pump_state() without arming the flush -- so it never drops to 0
+    # until the (cancelled) timer would have fired. (No leading idle 0s now --
+    # the node is silent until the first command.)
     assert all(v != 0 for v in rpms[idx_400:idx_800]), (
         f"unexpected stop fired before the second command was honoured: {rpms}"
     )
     assert rpms[-1] == 0
 
 
-def test_dropping_override_zeros_motor_and_silences(bcu_debug_node_harness):
-    # Turning the slider off hands the BCU back to depth_node: the node must
-    # zero the motor once and then go quiet (no heartbeat in autonomous mode).
+def test_reset_zeros_motor_and_silences(bcu_debug_node_harness):
+    # The red Reset all-stops the debug node: zero the motor (with a short
+    # trailing-zero flush), then go silent so depth_node can reclaim the wire.
     h = bcu_debug_node_harness
-    _enter_manual(h)
     h.publish_pump(rpm=500, duration_s=5.0)
     h.spin_until(lambda: 500 in h.received_rpm, timeout=1.0)
 
-    h.publish_manual_override(False)
-    h.spin_until(lambda: h.node._manual_override is False, timeout=1.0)
-    h.spin_until(lambda: h.received_rpm and h.received_rpm[-1] == 0, timeout=1.0)
+    h.publish_reset()
+    # Immediate 0 + the trailing-zero flush, then silence.
+    h.spin_for(0.8)
+    assert h.received_rpm and h.received_rpm[-1] == 0
+    assert all(r == 0 for r in h.received_rpm[-5:]), (
+        f"reset must emit only 0s, got {h.received_rpm}"
+    )
 
+    # Now past the flush: the node is fully silent.
     h.received.clear()
-    h.spin_for(0.3)
+    h.spin_for(0.5)
     assert h.received_rpm == [], (
-        f"debug node kept driving the wire after override dropped: {h.received_rpm}"
+        f"debug node kept driving the wire after the reset flush: {h.received_rpm}"
     )
 
 
 def test_valve_command_latches_and_heartbeats(bcu_debug_node_harness):
-    # In manual mode an open valve must reach /bcu/valves and keep being
-    # re-asserted by the heartbeat so it survives the bridge egress throttle.
+    # An open valve must reach /bcu/valves and keep being re-asserted by the
+    # heartbeat so it survives the bridge egress throttle.
     h = bcu_debug_node_harness
-    _enter_manual(h)
     h.publish_valves(BCU_MOTOR_VALVE_MASK)
 
     h.spin_until(lambda: BCU_MOTOR_VALVE_MASK in h.received_valves, timeout=1.0)
@@ -155,18 +148,17 @@ def test_valve_command_latches_and_heartbeats(bcu_debug_node_harness):
 
 def test_pump_only_does_not_clobber_valves(bcu_debug_node_harness):
     # An RPM-only pump must not touch /bcu/valves -- otherwise it would slam
-    # the valves shut underneath the operator (and against the pump flow).
+    # the valves shut underneath the operator (and against the pump flow). The
+    # trailing-zero flush is RPM-only for exactly this reason.
     h = bcu_debug_node_harness
-    _enter_manual(h)
     h.publish_pump(rpm=500, duration_s=0.2)
     h.spin_until(lambda: 500 in h.received_rpm, timeout=1.0)
-    h.spin_for(0.2)
+    h.spin_for(0.6)  # past the duration and the flush window
     assert h.received_valves == []
 
 
-def test_emergency_surface_blows_ballast_regardless_of_override(bcu_debug_node_harness):
-    # Emergency is the safety path: it must act even with the override off
-    # (the UI raises the override first, but the node doesn't depend on it).
+def test_emergency_surface_blows_ballast(bcu_debug_node_harness):
+    # Emergency is the safety path: it acts immediately, no command staging.
     h = bcu_debug_node_harness
     # Start deep: gauge pressure well above the surface threshold.
     h.publish_external_pressure(int(ATMOSPHERIC_PRESSURE_PA) + 50_000)
@@ -183,18 +175,37 @@ def test_emergency_surface_blows_ballast_regardless_of_override(bcu_debug_node_h
     assert h.received_rpm[-1] == 0
 
 
-def test_idle_manual_heartbeats_zero(bcu_debug_node_harness):
-    # Issue 5: while in manual with no active pump, the node heartbeats 0 every
-    # tick. Without this the lone terminal 0 after a pump can lose the race
-    # against the UI egress throttle and the strip chart freezes at the last
-    # nonzero rpm.
+def test_idle_is_silent(bcu_debug_node_harness):
+    # With no active command the node publishes nothing, leaving /bcu/rpm to
+    # depth_node. (The trailing-zero flush only runs right after a command ends.)
     h = bcu_debug_node_harness
-    _enter_manual(h)
-    h.spin_for(0.4)  # several tick periods
-    assert h.received_rpm, "expected a 0 heartbeat while idle in manual mode"
-    assert all(r == 0 for r in h.received_rpm), (
-        f"idle manual mode should heartbeat only 0: {h.received_rpm}"
+    h.spin_for(0.5)
+    assert h.received_rpm == [], (
+        f"idle debug node must stay silent, got {h.received_rpm}"
     )
+
+
+def test_session_end_flushes_trailing_zeros(bcu_debug_node_harness):
+    # When a pump session ends the node carries the terminal 0 for a few ticks
+    # so the throttled UI egress reliably lands it, then goes silent. Without
+    # the flush a lone terminal 0 could lose the race and freeze the strip
+    # chart at the last nonzero rpm.
+    h = bcu_debug_node_harness
+    h.publish_pump(rpm=500, duration_s=0.15)
+    h.spin_until(lambda: 500 in h.received_rpm, timeout=1.0)
+    h.spin_for(0.6)  # past the stop and the flush
+
+    last_500 = max(i for i, r in enumerate(h.received_rpm) if r == 500)
+    trailing = h.received_rpm[last_500 + 1:]
+    assert trailing and all(r == 0 for r in trailing), (
+        f"expected a trailing-zero flush after the session, got {h.received_rpm}"
+    )
+    assert len(trailing) >= 2, f"flush too short: {h.received_rpm}"
+
+    # Then silent.
+    h.received.clear()
+    h.spin_for(0.5)
+    assert h.received_rpm == []
 
 
 def test_pump_until_pressure_runs_without_preflight_refusal(bcu_debug_node_harness):
@@ -203,7 +214,6 @@ def test_pump_until_pressure_runs_without_preflight_refusal(bcu_debug_node_harne
     # which the old code refused outright. It must now run the command (emit the
     # requested rpm) rather than instantly zeroing.
     h = bcu_debug_node_harness
-    _enter_manual(h)
     h.publish_tank_pressure(0)  # hardware tank sits near zero gauge
     h.spin_until(lambda: h.node._tank_pa is not None, timeout=1.0)
 
@@ -218,7 +228,6 @@ def test_pump_until_pressure_stops_when_target_crossed(bcu_debug_node_harness):
     # the target. Starts above target (keeps pumping), then a fresh sample
     # below the target ends it.
     h = bcu_debug_node_harness
-    _enter_manual(h)
     h.publish_tank_pressure(8000)
     h.spin_until(lambda: h.node._tank_pa is not None, timeout=1.0)
 

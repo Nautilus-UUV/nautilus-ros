@@ -1,9 +1,10 @@
 """Boot-time mission autostart: latched MissionCommand + start over the tether.
 
 Fires on launch with no external input -- hence the ``auto_`` prefix and the
-``debug/`` home next to ``auto_bcu_oscillator``. Publishes one
-``MissionCommand`` on ``PATH`` and, after a short delay, one ``start`` on
-``COMMAND``, then stays alive for the rest of the launch.
+``debug/`` home. Publishes one ``MissionCommand`` on ``PATH`` and, after a short
+delay, one start
+(``std_msgs/Bool`` true) on ``COMMAND``, then stays alive for the rest of the
+launch.
 
 Why a long-lived node instead of ``ros2 topic pub --once``: ``PATH`` and
 ``COMMAND`` both ride ``UUVQoS.COMMAND`` (RELIABLE + TRANSIENT_LOCAL), so a
@@ -13,8 +14,7 @@ its sample is gone. A ``pathfinding_node`` that finished DDS discovery after
 the publisher had already exited got nothing and sat forever on "waiting for
 /path", which intermittently stalled whole sweep runs. Keeping this node up for
 the launch lifetime means the latch persists and any late-joining subscriber
-still receives both messages. This mirrors how ``auto_bcu_oscillator`` holds
-``CONTROL_MANUAL_OVERRIDE`` latched.
+still receives both messages.
 
 We publish ``PATH`` exactly once and never on a repeat timer on purpose:
 ``pathfinding._on_path`` re-creates the mission and resets its state machine on
@@ -26,7 +26,7 @@ without that side effect.
 import rclpy
 from nautilus_msgs.msg import MissionCommand
 from rclpy.node import Node
-from std_msgs.msg import String
+from std_msgs.msg import Bool
 
 from py_pkg.uuv_ros_core import UUVTopics, create_publisher_for_topic, spin_node
 
@@ -79,10 +79,10 @@ class AutoMission(Node):
 
     def _emit_start(self) -> None:
         self._start_timer.cancel()
-        msg = String()
-        msg.data = "start"
+        msg = Bool()
+        msg.data = True
         self._command_pub.publish(msg)
-        self.get_logger().info(f"Published latched 'start' on {UUVTopics.COMMAND}.")
+        self.get_logger().info(f"Published latched start (true) on {UUVTopics.COMMAND}.")
 
 
 def main(args=None):

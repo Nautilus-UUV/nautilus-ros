@@ -9,8 +9,8 @@ Two directions:
   JSON, get materialised into the matching ROS message via
   ``set_message_fields`` and republished into the ROS graph. QoS 1 -- the
   receiving controllers (depth setpoint, ACU setpoint, pathfinding
-  "start"/"stop"/"abort") are idempotent on duplicates, but at-least-once
-  is the right floor for command traffic.
+  start/stop) are idempotent on duplicates, but at-least-once is the right
+  floor for command traffic.
 
 * **Egress** (ROS -> MQTT): telemetry. The bridge subscribes to the ROS
   topics the frontend wants to render, JSON-encodes them via
@@ -91,15 +91,7 @@ INGRESS_MAP: tuple[IngressMapping, ...] = (
     IngressMapping(
         UUVTopics.DEBUG_EMERGENCY_SURFACE, "nautilus/cmd/debug/emergency_surface", 1
     ),
-    # Operator manual-override slider: the UI raises/lowers both flags to enter
-    # or leave manual mode. depth_node / acu_node stand down while True; the
-    # debug nodes drive the wire only while True.
-    IngressMapping(
-        UUVTopics.CONTROL_MANUAL_OVERRIDE, "nautilus/cmd/control/manual_override", 1
-    ),
-    IngressMapping(
-        UUVTopics.CONTROL_ACU_OVERRIDE, "nautilus/cmd/control/acu_override", 1
-    ),
+    IngressMapping(UUVTopics.DEBUG_RESET, "nautilus/cmd/debug/reset", 1),
 )
 
 
@@ -132,20 +124,6 @@ EGRESS_MAP: tuple[EgressMapping, ...] = (
     ),
     EgressMapping(UUVTopics.ACU_PITCH, "nautilus/telemetry/acu/pitch", 10.0),
     EgressMapping(UUVTopics.ACU_ROLL, "nautilus/telemetry/acu/roll", 10.0),
-    # Manual-override flags: state-like, mirror on-change/retained so the UI
-    # can show "manual mode active" without polling.
-    EgressMapping(
-        UUVTopics.CONTROL_MANUAL_OVERRIDE,
-        "nautilus/telemetry/control/manual_override",
-        0.0,
-        on_change=True,
-    ),
-    EgressMapping(
-        UUVTopics.CONTROL_ACU_OVERRIDE,
-        "nautilus/telemetry/control/acu_override",
-        0.0,
-        on_change=True,
-    ),
     # Per-subsystem health. State-like, so on-change/retained: a payload only
     # crosses the tether on a real online<->offline transition (the liveness
     # node leaves header.stamp zero to keep the JSON byte-stable otherwise),
@@ -176,9 +154,9 @@ STATUS_LINK_LOST = "link_lost"
 # Mission state vocabulary mirrored on MISSION_ACTIVE_TOPIC. Roughly
 # parallels pathfinding_node's internal modes, collapsed to what the UI
 # actually needs to render:
-#   IDLE     -- no mission cached or last command was stop/abort.
+#   IDLE     -- no mission cached, or last command was stop.
 #   LOADED   -- a /path was received, no start yet.
-#   RUNNING  -- /command:start observed after a mission was loaded.
+#   RUNNING  -- /command=true (start) observed after a mission was loaded.
 MISSION_STATE_IDLE = "IDLE"
 MISSION_STATE_LOADED = "LOADED"
 MISSION_STATE_RUNNING = "RUNNING"
@@ -360,18 +338,20 @@ class MqttBridge(Node):
             changed = True
 
         elif mqtt_topic == "nautilus/cmd/command":
-            data = (payload.get("data") or "").lower()
-            if data == "start" and self._mission_cache is not None:
+            start = bool(payload.get("data"))
+            if start and self._mission_cache is not None:
                 if self._mission_state != MISSION_STATE_RUNNING:
                     self._mission_state = MISSION_STATE_RUNNING
                     changed = True
-            elif data in ("stop", "abort"):
-                if self._mission_state != MISSION_STATE_IDLE:
+            elif not start:
+                # Stop -> clean idle. Drop the cached mission too, mirroring
+                # pathfinding_node clearing its loaded mission on /command=false.
+                if (
+                    self._mission_state != MISSION_STATE_IDLE
+                    or self._mission_cache is not None
+                ):
                     self._mission_state = MISSION_STATE_IDLE
-                    if data == "abort":
-                        # Abort drops the cached mission too, matching
-                        # pathfinding_node's behaviour.
-                        self._mission_cache = None
+                    self._mission_cache = None
                     changed = True
 
         if changed:
