@@ -407,6 +407,27 @@ class MqttBridge(Node):
 
         return _callback
 
+    def _reseed_retained_egress(self, client) -> None:
+        """Re-publish the last-known payload of every on-change egress topic,
+        retained, on (re)connect.
+
+        paho drops (doesn't queue) QoS-0 publishes while disconnected, but
+        the on-change dedup updates _last_payload regardless -- so the first
+        liveness/valves/setpoint frame the bridge encodes before the broker
+        is reachable never lands, and every byte-identical follow-up is then
+        suppressed as "no change". The broker ends up with no retained copy,
+        and a fresh UI tab subscribing later sees nothing: the whole liveness
+        grid defaults to offline while Tether (re-seeded below on every
+        connect) sits green. This is the common boot order -- the vehicle's
+        control stack, this bridge included, comes up before the laptop
+        broker; same on a tether reconnect after the broker restarted and
+        lost its retained store. Re-seeding from the cache here restores the
+        retained copy immediately for ALL on-change topics, regardless of how
+        rarely they next change. Snapshot the dict: egress callbacks on the
+        rclpy executor thread mutate it while this runs on the paho thread."""
+        for mqtt_topic, payload_str in list(self._last_payload.items()):
+            client.publish(mqtt_topic, payload=payload_str, qos=0, retain=True)
+
     # --- ingress: MQTT -> ROS -------------------------------------------
 
     def _on_mqtt_message(self, _client, _userdata, mqtt_msg) -> None:
@@ -664,6 +685,10 @@ class MqttBridge(Node):
         # otherwise leave a stale retained status behind.
         with self._lifeguard_lock:
             self._publish_lifeguard_status()
+        # Same hazard for the on-change egress topics (liveness, valves,
+        # setpoint, init): re-publish their last-known retained payloads so a
+        # late-joining UI gets real state instead of a default-offline grid.
+        self._reseed_retained_egress(client)
         self.get_logger().info("mqtt connected")
 
     def _on_disconnect(self, _client, _userdata, _flags, reason_code, _props=None):

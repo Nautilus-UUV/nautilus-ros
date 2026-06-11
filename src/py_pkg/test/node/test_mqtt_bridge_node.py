@@ -83,6 +83,10 @@ class FakeMqttClient:
         self.on_connect = None
         self.on_disconnect = None
         self.on_message = None
+        # paho drops QoS-0 publishes while the socket is down. Default True so
+        # every existing test runs "connected"; the late-broker regression
+        # test flips this to reproduce a publish that never lands.
+        self.connected = True
 
     def will_set(self, topic, payload=None, qos=0, retain=False):
         self.will_topic = topic
@@ -106,6 +110,10 @@ class FakeMqttClient:
         self.subscribed.append((topic, qos))
 
     def publish(self, topic, payload=None, qos=0, retain=False):
+        # Mirror paho: a QoS-0 publish on a down socket is dropped, not
+        # queued. retain=True only seeds the broker if it actually reaches it.
+        if not self.connected:
+            return
         self.published.append(
             FakePublish(topic=topic, payload=payload, qos=qos, retain=retain)
         )
@@ -456,6 +464,71 @@ class TestOnChange:
         publishes = h.fake.publishes_on("nautilus/telemetry/position/target")
         assert len(publishes) == 2
         assert all(p.retain is True for p in publishes)
+
+
+# ---------------------------------------------------------------------------
+# Late-broker re-seed (regression)
+# ---------------------------------------------------------------------------
+
+
+class TestReconnectReseedsRetainedEgress:
+    """The vehicle's control stack (this bridge included) routinely boots
+    before the laptop broker; same shape on a tether reconnect after the
+    broker restarted and lost its retained store. paho drops QoS-0 publishes
+    while the socket is down, but the on-change dedup still caches them -- so
+    without a re-seed on connect the broker ends up with NO retained copy of
+    a state-like topic, every byte-identical follow-up is suppressed as "no
+    change", and a UI tab joining later renders the whole liveness grid
+    offline while Tether sits green. _on_connect must re-publish the cached
+    on-change payloads so late joiners get real state.
+    """
+
+    def test_onchange_encoded_while_down_is_reseeded_on_connect(
+        self, bridge_harness
+    ):
+        h = bridge_harness
+        # Broker not up yet (bridge started first).
+        h.fake.connected = False
+
+        # A valves transition the bridge encodes now is dropped on the wire
+        # but still caches in _last_payload -- valves stands in for liveness
+        # here: identical on-change/retained code path, already wired in the
+        # tester.
+        h.tester.bcu_valves_pub.publish(_BridgeTesterNode._uint8(0b10))
+        h.spin_for(0.1)
+        assert h.fake.publishes_on("nautilus/telemetry/bcu/valves") == [], (
+            "publish while disconnected must not reach the broker"
+        )
+
+        # Broker comes up; paho fires on_connect. The re-seed must restore the
+        # retained valves payload even though the cached frame never changes
+        # again (no further publishes from the tester).
+        h.fake.connected = True
+        h.node._on_connect(h.fake, None, None, 0)
+
+        seeded = h.fake.publishes_on("nautilus/telemetry/bcu/valves")
+        assert len(seeded) == 1, "on_connect must re-seed the cached on-change payload"
+        assert seeded[-1].retain is True
+        assert json.loads(seeded[-1].payload) == {"data": 2}
+
+    def test_reconnect_reseeds_without_a_fresh_ros_message(self, bridge_harness):
+        # Connected the whole time: the first frame lands normally, then the
+        # tether drops and the broker restarts (retained store wiped). A bare
+        # reconnect -- no new ROS message, the value hasn't changed -- must
+        # still restore the retained copy from cache.
+        h = bridge_harness
+        h.tester.bcu_valves_pub.publish(_BridgeTesterNode._uint8(0b01))
+        h.spin_until(
+            lambda: h.fake.publishes_on("nautilus/telemetry/bcu/valves"), timeout=1.0
+        )
+        before = len(h.fake.publishes_on("nautilus/telemetry/bcu/valves"))
+
+        h.node._on_connect(h.fake, None, None, 0)
+
+        after = h.fake.publishes_on("nautilus/telemetry/bcu/valves")
+        assert len(after) == before + 1
+        assert after[-1].retain is True
+        assert json.loads(after[-1].payload) == {"data": 1}
 
 
 # ---------------------------------------------------------------------------
