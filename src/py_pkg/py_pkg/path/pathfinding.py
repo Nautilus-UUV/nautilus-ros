@@ -24,7 +24,7 @@ from nautilus_msgs.msg import MissionCommand
 from rclpy.node import Node
 from std_msgs.msg import Bool
 
-from ..physics import gauge_pressure_pa
+from ..physics import SurfaceReference
 from ..uuv_ros_core import (
     UUVTopics,
     create_publisher_for_topic,
@@ -52,6 +52,13 @@ class PathfindingNode(Node):
         self._current_pressure_pa: float | None = None
         self._current_pose: Pose | None = None
 
+        # Gauge reference: standard atmosphere until the operator's
+        # pre-dive Initialize registers the real surface pressure
+        # (DIVE_INIT). Matters here more than anywhere -- "surfaced" is
+        # defined as ~0.5 m of water (SURFACE_THRESHOLD_PA), well inside
+        # what weather alone moves the surface pressure by.
+        self._surface_ref = SurfaceReference()
+
         create_subscription_for_topic(
             self, UUVTopics.POSITION_ESTIMATION, self._on_pose
         )
@@ -60,6 +67,7 @@ class PathfindingNode(Node):
         )
         create_subscription_for_topic(self, UUVTopics.COMMAND, self._on_command)
         create_subscription_for_topic(self, UUVTopics.PATH, self._on_path)
+        create_subscription_for_topic(self, UUVTopics.DIVE_INIT, self._on_dive_init)
 
         self._target_pub = create_publisher_for_topic(self, UUVTopics.POSITION_TARGET)
         self.create_timer(1.0 / REFERENCE_RATE_HZ, self._tick)
@@ -70,8 +78,14 @@ class PathfindingNode(Node):
         self._current_pose = msg
 
     def _on_pressure(self, msg) -> None:
-        # EXTERNAL_PRESSURE is absolute Pa; the depth stack works in gauge.
-        self._current_pressure_pa = gauge_pressure_pa(float(msg.data))
+        # EXTERNAL_PRESSURE is absolute Pa; the depth stack works in gauge,
+        # referenced to the registered surface pressure once it's in.
+        self._current_pressure_pa = self._surface_ref.gauge(float(msg.data))
+
+    def _on_dive_init(self, msg) -> None:
+        self._surface_ref.register_logged(
+            float(msg.surface_pressure_pa), self.get_logger()
+        )
 
     def _on_path(self, msg: MissionCommand) -> None:
         # `/path` is latched (transient-local), so the same MissionCommand can be

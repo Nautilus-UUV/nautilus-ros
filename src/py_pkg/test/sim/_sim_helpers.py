@@ -5,10 +5,40 @@ bind the same gz transport bus. ``reap_lingering_gz`` enforces "no
 concurrent simulators of this world" by killing any leftover ``gz sim``
 of our world. Needed because launch_testing's SIGTERM doesn't reliably
 reap the gz-sim-server child of the Ruby ``gz sim`` wrapper.
+
+``spin_for`` / ``spin_until`` are the standard executor-pumping loops
+every sim test needs, and ``sim_gui_enabled`` reads the shared
+``BCU_SIM_GUI`` switch — defined once here so the polling slice and the
+env vocabulary can't drift between tests.
 """
 
+import os
 import subprocess
 import time
+
+
+def spin_for(executor, duration_s: float, slice_s: float = 0.05) -> None:
+    """Pump an executor for a fixed wall-clock window."""
+    deadline = time.monotonic() + duration_s
+    while time.monotonic() < deadline:
+        executor.spin_once(timeout_sec=slice_s)
+
+
+def spin_until(executor, predicate, timeout_s: float, slice_s: float = 0.05) -> bool:
+    """Pump an executor until ``predicate()`` holds or the timeout passes;
+    returns the final predicate value."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        executor.spin_once(timeout_sec=slice_s)
+    return predicate()
+
+
+def sim_gui_enabled() -> bool:
+    """``BCU_SIM_GUI=1`` (or true/yes/on) shows the Gazebo GUI."""
+    return os.environ.get("BCU_SIM_GUI", "").lower() in ("1", "true", "yes", "on")
+
 
 # Catches the Ruby wrapper for our world, and the "gz sim server" child
 # it forks — once reparented to PID 1 after a crash, that child has no

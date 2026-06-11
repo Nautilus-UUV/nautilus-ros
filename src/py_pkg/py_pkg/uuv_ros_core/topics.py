@@ -54,6 +54,12 @@ class UUVTopics:
     PATH = "/path"
     COMMAND = "/command"
 
+    # Operator initialization. One latched message carries the pre-dive
+    # registrations (surface pressure + tank empty/full endpoints) -- a
+    # single topic because the UI registers all three atomically with one
+    # button, so consumers can never see a torn empty/full pair.
+    DIVE_INIT = "/init/dive"
+
     # CAN communication
     CAN_OUT = "/can/out"
 

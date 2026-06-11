@@ -17,11 +17,11 @@ Asserts the behaviours the bench operator depends on:
   tank reading crosses the target,
 * valve commands latch and are re-asserted by the heartbeat,
 * a pump-only command never touches the valves,
-* emergency surface blows ballast until surfaced.
+* emergency surface blows ballast continuously until cancelled.
 """
 
-from py_pkg.physics import ATMOSPHERIC_PRESSURE_PA
-from py_pkg.robot_specs import BCU_MOTOR_MAX_RPM, BCU_MOTOR_VALVE_MASK
+from py_pkg.debug.bcu_debug_node import EMERGENCY_SURFACE_RPM
+from py_pkg.robot_specs import BCU_MOTOR_VALVE_MASK
 
 
 def test_command_drives_wire_immediately(bcu_debug_node_harness):
@@ -49,9 +49,9 @@ def test_pump_publishes_rpm_then_zero(bcu_debug_node_harness):
     # flushes trailing 0s when it ends, so the only *nonzero* command must be
     # the requested 500, and the stream must end at 0.
     nonzero = [r for r in h.received_rpm if r != 0]
-    assert nonzero and all(r == 500 for r in nonzero), (
-        f"only 500 should have been commanded: {h.received_rpm}"
-    )
+    assert nonzero and all(
+        r == 500 for r in nonzero
+    ), f"only 500 should have been commanded: {h.received_rpm}"
     assert h.received_rpm[-1] == 0
 
 
@@ -69,9 +69,9 @@ def test_negative_rpm_passes_through(bcu_debug_node_harness):
     )
 
     nonzero = [r for r in h.received_rpm if r != 0]
-    assert nonzero and all(r == -300 for r in nonzero), (
-        f"debug node must pass the negative rpm through unchanged: {h.received_rpm}"
-    )
+    assert nonzero and all(
+        r == -300 for r in nonzero
+    ), f"debug node must pass the negative rpm through unchanged: {h.received_rpm}"
     assert h.received_rpm[-1] == 0
 
 
@@ -103,9 +103,9 @@ def test_second_command_cancels_pending_stop(bcu_debug_node_harness):
     # _clear_pump_state() without arming the flush -- so it never drops to 0
     # until the (cancelled) timer would have fired. (No leading idle 0s now --
     # the node is silent until the first command.)
-    assert all(v != 0 for v in rpms[idx_400:idx_800]), (
-        f"unexpected stop fired before the second command was honoured: {rpms}"
-    )
+    assert all(
+        v != 0 for v in rpms[idx_400:idx_800]
+    ), f"unexpected stop fired before the second command was honoured: {rpms}"
     assert rpms[-1] == 0
 
 
@@ -120,16 +120,16 @@ def test_reset_zeros_motor_and_silences(bcu_debug_node_harness):
     # Immediate 0 + the trailing-zero flush, then silence.
     h.spin_for(0.8)
     assert h.received_rpm and h.received_rpm[-1] == 0
-    assert all(r == 0 for r in h.received_rpm[-5:]), (
-        f"reset must emit only 0s, got {h.received_rpm}"
-    )
+    assert all(
+        r == 0 for r in h.received_rpm[-5:]
+    ), f"reset must emit only 0s, got {h.received_rpm}"
 
     # Now past the flush: the node is fully silent.
     h.received.clear()
     h.spin_for(0.5)
-    assert h.received_rpm == [], (
-        f"debug node kept driving the wire after the reset flush: {h.received_rpm}"
-    )
+    assert (
+        h.received_rpm == []
+    ), f"debug node kept driving the wire after the reset flush: {h.received_rpm}"
 
 
 def test_valve_command_latches_and_heartbeats(bcu_debug_node_harness):
@@ -157,22 +157,35 @@ def test_pump_only_does_not_clobber_valves(bcu_debug_node_harness):
     assert h.received_valves == []
 
 
-def test_emergency_surface_blows_ballast(bcu_debug_node_harness):
-    # Emergency is the safety path: it acts immediately, no command staging.
+def test_emergency_surface_blows_ballast_continuously(bcu_debug_node_harness):
+    # Emergency is the safety path: it acts immediately, no command staging,
+    # and it is deliberately dumb -- no surfaced check, no timeout. Both the
+    # operator's slider and the lifeguard failsafe land on this behavior.
     h = bcu_debug_node_harness
-    # Start deep: gauge pressure well above the surface threshold.
-    h.publish_external_pressure(int(ATMOSPHERIC_PRESSURE_PA) + 50_000)
-    h.spin_for(0.1)
     h.publish_emergency(True)
 
-    # Blow ballast: full positive RPM with valve 2 (the motor way) open.
-    h.spin_until(lambda: BCU_MOTOR_MAX_RPM in h.received_rpm, timeout=1.0)
+    # Blow ballast: EMERGENCY_SURFACE_RPM with valve 2 (the motor way) open.
+    h.spin_until(lambda: EMERGENCY_SURFACE_RPM in h.received_rpm, timeout=1.0)
     h.spin_until(lambda: BCU_MOTOR_VALVE_MASK in h.received_valves, timeout=1.0)
 
-    # Report we've reached the surface -> the pump must stop.
-    h.publish_external_pressure(int(ATMOSPHERIC_PRESSURE_PA))
-    h.spin_until(lambda: h.received_rpm and h.received_rpm[-1] == 0, timeout=2.0)
-    assert h.received_rpm[-1] == 0
+    # Continuous: nothing stops it on its own -- every sample stays at the
+    # emergency rpm with the motor way held open.
+    h.received.clear()
+    h.received_valves.clear()
+    h.spin_for(0.5)
+    assert h.received_rpm and all(
+        r == EMERGENCY_SURFACE_RPM for r in h.received_rpm
+    ), f"emergency must keep pumping at {EMERGENCY_SURFACE_RPM}: {h.received_rpm}"
+    assert h.received_valves and all(
+        v == BCU_MOTOR_VALVE_MASK for v in h.received_valves
+    ), f"motor way must stay open: {h.received_valves}"
+
+    # Only an explicit cancel stands it down: pump zeroed, valves closed.
+    # (Two topics, so each gets its own wait -- delivery order across them
+    # isn't guaranteed.)
+    h.publish_emergency(False)
+    h.spin_until(lambda: h.received_rpm and h.received_rpm[-1] == 0, timeout=1.0)
+    h.spin_until(lambda: h.received_valves and h.received_valves[-1] == 0, timeout=1.0)
 
 
 def test_idle_is_silent(bcu_debug_node_harness):
@@ -180,9 +193,9 @@ def test_idle_is_silent(bcu_debug_node_harness):
     # depth_node. (The trailing-zero flush only runs right after a command ends.)
     h = bcu_debug_node_harness
     h.spin_for(0.5)
-    assert h.received_rpm == [], (
-        f"idle debug node must stay silent, got {h.received_rpm}"
-    )
+    assert (
+        h.received_rpm == []
+    ), f"idle debug node must stay silent, got {h.received_rpm}"
 
 
 def test_session_end_flushes_trailing_zeros(bcu_debug_node_harness):
@@ -196,10 +209,10 @@ def test_session_end_flushes_trailing_zeros(bcu_debug_node_harness):
     h.spin_for(0.6)  # past the stop and the flush
 
     last_500 = max(i for i, r in enumerate(h.received_rpm) if r == 500)
-    trailing = h.received_rpm[last_500 + 1:]
-    assert trailing and all(r == 0 for r in trailing), (
-        f"expected a trailing-zero flush after the session, got {h.received_rpm}"
-    )
+    trailing = h.received_rpm[last_500 + 1 :]
+    assert trailing and all(
+        r == 0 for r in trailing
+    ), f"expected a trailing-zero flush after the session, got {h.received_rpm}"
     assert len(trailing) >= 2, f"flush too short: {h.received_rpm}"
 
     # Then silent.
@@ -238,7 +251,7 @@ def test_pump_until_pressure_stops_when_target_crossed(bcu_debug_node_harness):
     h.publish_tank_pressure(4000)
     h.spin_until(lambda: h.received_rpm and h.received_rpm[-1] == 0, timeout=1.5)
     nonzero = [r for r in h.received_rpm if r != 0]
-    assert nonzero and all(r == 500 for r in nonzero), (
-        f"only the commanded 500 should appear: {h.received_rpm}"
-    )
+    assert nonzero and all(
+        r == 500 for r in nonzero
+    ), f"only the commanded 500 should appear: {h.received_rpm}"
     assert h.received_rpm[-1] == 0

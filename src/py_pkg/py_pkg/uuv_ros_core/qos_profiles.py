@@ -51,6 +51,10 @@ TOPIC_QOS_MAP = {
     # Commands
     UUVTopics.COMMAND: UUVQoS.COMMAND,
     UUVTopics.PATH: UUVQoS.COMMAND,
+    # Pre-dive registration is state, not an event: TRANSIENT_LOCAL latches
+    # the last Initialize so a controller that (re)starts mid-deployment
+    # still sees the registered values.
+    UUVTopics.DIVE_INIT: UUVQoS.COMMAND,
     UUVTopics.DEBUG_BCU_RPM: UUVQoS.COMMAND,
     UUVTopics.DEBUG_BCU_RPM_UNTIL_PRESSURE: UUVQoS.COMMAND,
     UUVTopics.DEBUG_BCU_VALVES: UUVQoS.COMMAND,

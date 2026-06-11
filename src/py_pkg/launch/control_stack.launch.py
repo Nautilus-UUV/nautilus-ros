@@ -71,6 +71,9 @@ def _wire_control_stack(context, *_args, **_kwargs):
     control = load_scenario(LaunchConfiguration("scenario").perform(context)).control
     mqtt_broker_host = LaunchConfiguration("mqtt_broker_host").perform(context)
     mqtt_broker_port = int(LaunchConfiguration("mqtt_broker_port").perform(context))
+    lifeguard_timeout_s = float(
+        LaunchConfiguration("lifeguard_timeout_s").perform(context)
+    )
     ekf_publish_enabled = (
         LaunchConfiguration("ekf_publish_enabled").perform(context).lower() == "true"
     )
@@ -123,6 +126,7 @@ def _wire_control_stack(context, *_args, **_kwargs):
                 {
                     "broker_host": mqtt_broker_host,
                     "broker_port": mqtt_broker_port,
+                    "lifeguard_timeout_s": lifeguard_timeout_s,
                 }
             ],
         ),
@@ -178,6 +182,16 @@ def generate_launch_description():
                 "mqtt_broker_port",
                 default_value="1883",
                 description="MQTT broker TCP port.",
+            ),
+            DeclareLaunchArgument(
+                "lifeguard_timeout_s",
+                default_value="15.0",
+                description=(
+                    "Dead-man window for the lifeguard failsafe: once armed "
+                    "(nautilus/cmd/lifeguard), this many seconds without a "
+                    "laptop heartbeat latches the emergency surface. Tests "
+                    "shorten it further."
+                ),
             ),
             DeclareLaunchArgument(
                 "ekf_publish_enabled",

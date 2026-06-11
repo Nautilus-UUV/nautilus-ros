@@ -15,10 +15,11 @@ once, then go silent.
 Command surfaces:
 
 * Emergency surface (``DEBUG_EMERGENCY_SURFACE``) -- the safety path. Blow
-  ballast: full positive RPM with valve 2 (the motor way) open until the
-  external pressure says we're at the surface, then stop the pump. It also
-  re-pumps if the vehicle sinks back below the surface threshold. Send
-  ``False`` to stand down (or ``DEBUG_RESET`` to cancel).
+  ballast: pump at ``EMERGENCY_SURFACE_RPM`` with valve 2 (the motor way)
+  open, continuously. Deliberately dumb -- no surfaced check, no timeout, no
+  pressure feedback of any kind -- so it cannot be argued out of surfacing by
+  a bad sensor. Only an explicit ``False`` (or ``DEBUG_RESET``) stands it
+  down. Both the operator's slider and the lifeguard failsafe land here.
 
 * Pump for X seconds (``DEBUG_BCU_RPM``) -- run the motor at a requested RPM
   for a bounded window, then stop. Pumping needs valve 2 (the motor way) open
@@ -30,7 +31,21 @@ Command surfaces:
   until ``/bcu/pressure`` crosses ``target_pressure_pa`` in the direction
   the sign of the RPM implies (positive inflates -> tank drops -> stop
   when tank_pa <= target; negative deflates -> tank rises -> stop when
-  tank_pa >= target). Mutually exclusive with the timed pump on this node.
+  tank_pa >= target). The target is in the tank sensor's own frame (tank
+  relative to hull, the frame ``/bcu/pressure`` reports) -- read it off
+  the live stream, don't hand-convert from absolute. Mutually exclusive
+  with the timed pump on this node.
+
+None of the pump commands on THIS node consult the operator's registered
+tank limits (DIVE_INIT) -- a timed or pressure-targeted pump can dead-head
+at a tank endpoint until the operator stops it or ``MAX_PUMP_S`` fires.
+Deliberate: debug tools execute what the operator says. The tank smarts
+live elsewhere: the depth PID clamps its own output, and the MQTT bridge
+stands down an emergency blow (lifeguard- or slider-triggered alike) by
+publishing ``DEBUG_EMERGENCY_SURFACE``=false once the tank is within 10%
+of the registered empty endpoint. Keeping that check out of THIS node is
+what keeps the emergency surface impossible to argue out of surfacing
+with a bad sensor.
 
 * Valves (``DEBUG_BCU_VALVES``) -- latch a valve bitmask (bit0=valve2/motor,
   bit1=valve1/free).
@@ -54,8 +69,7 @@ from nautilus_msgs.msg import BcuPumpCommand, BcuPumpUntilPressureCommand
 from rclpy.node import Node
 from std_msgs.msg import Bool, Empty, Int16, Int32, UInt8
 
-from py_pkg.physics import gauge_pressure_pa
-from py_pkg.robot_specs import BCU_MOTOR_MAX_RPM, BCU_MOTOR_VALVE_MASK
+from py_pkg.robot_specs import BCU_MOTOR_VALVE_MASK
 from py_pkg.uuv_ros_core import (
     UUVTopics,
     create_publisher_for_topic,
@@ -70,14 +84,10 @@ MAX_PUMP_S = 300.0
 # bridge's per-topic clock and the next sample is always allowed through.
 PUBLISH_PERIOD_S = 0.1
 
-# Cap on a single emergency-surface burst so a stuck dive (never reaches the
-# surface) doesn't pump the motor flat-out indefinitely. Generous: a normal
-# ascent surfaces well inside this. After it expires we stop pumping; the
-# operator sees we didn't surface and intervenes.
-EMERGENCY_MAX_S = 120.0
-
-# Gauge pressure at/under which we call it "surfaced" (~0.2 m of fresh water).
-SURFACE_GAUGE_EPS_PA = 2000.0
+# Emergency-surface pump speed. Shared by the operator's slider and the
+# lifeguard failsafe -- one behavior, one constant; Tier 2/3 tests assert it
+# on the wire.
+EMERGENCY_SURFACE_RPM = 3000
 
 # How many ticks to keep carrying the terminal 0/closed after a command ends
 # before going silent. 5 ticks @ 10 Hz = 0.5 s, comfortably above the egress
@@ -114,9 +124,6 @@ class BcuDebugNode(Node):
         create_subscription_for_topic(
             self, UUVTopics.DEBUG_EMERGENCY_SURFACE, self._on_emergency_cmd
         )
-        create_subscription_for_topic(
-            self, UUVTopics.EXTERNAL_PRESSURE, self._on_pressure
-        )
         # Tank pressure is the stop signal for the pressure-targeted pump mode.
         create_subscription_for_topic(
             self, UUVTopics.BCU_PRESSURE, self._on_tank_pressure
@@ -140,13 +147,8 @@ class BcuDebugNode(Node):
 
         # Emergency surface.
         self._emergency = False
-        self._emergency_deadline_s: float | None = None
-        self._emergency_timeout_warned = False
 
-        # Latest external pressure as gauge Pa; None until the first reading.
-        self._gauge_pa: float | None = None
-
-        # Latest tank pressure in absolute Pa; None until the first reading.
+        # Latest tank pressure in sensor-frame Pa; None until the first reading.
         # Drives the stop check for the pressure-targeted pump mode.
         self._tank_pa: float | None = None
 
@@ -165,7 +167,6 @@ class BcuDebugNode(Node):
         # Arm the trailing-zero flush so the terminal 0/closed reliably lands on
         # the throttled egress, then go silent.
         self._emergency = False
-        self._emergency_deadline_s = None
         self._clear_pump_state()
         self._valve_mask = None
         self._publish_rpm(0)
@@ -173,14 +174,12 @@ class BcuDebugNode(Node):
         self._arm_flush()
         self.get_logger().info("debug reset -- BCU all-stop (0 RPM, valves closed)")
 
-    def _on_pressure(self, msg: Int32) -> None:
-        # EXTERNAL_PRESSURE is absolute Pa; the surface check works in gauge.
-        self._gauge_pa = gauge_pressure_pa(float(msg.data))
-
     def _on_tank_pressure(self, msg: Int32) -> None:
-        # BCU_PRESSURE is the absolute tank pressure in Pa. We just cache it;
-        # the stop check runs in _on_tick alongside the deadline check so the
-        # decision is on the same heartbeat as the RPM re-publish.
+        # BCU_PRESSURE is the tank pressure in Pa, in the sensor's own frame
+        # (tank relative to hull, ~0.7-1.5 barg over the working range). We
+        # just cache it; the stop check runs in _on_tick alongside the
+        # deadline check so the decision is on the same heartbeat as the RPM
+        # re-publish.
         self._tank_pa = float(msg.data)
 
     def _on_rpm_cmd(self, msg: BcuPumpCommand) -> None:
@@ -267,14 +266,11 @@ class BcuDebugNode(Node):
         engage = bool(msg.data)
         if engage and not self._emergency:
             self._emergency = True
-            self._emergency_deadline_s = self._now_s() + EMERGENCY_MAX_S
-            self._emergency_timeout_warned = False
             self.get_logger().warn("EMERGENCY SURFACE engaged -- blowing ballast")
             # Push the first blow-ballast sample now rather than waiting a tick.
-            self._tick_emergency(self._now_s())
+            self._tick_emergency()
         elif not engage and self._emergency:
             self._emergency = False
-            self._emergency_deadline_s = None
             self._clear_pump_state()
             self._valve_mask = None
             self._publish_rpm(0)
@@ -288,7 +284,7 @@ class BcuDebugNode(Node):
         now = self._now_s()
         # Emergency always acts -- it's the safety path.
         if self._emergency:
-            self._tick_emergency(now)
+            self._tick_emergency()
             return
 
         # Pump session bookkeeping. The pressure-target check runs first so
@@ -351,32 +347,11 @@ class BcuDebugNode(Node):
             self._publish_rpm(0)
         # else: fully idle -> publish nothing.
 
-    def _tick_emergency(self, now: float) -> None:
-        timed_out = (
-            self._emergency_deadline_s is not None and now >= self._emergency_deadline_s
-        )
-        surfaced = self._gauge_pa is not None and self._gauge_pa <= SURFACE_GAUGE_EPS_PA
-
-        if timed_out:
-            if not self._emergency_timeout_warned:
-                self.get_logger().warn(
-                    "emergency surface timed out before reaching the surface -- "
-                    "pump stopped; cancel to release"
-                )
-                self._emergency_timeout_warned = True
-            self._publish_rpm(0)
-            self._publish_valves(0)
-            return
-
-        if surfaced:
-            # At the surface: stop pumping and close valves to hold the full
-            # bladder. If we sink back past the threshold we'll re-pump.
-            self._publish_rpm(0)
-            self._publish_valves(0)
-            return
-
-        # Still down: blow ballast -- full inflate through valve 2 (motor way).
-        self._publish_rpm(BCU_MOTOR_MAX_RPM)
+    def _tick_emergency(self) -> None:
+        # Continuously blow ballast through valve 2 (the motor way). No
+        # surfaced check, no timeout -- only an explicit cancel (False) or
+        # DEBUG_RESET stands it down.
+        self._publish_rpm(EMERGENCY_SURFACE_RPM)
         self._publish_valves(BCU_MOTOR_VALVE_MASK)
 
     # --- helpers --------------------------------------------------------

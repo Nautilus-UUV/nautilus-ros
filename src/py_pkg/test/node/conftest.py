@@ -25,6 +25,7 @@ from geometry_msgs.msg import Pose
 from nautilus_msgs.msg import (
     BcuPumpCommand,
     BcuPumpUntilPressureCommand,
+    DiveInit,
     MissionCommand,
 )
 from py_pkg.debug.acu_debug_node import AcuDebugNode
@@ -119,6 +120,10 @@ class _DepthTesterNode(Node):
         self.external_pressure_pub = create_publisher_for_topic(
             self, UUVTopics.EXTERNAL_PRESSURE
         )
+        self.tank_pressure_pub = create_publisher_for_topic(
+            self, UUVTopics.BCU_PRESSURE
+        )
+        self.dive_init_pub = create_publisher_for_topic(self, UUVTopics.DIVE_INIT)
         self.command_pub = create_publisher_for_topic(self, UUVTopics.COMMAND)
         self.bcu_rpm_sub = create_subscription_for_topic(
             self, UUVTopics.BCU_RPM, self._on_rpm
@@ -144,6 +149,24 @@ class _DepthTesterNode(Node):
         msg = Int32()
         msg.data = int(value_pa)
         self.external_pressure_pub.publish(msg)
+
+    def publish_tank_pressure(self, value_pa: int) -> None:
+        # BCU_PRESSURE in the tank sensor's own frame; feeds the output clamp.
+        msg = Int32()
+        msg.data = int(value_pa)
+        self.tank_pressure_pub.publish(msg)
+
+    def publish_dive_init(
+        self,
+        surface_pressure_pa: float = 0.0,
+        tank_empty_pa: float = 0.0,
+        tank_full_pa: float = 0.0,
+    ) -> None:
+        msg = DiveInit()
+        msg.surface_pressure_pa = float(surface_pressure_pa)
+        msg.tank_empty_pa = float(tank_empty_pa)
+        msg.tank_full_pa = float(tank_full_pa)
+        self.dive_init_pub.publish(msg)
 
     def publish_command(self, start: bool) -> None:
         # depth_node subscribes to /command and resets to a safe-silent state
@@ -172,6 +195,21 @@ class DepthNodeHarness(NodeHarness):
 
     def publish_external_pressure(self, value_pa: int) -> None:
         self.tester.publish_external_pressure(value_pa)
+
+    def publish_tank_pressure(self, value_pa: int) -> None:
+        self.tester.publish_tank_pressure(value_pa)
+
+    def publish_dive_init(
+        self,
+        surface_pressure_pa: float = 0.0,
+        tank_empty_pa: float = 0.0,
+        tank_full_pa: float = 0.0,
+    ) -> None:
+        self.tester.publish_dive_init(
+            surface_pressure_pa=surface_pressure_pa,
+            tank_empty_pa=tank_empty_pa,
+            tank_full_pa=tank_full_pa,
+        )
 
     def publish_command(self, start: bool) -> None:
         self.tester.publish_command(start)
@@ -226,6 +264,7 @@ class _ACUTesterNode(Node):
         self.external_pressure_pub = create_publisher_for_topic(
             self, UUVTopics.EXTERNAL_PRESSURE
         )
+        self.dive_init_pub = create_publisher_for_topic(self, UUVTopics.DIVE_INIT)
         self.command_pub = create_publisher_for_topic(self, UUVTopics.COMMAND)
         self.pitch_sub = create_subscription_for_topic(
             self, UUVTopics.ACU_PITCH, self._on_pitch
@@ -264,6 +303,12 @@ class _ACUTesterNode(Node):
         msg.data = int(value_pa)
         self.external_pressure_pub.publish(msg)
 
+    def publish_dive_init(self, surface_pressure_pa: float) -> None:
+        # acu_node only reads the surface reference off DIVE_INIT.
+        msg = DiveInit()
+        msg.surface_pressure_pa = float(surface_pressure_pa)
+        self.dive_init_pub.publish(msg)
+
     def publish_command(self, start: bool) -> None:
         # acu_node subscribes to /command and resets to a safe-silent state
         # on false (the old CONTROL_RESET path, now folded into /command).
@@ -299,6 +344,9 @@ class ACUNodeHarness(NodeHarness):
     def publish_external_pressure(self, value_pa: int) -> None:
         self.tester.publish_external_pressure(value_pa)
 
+    def publish_dive_init(self, surface_pressure_pa: float) -> None:
+        self.tester.publish_dive_init(surface_pressure_pa)
+
     def publish_command(self, start: bool) -> None:
         self.tester.publish_command(start)
 
@@ -333,6 +381,7 @@ class _PathfindingTesterNode(Node):
         )
         self.command_pub = create_publisher_for_topic(self, UUVTopics.COMMAND)
         self.path_pub = create_publisher_for_topic(self, UUVTopics.PATH)
+        self.dive_init_pub = create_publisher_for_topic(self, UUVTopics.DIVE_INIT)
         self.target_sub = create_subscription_for_topic(
             self, UUVTopics.POSITION_TARGET, self._on_target
         )
@@ -373,6 +422,12 @@ class _PathfindingTesterNode(Node):
         msg.n_resurfaces = int(n_resurfaces)
         self.path_pub.publish(msg)
 
+    def publish_dive_init(self, surface_pressure_pa: float) -> None:
+        # pathfinding only reads the surface reference off DIVE_INIT.
+        msg = DiveInit()
+        msg.surface_pressure_pa = float(surface_pressure_pa)
+        self.dive_init_pub.publish(msg)
+
 
 class PathfindingNodeHarness(NodeHarness):
     """NodeHarness specialised for PathfindingNode + _PathfindingTesterNode."""
@@ -406,6 +461,9 @@ class PathfindingNodeHarness(NodeHarness):
             angle_rad=angle_rad,
             n_resurfaces=n_resurfaces,
         )
+
+    def publish_dive_init(self, surface_pressure_pa: float) -> None:
+        self.tester.publish_dive_init(surface_pressure_pa)
 
 
 @pytest.fixture
@@ -452,9 +510,6 @@ class _BcuDebugTesterNode(Node):
         self.emergency_pub = create_publisher_for_topic(
             self, UUVTopics.DEBUG_EMERGENCY_SURFACE
         )
-        self.external_pressure_pub = create_publisher_for_topic(
-            self, UUVTopics.EXTERNAL_PRESSURE
-        )
         self.reset_pub = create_publisher_for_topic(self, UUVTopics.DEBUG_RESET)
         self.rpm_sub = create_subscription_for_topic(
             self, UUVTopics.BCU_RPM, self._on_rpm
@@ -496,11 +551,6 @@ class _BcuDebugTesterNode(Node):
         msg.data = bool(active)
         self.emergency_pub.publish(msg)
 
-    def publish_external_pressure(self, value_pa: int) -> None:
-        msg = Int32()
-        msg.data = int(value_pa)
-        self.external_pressure_pub.publish(msg)
-
     def publish_reset(self) -> None:
         self.reset_pub.publish(Empty())
 
@@ -537,9 +587,6 @@ class BcuDebugNodeHarness(NodeHarness):
 
     def publish_emergency(self, active: bool) -> None:
         self.tester.publish_emergency(active)
-
-    def publish_external_pressure(self, value_pa: int) -> None:
-        self.tester.publish_external_pressure(value_pa)
 
     def publish_reset(self) -> None:
         self.tester.publish_reset()

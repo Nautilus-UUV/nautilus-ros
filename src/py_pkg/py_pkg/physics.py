@@ -18,8 +18,10 @@ constants (pump, bladder, motors) live in `robot_specs.py`.
 
 from py_pkg.robot_specs import VOLUME_PER_REV_M3
 
-# Standard atmosphere (Pa) — pressure at the water surface, subtracted
-# off the absolute reading from the external pressure sensor.
+# Standard atmosphere (Pa) — the FALLBACK gauge reference. The operator
+# can register the actual surface pressure pre-dive (DIVE_INIT, see
+# `SurfaceReference`); until that happens, conversions subtract this
+# constant off the absolute reading from the external pressure sensor.
 ATMOSPHERIC_PRESSURE_PA = 101_325.0
 
 # Fresh-water density (kg/m^3). Override for salt water if needed.
@@ -76,6 +78,64 @@ def pressure_to_depth(
     depth controller uses :func:`gauge_pressure_pa` instead.
     """
     return (pressure_pa - atmospheric_pa) / (density * GRAVITY_M_S2)
+
+
+class SurfaceReference:
+    """The gauge reference a pressure-consuming node converts against.
+
+    Weather and altitude move the real surface pressure a few kPa away
+    from the standard atmosphere — enough to matter when "surfaced" is
+    defined as half a metre of water. The operator registers the actual
+    surface reading pre-dive (UI Initialize → DIVE_INIT); every node
+    holds one of these and converts through :meth:`gauge`, so all
+    consumers shift to the registered reference on the same latched
+    message and stay in a single frame. Until a registration arrives
+    (or if it's garbage), the standard atmosphere applies.
+    """
+
+    def __init__(self) -> None:
+        self._surface_pa: float | None = None
+
+    def register(self, surface_pa: float) -> bool:
+        """Adopt a registered surface pressure; returns True if accepted.
+
+        Non-positive values are rejected and leave the current reference
+        untouched: a partially-filled DiveInit decodes missing fields as
+        0.0, and silently adopting that would shift the whole gauge
+        frame by ~101 kPa.
+        """
+        if not surface_pa > 0.0:
+            return False
+        self._surface_pa = float(surface_pa)
+        return True
+
+    def register_logged(self, surface_pa: float, logger) -> bool:
+        """:meth:`register` plus the standard accept/reject log lines.
+
+        Every DIVE_INIT consumer wants the same outcome logging; keeping
+        the wording here means a policy or message change lands in one
+        place. ``logger`` is any object with ``info``/``error`` (a node
+        logger) so this module stays ROS-free.
+        """
+        if self.register(surface_pa):
+            logger.info(f"dive init: gauge reference = {self.reference_pa:.0f} Pa")
+            return True
+        logger.error(
+            f"dive init: surface pressure {surface_pa:.0f} Pa "
+            "rejected -- keeping previous reference"
+        )
+        return False
+
+    @property
+    def reference_pa(self) -> float:
+        """Current reference: registered surface, else standard atmosphere."""
+        if self._surface_pa is not None:
+            return self._surface_pa
+        return ATMOSPHERIC_PRESSURE_PA
+
+    def gauge(self, absolute_pa: float) -> float:
+        """Absolute Pa → gauge Pa against the current reference."""
+        return gauge_pressure_pa(absolute_pa, atmospheric_pa=self.reference_pa)
 
 
 def q_to_rpm(q: float, bladder_volume: float, pump_efficiency: float) -> float:

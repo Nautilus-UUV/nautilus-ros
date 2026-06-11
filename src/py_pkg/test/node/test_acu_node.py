@@ -130,6 +130,58 @@ class TestPressureIngress:
         assert h.node.current_pressure_pa == pytest.approx(gauge_target, abs=1e-3)
 
 
+class TestSurfaceReferenceIngress:
+    """A registered surface pressure (DIVE_INIT) replaces the standard
+    atmosphere as the gauge reference, so the bang-bang compares against
+    the real surface on dive day."""
+
+    def test_registered_surface_shifts_gauge(self, acu_node_harness):
+        h = acu_node_harness
+        surface_pa = ATMOSPHERIC_PRESSURE_PA + 10_000.0
+        h.publish_dive_init(surface_pa)
+        h.spin_until(
+            lambda: h.node._surface_ref.reference_pa == pytest.approx(surface_pa),
+            timeout=1.0,
+        )
+        h.publish_external_pressure(int(surface_pa))
+        h.spin_until(lambda: h.node.current_pressure_pa is not None, timeout=1.0)
+        assert h.node.current_pressure_pa == pytest.approx(0.0, abs=1e-3)
+
+    def test_registration_flips_bang_bang_leg(self, acu_node_harness):
+        # One absolute reading, one setpoint -- only the gauge reference
+        # changes. Standard atmosphere puts the glider shallower than the
+        # 5 kPa target (BACK leg); registering a surface 2 kPa below
+        # standard re-reads the same absolute as deeper (FRONT leg).
+        h = acu_node_harness
+        absolute_pa = _abs_pa_for_gauge(4_000.0)
+        h.publish_target(target_pressure_pa=5_000.0)
+        h.publish_external_pressure(absolute_pa)
+        h.spin_until(lambda: len(h.received_pitch_mm) >= 1, timeout=1.5)
+        assert h.received_pitch_mm[-1] == PITCH_BACK_MM
+
+        h.publish_dive_init(ATMOSPHERIC_PRESSURE_PA - 2_000.0)
+        h.spin_until(
+            lambda: h.node._surface_ref.reference_pa
+            == pytest.approx(ATMOSPHERIC_PRESSURE_PA - 2_000.0),
+            timeout=1.0,
+        )
+        h.publish_external_pressure(absolute_pa)  # same reading, new frame
+        h.spin_until(
+            lambda: len(h.received_pitch_mm) >= 1
+            and h.received_pitch_mm[-1] == PITCH_FRONT_MM,
+            timeout=1.5,
+        )
+        assert h.received_pitch_mm[-1] == PITCH_FRONT_MM
+
+    def test_zero_surface_is_rejected(self, acu_node_harness):
+        h = acu_node_harness
+        h.publish_dive_init(0.0)
+        h.spin_for(0.3)
+        assert h.node._surface_ref.reference_pa == pytest.approx(
+            ATMOSPHERIC_PRESSURE_PA
+        )
+
+
 class TestTimerEmits:
     """Once both inputs (pressure + target) have been seen, the 10 Hz
     loop publishes pitch and a non-trivial roll error drives roll too."""
@@ -215,8 +267,7 @@ class TestPitchBangBang:
 
         h.publish_target(target_pressure_pa=20000.0)
         h.spin_until(
-            lambda: len(h.received_pitch_mm) >= 1
-            and h.received_pitch_mm[-1] != first,
+            lambda: len(h.received_pitch_mm) >= 1 and h.received_pitch_mm[-1] != first,
             timeout=1.5,
         )
         assert h.received_pitch_mm[-1] != first
@@ -258,9 +309,9 @@ class TestRollSaturation:
         h.spin_for(0.6)
         assert len(h.received_roll_cdeg) >= 1
         for v in h.received_roll_cdeg:
-            assert abs(v) <= ROLL_MAX_CDEG, (
-                f"published roll {v} cdeg exceeds ROLL_MAX_CDEG={ROLL_MAX_CDEG}"
-            )
+            assert (
+                abs(v) <= ROLL_MAX_CDEG
+            ), f"published roll {v} cdeg exceeds ROLL_MAX_CDEG={ROLL_MAX_CDEG}"
         assert h.received_roll_cdeg[-1] == ROLL_MAX_CDEG
 
     def test_roll_saturates_at_min_for_negative_target(self, acu_node_harness):
@@ -285,9 +336,9 @@ class TestRollQuiescence:
         # After settling at the clamp, no new emissions; allow 1 for slack.
         h.spin_for(0.6)
         late_count = len(h.received_roll_cdeg)
-        assert late_count - early_count <= 1, (
-            f"expected quiescence after saturation, got {h.received_roll_cdeg}"
-        )
+        assert (
+            late_count - early_count <= 1
+        ), f"expected quiescence after saturation, got {h.received_roll_cdeg}"
 
 
 class TestStopResetsAndSilences:
@@ -318,9 +369,9 @@ class TestStopResetsAndSilences:
         for _ in range(8):
             h.publish_external_pressure(_abs_pa_for_gauge(20000.0))
             h.spin_for(0.05)
-        assert h.received_pitch_mm == [], (
-            f"pitch must stay silent after stop, got {h.received_pitch_mm}"
-        )
-        assert h.received_roll_cdeg == [], (
-            f"roll must stay silent after stop, got {h.received_roll_cdeg}"
-        )
+        assert (
+            h.received_pitch_mm == []
+        ), f"pitch must stay silent after stop, got {h.received_pitch_mm}"
+        assert (
+            h.received_roll_cdeg == []
+        ), f"roll must stay silent after stop, got {h.received_roll_cdeg}"

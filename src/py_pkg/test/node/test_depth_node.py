@@ -16,10 +16,18 @@ from py_pkg.physics import (
     gauge_pressure_pa,
 )
 from py_pkg.robot_specs import BCU_MOTOR_MAX_RPM
+from py_pkg.scenarios.spec.rig import PlantSpec
 
 
 # Absolute Pa at the surface (atmospheric); yields current_pressure_pa = 0.
 PRESSURE_AT_SURFACE_PA = int(ATMOSPHERIC_PRESSURE_PA)
+
+# Tank endpoints for the output-clamp tests, taken from the sim plant
+# (rig.py): empty = drained tank (bladder full), full = tank full of oil.
+_PLANT = PlantSpec()
+TANK_EMPTY_PA = int(_PLANT.tank_pressure_empty_pa)
+TANK_FULL_PA = int(_PLANT.tank_pressure_full_pa)
+TANK_MID_PA = (TANK_EMPTY_PA + TANK_FULL_PA) // 2
 
 # Absolute Pa for current depth ~+50 m (Z-positive-down).
 PRESSURE_FOR_DEEP_PA = int(depth_to_pressure_pa(50.0))
@@ -39,31 +47,19 @@ class TestWiringSmoke:
         assert depth_node_harness.node is not None
 
     def test_target_pose_subscription_present(self, depth_node_harness):
-        names = [
-            sub.topic_name
-            for sub in depth_node_harness.node.subscriptions
-        ]
+        names = [sub.topic_name for sub in depth_node_harness.node.subscriptions]
         assert "/position/target" in names
 
     def test_external_pressure_subscription_present(self, depth_node_harness):
-        names = [
-            sub.topic_name
-            for sub in depth_node_harness.node.subscriptions
-        ]
+        names = [sub.topic_name for sub in depth_node_harness.node.subscriptions]
         assert "/external/pressure" in names
 
     def test_bcu_rpm_publisher_present(self, depth_node_harness):
-        names = [
-            pub.topic_name
-            for pub in depth_node_harness.node.publishers
-        ]
+        names = [pub.topic_name for pub in depth_node_harness.node.publishers]
         assert "/bcu/rpm" in names
 
     def test_bcu_valves_publisher_present(self, depth_node_harness):
-        names = [
-            pub.topic_name
-            for pub in depth_node_harness.node.publishers
-        ]
+        names = [pub.topic_name for pub in depth_node_harness.node.publishers]
         assert "/bcu/valves" in names
 
 
@@ -196,9 +192,9 @@ class TestClamping:
         h.spin_for(0.6)
         assert len(h.received_rpm) >= 3
         for r in h.received_rpm:
-            assert r == 0 or abs(r) >= edge, (
-                f"published {r} falls inside the (0, {edge}) deadband"
-            )
+            assert (
+                r == 0 or abs(r) >= edge
+            ), f"published {r} falls inside the (0, {edge}) deadband"
 
 
 class TestValveEmission:
@@ -239,9 +235,9 @@ class TestValveSelection:
         h.publish_target_pressure(TARGET_PA_70M)
         h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
         h.spin_until(lambda: len(h.received_valves) >= 4, timeout=1.5)
-        assert h.received_valves[-1] == 0b01, (
-            f"expected pump-via-motor-valve (0b01), got history {h.received_valves}"
-        )
+        assert (
+            h.received_valves[-1] == 0b01
+        ), f"expected pump-via-motor-valve (0b01), got history {h.received_valves}"
 
     def test_deep_descend_passively_vents(self, depth_node_harness):
         # Below threshold with descent intent → pump forced off and
@@ -250,12 +246,12 @@ class TestValveSelection:
         h.publish_target_pressure(TARGET_PA_100M)
         h.publish_external_pressure(PRESSURE_FOR_DEEP_PA)  # current ≈ +50 m gauge Pa
         h.spin_until(lambda: len(h.received_valves) >= 4, timeout=1.5)
-        assert h.received_valves[-1] == 0b10, (
-            f"expected passive-vent (0b10), got history {h.received_valves}"
-        )
-        assert h.received_rpm[-1] == 0, (
-            f"deep-descend must zero the pump, got rpm history {h.received_rpm}"
-        )
+        assert (
+            h.received_valves[-1] == 0b10
+        ), f"expected passive-vent (0b10), got history {h.received_valves}"
+        assert (
+            h.received_rpm[-1] == 0
+        ), f"deep-descend must zero the pump, got rpm history {h.received_rpm}"
 
     def test_deep_ascend_uses_motor_valve(self, depth_node_harness):
         # Below threshold but ascending → pump active, the motor way carries
@@ -264,9 +260,9 @@ class TestValveSelection:
         h.publish_target_pressure(0.0)
         h.publish_external_pressure(PRESSURE_FOR_DEEP_PA)  # current ≈ +50 m gauge Pa
         h.spin_until(lambda: len(h.received_valves) >= 4, timeout=1.5)
-        assert h.received_valves[-1] == 0b01, (
-            f"expected pump-via-motor-valve (0b01), got history {h.received_valves}"
-        )
+        assert (
+            h.received_valves[-1] == 0b01
+        ), f"expected pump-via-motor-valve (0b01), got history {h.received_valves}"
 
     def test_quiescent_closes_both_valves(self, depth_node_harness):
         # Target == current at the surface → q ≈ 0, pump idle → both
@@ -278,9 +274,9 @@ class TestValveSelection:
         assert len(h.received_valves) >= 3
         # All emissions must be 0; a stray valve open here would mean the
         # node opened a passive vent without a descent intent.
-        assert all(v == 0 for v in h.received_valves), (
-            f"expected all-closed history, got {h.received_valves}"
-        )
+        assert all(
+            v == 0 for v in h.received_valves
+        ), f"expected all-closed history, got {h.received_valves}"
 
     def test_deep_quiescent_closes_both_valves(self, depth_node_harness):
         # Boundary on the strict `q > 0` in select_pump_and_valves. Deep +
@@ -327,6 +323,128 @@ class TestValveSelection:
                 )
 
 
+class TestSurfaceReferenceIngress:
+    """DIVE_INIT's surface pressure becomes the gauge reference for
+    EXTERNAL_PRESSURE ingress; until then the standard atmosphere applies
+    (proved by TestPressureIngress above)."""
+
+    def test_registered_surface_shifts_gauge_zero(self, depth_node_harness):
+        h = depth_node_harness
+        surface_pa = PRESSURE_AT_SURFACE_PA + 10_000
+        h.publish_dive_init(
+            surface_pressure_pa=surface_pa,
+            tank_empty_pa=TANK_EMPTY_PA,
+            tank_full_pa=TANK_FULL_PA,
+        )
+        h.spin_until(
+            lambda: h.node._surface_ref.reference_pa == pytest.approx(surface_pa),
+            timeout=1.0,
+        )
+        # The registered surface itself now reads 0 gauge.
+        h.publish_external_pressure(surface_pa)
+        h.spin_until(
+            lambda: h.node.current_pressure_pa == pytest.approx(0.0, abs=1e-6),
+            timeout=1.0,
+        )
+
+    def test_zero_surface_keeps_standard_atmosphere(self, depth_node_harness):
+        h = depth_node_harness
+        h.publish_dive_init(
+            surface_pressure_pa=0.0,
+            tank_empty_pa=TANK_EMPTY_PA,
+            tank_full_pa=TANK_FULL_PA,
+        )
+        h.spin_for(0.3)
+        assert h.node._surface_ref.reference_pa == pytest.approx(
+            ATMOSPHERIC_PRESSURE_PA
+        )
+
+
+class TestTankLimitClamp:
+    """The output clamp zeroes RPM and closes the valves when the
+    commanded oil flow is headed at a registered tank endpoint that's
+    been reached -- and stays inert without a registration."""
+
+    def _register(self, h) -> None:
+        h.publish_dive_init(
+            surface_pressure_pa=PRESSURE_AT_SURFACE_PA,
+            tank_empty_pa=TANK_EMPTY_PA,
+            tank_full_pa=TANK_FULL_PA,
+        )
+        h.spin_until(lambda: h.node._tank_full_pa is not None, timeout=1.0)
+
+    def test_empty_limit_clamps_ascend(self, depth_node_harness):
+        # Ascend stimulus (target shallower than current) drives a positive
+        # bus RPM (TestSignConvention) -- that inflates the bladder and
+        # drains the tank, so a tank already at empty must clamp it.
+        h = depth_node_harness
+        self._register(h)
+        h.publish_tank_pressure(TANK_EMPTY_PA)
+        h.publish_target_pressure(0.0)
+        h.publish_external_pressure(PRESSURE_FOR_DEEP_PA)
+        h.spin_until(lambda: len(h.received_rpm) >= 6, timeout=1.5)
+        tail_rpm = h.received_rpm[-3:]
+        tail_valves = h.received_valves[-3:]
+        assert all(
+            r == 0 for r in tail_rpm
+        ), f"ascend at the empty-tank limit must clamp to 0, got {h.received_rpm}"
+        assert all(
+            v == 0 for v in tail_valves
+        ), f"clamp must close the valves, got {h.received_valves}"
+
+    def test_full_limit_gates_passive_vent(self, depth_node_harness):
+        # The deep-descend passive vent (0b10) lets ambient push oil INTO
+        # the tank; at the full endpoint the clamp must shut it.
+        h = depth_node_harness
+        self._register(h)
+        h.publish_tank_pressure(TANK_FULL_PA)
+        h.publish_target_pressure(TARGET_PA_100M)
+        h.publish_external_pressure(PRESSURE_FOR_DEEP_PA)
+        h.spin_until(lambda: len(h.received_valves) >= 6, timeout=1.5)
+        tail_rpm = h.received_rpm[-3:]
+        tail_valves = h.received_valves[-3:]
+        assert all(v == 0 for v in tail_valves), (
+            f"passive vent at the full-tank limit must close, "
+            f"got {h.received_valves}"
+        )
+        assert all(r == 0 for r in tail_rpm)
+
+    def test_unregistered_tank_pressure_changes_nothing(self, depth_node_harness):
+        # Tank pressure flowing in WITHOUT a registration must leave the
+        # existing behavior untouched: deep descend still passively vents.
+        h = depth_node_harness
+        h.publish_tank_pressure(TANK_FULL_PA)
+        h.publish_target_pressure(TARGET_PA_100M)
+        h.publish_external_pressure(PRESSURE_FOR_DEEP_PA)
+        h.spin_until(lambda: len(h.received_valves) >= 4, timeout=1.5)
+        assert h.received_valves[-1] == 0b10, (
+            f"without a registration the vent must stay open, "
+            f"got {h.received_valves}"
+        )
+
+    def test_clamp_releases_when_tank_recovers(self, depth_node_harness):
+        # Per-tick clamp, not a latch: tank back inside the range ->
+        # commands resume on the next tick.
+        h = depth_node_harness
+        self._register(h)
+        h.publish_tank_pressure(TANK_EMPTY_PA)
+        h.publish_target_pressure(0.0)
+        h.publish_external_pressure(PRESSURE_FOR_DEEP_PA)
+        h.spin_until(lambda: len(h.received_rpm) >= 6, timeout=1.5)
+        assert h.received_rpm[-1] == 0, "precondition: clamp active"
+
+        h.received_rpm.clear()
+        h.publish_tank_pressure(TANK_MID_PA)
+        h.spin_until(
+            lambda: any(r > 0 for r in h.received_rpm),
+            timeout=1.5,
+        )
+        assert any(r > 0 for r in h.received_rpm), (
+            f"ascend command must resume once the tank recovers, "
+            f"got {h.received_rpm}"
+        )
+
+
 class TestStopResetsAndSilences:
     """/command=false drops the held target, wipes controller state, emits ONE
     safe-stop (0 RPM + valves closed), then goes silent -- exactly as the node
@@ -346,16 +464,16 @@ class TestStopResetsAndSilences:
         h.spin_until(lambda: h.node.target_pressure_pa is None, timeout=1.0)
         assert h.node.target_pressure_pa is None
         h.spin_for(0.2)  # let the one-shot safe-stop land
-        assert h.received_rpm and h.received_rpm[-1] == 0, (
-            f"stop must emit a 0-RPM safe-stop, got {h.received_rpm[-5:]}"
-        )
+        assert (
+            h.received_rpm and h.received_rpm[-1] == 0
+        ), f"stop must emit a 0-RPM safe-stop, got {h.received_rpm[-5:]}"
         assert h.received_valves and h.received_valves[-1] == 0
 
         # After the safe stop the loop stays silent -- no periodic zero-hold.
         h.received_rpm.clear()
         h.received_valves.clear()
         h.spin_for(0.5)  # 5+ control ticks at 10 Hz
-        assert h.received_rpm == [], (
-            f"depth_node must stay silent after the safe stop, got {h.received_rpm}"
-        )
+        assert (
+            h.received_rpm == []
+        ), f"depth_node must stay silent after the safe stop, got {h.received_rpm}"
         assert h.received_valves == []

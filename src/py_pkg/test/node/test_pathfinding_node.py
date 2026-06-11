@@ -183,8 +183,7 @@ class TestStartHappyPath:
         h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
         h.spin_until(
             lambda: (
-                h.node._mission is not None
-                and h.node._current_pressure_pa is not None
+                h.node._mission is not None and h.node._current_pressure_pa is not None
             ),
             timeout=1.0,
         )
@@ -201,8 +200,7 @@ class TestStartHappyPath:
         h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
         h.spin_until(
             lambda: (
-                h.node._mission is not None
-                and h.node._current_pressure_pa is not None
+                h.node._mission is not None and h.node._current_pressure_pa is not None
             ),
             timeout=1.0,
         )
@@ -214,6 +212,42 @@ class TestStartHappyPath:
         assert first.orientation.w == pytest.approx(1.0, abs=1e-9)
 
 
+class TestSurfaceReferenceIngress:
+    """A registered surface pressure (DIVE_INIT) becomes the gauge
+    reference for the mission phase detection; until then -- or on a
+    garbage registration -- the standard atmosphere applies."""
+
+    def test_fallback_uses_standard_atmosphere(self, pathfinding_node_harness):
+        h = pathfinding_node_harness
+        h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
+        h.spin_until(lambda: h.node._current_pressure_pa is not None, timeout=1.0)
+        assert h.node._current_pressure_pa == pytest.approx(0.0, abs=1e-3)
+
+    def test_registered_surface_shifts_gauge_zero(self, pathfinding_node_harness):
+        h = pathfinding_node_harness
+        surface_pa = 111_325.0
+        h.publish_dive_init(surface_pa)
+        h.spin_until(
+            lambda: h.node._surface_ref.reference_pa == pytest.approx(surface_pa),
+            timeout=1.0,
+        )
+        # The registered surface itself now reads "at the surface".
+        h.publish_external_pressure(int(surface_pa))
+        h.spin_until(
+            lambda: h.node._current_pressure_pa is not None
+            and h.node._current_pressure_pa == pytest.approx(0.0, abs=1e-3),
+            timeout=1.0,
+        )
+
+    def test_zero_surface_is_rejected(self, pathfinding_node_harness):
+        h = pathfinding_node_harness
+        h.publish_dive_init(0.0)
+        h.spin_for(0.3)
+        h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
+        h.spin_until(lambda: h.node._current_pressure_pa is not None, timeout=1.0)
+        assert h.node._current_pressure_pa == pytest.approx(0.0, abs=1e-3)
+
+
 class TestStopCommand:
     def test_stop_idles_clears_mission_and_halts_emissions(
         self, pathfinding_node_harness
@@ -223,8 +257,7 @@ class TestStopCommand:
         h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
         h.spin_until(
             lambda: (
-                h.node._mission is not None
-                and h.node._current_pressure_pa is not None
+                h.node._mission is not None and h.node._current_pressure_pa is not None
             ),
             timeout=1.0,
         )
@@ -260,8 +293,7 @@ class TestSurfaceMission:
         h.publish_external_pressure(PRESSURE_AT_DEPTH_PA)
         h.spin_until(
             lambda: (
-                h.node._mission is not None
-                and h.node._current_pressure_pa is not None
+                h.node._mission is not None and h.node._current_pressure_pa is not None
             ),
             timeout=1.0,
         )
@@ -285,8 +317,7 @@ class TestSurfaceMission:
         h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
         h.spin_until(
             lambda: (
-                h.node._mission is not None
-                and h.node._current_pressure_pa is not None
+                h.node._mission is not None and h.node._current_pressure_pa is not None
             ),
             timeout=1.0,
         )
@@ -318,8 +349,7 @@ class TestSurfaceMission:
         h.publish_external_pressure(PRESSURE_AT_DEPTH_PA)
         h.spin_until(
             lambda: (
-                h.node._mission is not None
-                and h.node._current_pressure_pa is not None
+                h.node._mission is not None and h.node._current_pressure_pa is not None
             ),
             timeout=1.0,
         )
@@ -342,8 +372,7 @@ class TestTickGating:
         h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
         h.spin_until(
             lambda: (
-                h.node._mission is not None
-                and h.node._current_pressure_pa is not None
+                h.node._mission is not None and h.node._current_pressure_pa is not None
             ),
             timeout=1.0,
         )

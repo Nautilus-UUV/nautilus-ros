@@ -35,7 +35,7 @@ from rclpy.node import Node
 from std_msgs.msg import Bool, Int16, Int32
 
 from py_pkg.math_utils import quaternion_to_roll_pitch
-from py_pkg.physics import gauge_pressure_pa
+from py_pkg.physics import SurfaceReference
 from py_pkg.pid.acu_axis_controller import AxisController
 from py_pkg.robot_specs import ACU_ROLL_CDEG_PER_DEG
 from py_pkg.scenarios.compile import acu_pitch_spec_from_node, acu_roll_spec_from_node
@@ -79,6 +79,11 @@ class ACUControlNode(Node):
         self.current_pressure_pa: float | None = None
         self.target_pressure_pa: float | None = None
 
+        # Gauge reference: standard atmosphere until the operator's
+        # pre-dive Initialize registers the real surface pressure
+        # (DIVE_INIT) -- same frame as depth_node and pathfinding.
+        self._surface_ref = SurfaceReference()
+
         # Roll PID state.
         self.target_roll_deg = 0.0
         self.current_roll_deg = 0.0
@@ -106,6 +111,12 @@ class ACUControlNode(Node):
             self,
             UUVTopics.POSITION_ESTIMATION,
             self.current_pose_callback,
+            callback_group=self.callback_group,
+        )
+        create_subscription_for_topic(
+            self,
+            UUVTopics.DIVE_INIT,
+            self._on_dive_init,
             callback_group=self.callback_group,
         )
 
@@ -136,7 +147,12 @@ class ACUControlNode(Node):
         # depth_node.py and pathfinding.py apply at ingress -- without it,
         # absolute (~101 kPa at the surface) is always above any realistic
         # gauge target and the bang-bang never flips legs.
-        self.current_pressure_pa = gauge_pressure_pa(float(msg.data))
+        self.current_pressure_pa = self._surface_ref.gauge(float(msg.data))
+
+    def _on_dive_init(self, msg):
+        self._surface_ref.register_logged(
+            float(msg.surface_pressure_pa), self.get_logger()
+        )
 
     def target_pose_callback(self, msg: Pose):
         # POSITION_TARGET.position.z carries the target pressure in Pa
@@ -176,7 +192,9 @@ class ACUControlNode(Node):
         self.target_roll_deg = 0.0
         self.current_roll_deg = 0.0
         self._publish_acu_neutral()
-        self.get_logger().info("stop -> neutral emitted, ACU going silent (fresh state).")
+        self.get_logger().info(
+            "stop -> neutral emitted, ACU going silent (fresh state)."
+        )
 
     def control_loop(self):
         if self.target_pressure_pa is None:

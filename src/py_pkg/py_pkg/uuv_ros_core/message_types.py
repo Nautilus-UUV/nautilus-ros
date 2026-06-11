@@ -16,6 +16,7 @@ from geometry_msgs.msg import Pose
 from nautilus_msgs.msg import (
     BcuPumpCommand,
     BcuPumpUntilPressureCommand,
+    DiveInit,
     MissionCommand,
 )
 from sensor_msgs.msg import Imu, Temperature
@@ -60,6 +61,7 @@ TOPIC_MESSAGE_MAP = {
     # Mission run/stop: true = start the loaded mission, false = stop and reset
     # the stack to its clean initial state.
     UUVTopics.COMMAND: Bool,
+    UUVTopics.DIVE_INIT: DiveInit,
     UUVTopics.CAN_OUT: Frame,
     UUVTopics.DEBUG_BCU_RPM: BcuPumpCommand,
     UUVTopics.DEBUG_BCU_RPM_UNTIL_PRESSURE: BcuPumpUntilPressureCommand,
