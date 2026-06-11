@@ -16,15 +16,24 @@ import time
 import pytest
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
+from sensor_msgs.msg import Imu
 from std_msgs.msg import Int16, UInt8
 
 import py_pkg.stm_com.stm_com_node as stm
+from py_pkg.physics import imu_counts_to_body
 from py_pkg.robot_specs import STM_BCU_RPM_SIGN
 from py_pkg.stm_com.stm_com_node import (
+    ACCEL_X_VAR_ID,
+    ACCEL_Y_VAR_ID,
+    ACCEL_Z_VAR_ID,
     BCU_RPM_VAR_ID,
     BCU_STATUS_VAR_ID,
+    GYRO_X_VAR_ID,
+    GYRO_Y_VAR_ID,
+    GYRO_Z_VAR_ID,
     HEADER_FMT,
     HEADER_LEN,
+    IMU_VAR_IDS,
     STMComNode,
     SYNC_BYTE,
     VALVES_TARGET_VAR_ID,
@@ -35,6 +44,19 @@ from py_pkg.uuv_ros_core import (
     create_publisher_for_topic,
     create_subscription_for_topic,
 )
+
+
+def _imu_frames(ax, ay, az, gx, gy, gz) -> bytes:
+    """The six per-axis IMU frames, in the firmware's batch order (GYRO_Z last)."""
+    counts = {
+        ACCEL_X_VAR_ID: ax,
+        ACCEL_Y_VAR_ID: ay,
+        ACCEL_Z_VAR_ID: az,
+        GYRO_X_VAR_ID: gx,
+        GYRO_Y_VAR_ID: gy,
+        GYRO_Z_VAR_ID: gz,
+    }
+    return b"".join(_frame(vid, struct.pack("<h", counts[vid])) for vid in IMU_VAR_IDS)
 
 
 def _frame(var_id: int, payload: bytes) -> bytes:
@@ -97,6 +119,7 @@ class _STMTesterNode(Node):
         super().__init__("stm_com_tester")
         self.received_valves: list[int] = []
         self.received_feedback_rpm: list[int] = []
+        self.received_imu: list[Imu] = []
         self.valves_cmd_pub = create_publisher_for_topic(self, UUVTopics.BCU_VALVES)
         self.rpm_cmd_pub = create_publisher_for_topic(self, UUVTopics.BCU_RPM)
         create_subscription_for_topic(
@@ -105,12 +128,16 @@ class _STMTesterNode(Node):
         create_subscription_for_topic(
             self, UUVTopics.BCU_FEEDBACK_RPM, self._on_feedback_rpm
         )
+        create_subscription_for_topic(self, UUVTopics.IMU_LEFT, self._on_imu)
 
     def _on_valves(self, msg: UInt8) -> None:
         self.received_valves.append(int(msg.data))
 
     def _on_feedback_rpm(self, msg: Int16) -> None:
         self.received_feedback_rpm.append(int(msg.data))
+
+    def _on_imu(self, msg: Imu) -> None:
+        self.received_imu.append(msg)
 
     def command_valves(self, bitmap: int) -> None:
         self.valves_cmd_pub.publish(UInt8(data=bitmap))
@@ -226,3 +253,60 @@ class TestSTMRpmSign:
         h.fake.inject(_frame(BCU_STATUS_VAR_ID, struct.pack("<h", 800)))
         h.spin_until(lambda: len(h.tester.received_feedback_rpm) > 0, timeout=2.0)
         assert h.tester.received_feedback_rpm[-1] == STM_BCU_RPM_SIGN * 800
+
+
+class TestSTMImu:
+    """The six 0x2430-0x2435 frames assemble into one sensor_msgs/Imu on
+    /imu/left, in SI body-frame units, and -- crucially -- IMU frames are not a
+    setpoint-send cue, so a high-rate IMU stream can't multiply our downward TX.
+    """
+
+    def test_six_frames_assemble_one_imu(self, stm_harness):
+        h = stm_harness
+        # Distinct counts per axis so a wrong remap/scale shows up.
+        ax, ay, az = 100, 200, 5461  # az ≈ +1 g
+        gx, gy, gz = 10, 20, 30
+        h.fake.inject(_imu_frames(ax, ay, az, gx, gy, gz))
+        h.spin_until(lambda: len(h.tester.received_imu) > 0, timeout=2.0)
+
+        msg = h.tester.received_imu[-1]
+        accel, gyro = imu_counts_to_body(ax, ay, az, gx, gy, gz)
+        assert msg.linear_acceleration.x == pytest.approx(accel[0])
+        assert msg.linear_acceleration.y == pytest.approx(accel[1])
+        assert msg.linear_acceleration.z == pytest.approx(accel[2])
+        assert msg.angular_velocity.x == pytest.approx(gyro[0])
+        assert msg.angular_velocity.y == pytest.approx(gyro[1])
+        assert msg.angular_velocity.z == pytest.approx(gyro[2])
+        # No orientation from this IMU -- REP-145 flag so the EKF skips it.
+        assert msg.orientation_covariance[0] == -1.0
+
+    def test_one_imu_per_batch(self, stm_harness):
+        # Six frames in -> exactly one Imu out (published on GYRO_Z, not six times).
+        h = stm_harness
+        h.fake.inject(_imu_frames(1, 2, 3, 4, 5, 6))
+        h.spin_until(lambda: len(h.tester.received_imu) >= 1, timeout=2.0)
+        h.spin_for(0.1)
+        assert len(h.tester.received_imu) == 1
+
+    def test_imu_frames_do_not_cue_setpoints(self, stm_harness):
+        # A standing RPM/valve command, then ONLY IMU frames arrive: because IMU
+        # frames aren't a poll cue, nothing should go down the wire yet.
+        h = stm_harness
+        h.tester.command_rpm(123)
+        h.tester.command_valves(0b10)
+        h.spin_for(0.1)
+        h.fake.inject(_imu_frames(1, 2, 3, 4, 5, 6))
+        h.spin_until(lambda: len(h.tester.received_imu) > 0, timeout=2.0)
+        sent = _decode_frames(bytes(h.fake.tx))
+        setpoint_ids = {BCU_RPM_VAR_ID, VALVES_TARGET_VAR_ID}
+        assert not [vid for vid, _ in sent if vid in setpoint_ids], (
+            "IMU frames must not cue a setpoint send"
+        )
+
+        # A subsequent housekeeping/status frame DOES flush the setpoints.
+        h.fake.inject(_frame(VALVES_STATUS_VAR_ID, struct.pack("<B", 0)))
+        h.spin_for(0.1)
+        sent = _decode_frames(bytes(h.fake.tx))
+        assert [vid for vid, _ in sent if vid in setpoint_ids], (
+            "a status frame should still cue a setpoint send"
+        )

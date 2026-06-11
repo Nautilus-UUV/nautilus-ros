@@ -16,7 +16,15 @@ conversion functions that use them. Robot-specific physical
 constants (pump, bladder, motors) live in `robot_specs.py`.
 """
 
-from py_pkg.robot_specs import VOLUME_PER_REV_M3
+import math
+
+from py_pkg.robot_specs import (
+    IMU_ACCEL_AXIS_MAP,
+    IMU_GYRO_AXIS_MAP,
+    STM_ACCEL_MG_PER_LSB,
+    STM_GYRO_DPS_PER_LSB,
+    VOLUME_PER_REV_M3,
+)
 
 # Standard atmosphere (Pa) — the FALLBACK gauge reference. The operator
 # can register the actual surface pressure pre-dive (DIVE_INIT, see
@@ -151,3 +159,65 @@ def q_to_rpm(q: float, bladder_volume: float, pump_efficiency: float) -> float:
     """
     flow_rate = q * bladder_volume  # m^3/s
     return SECONDS_PER_MINUTE / (VOLUME_PER_REV_M3 * pump_efficiency) * flow_rate
+
+
+# ---------------------------------------------------------------------------
+# IMU sensor conversions
+# ---------------------------------------------------------------------------
+# The STM streams raw int16 accel/gyro counts; the control stack wants SI
+# (sensor_msgs/Imu is m/s^2 and rad/s by REP-145). Scales come from robot_specs
+# (firmware contract); gravity lives here, so these are the only place counts
+# become SI.
+
+# Per-axis ordering the maps in robot_specs index into.
+_AXIS_INDEX = {"x": 0, "y": 1, "z": 2}
+
+
+def accel_counts_to_mps2(counts: float) -> float:
+    """Raw accelerometer count -> acceleration (m/s^2).
+
+    counts -> mg (STM_ACCEL_MG_PER_LSB) -> g (/1000) -> m/s^2 (* gravity).
+    """
+    return counts * STM_ACCEL_MG_PER_LSB / 1000.0 * GRAVITY_M_S2
+
+
+def gyro_counts_to_rads(counts: float) -> float:
+    """Raw gyroscope count -> angular velocity (rad/s).
+
+    counts -> °/s (STM_GYRO_DPS_PER_LSB) -> rad/s (* pi/180).
+    """
+    return counts * STM_GYRO_DPS_PER_LSB * (math.pi / 180.0)
+
+
+def _remap(values: tuple[float, float, float], axis_map) -> tuple[float, float, float]:
+    """Pick + sign each body-axis value out of the sensor-frame triple."""
+    return tuple(
+        sign * values[_AXIS_INDEX[src]] for src, sign in axis_map
+    )
+
+
+def imu_counts_to_body(
+    ax: float,
+    ay: float,
+    az: float,
+    gx: float,
+    gy: float,
+    gz: float,
+) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+    """Six raw IMU counts -> SI accel + angular velocity in the FLU body frame.
+
+    Scales each count to SI, then applies the mounting remap from robot_specs
+    (``IMU_ACCEL_AXIS_MAP`` / ``IMU_GYRO_AXIS_MAP``). Returns
+    ``((a_x, a_y, a_z), (w_x, w_y, w_z))`` ready to drop into a sensor_msgs/Imu.
+    """
+    accel_sensor = (
+        accel_counts_to_mps2(ax),
+        accel_counts_to_mps2(ay),
+        accel_counts_to_mps2(az),
+    )
+    gyro_sensor = (
+        gyro_counts_to_rads(gx),
+        gyro_counts_to_rads(gy),
+        gyro_counts_to_rads(gz),
+    )
+    return _remap(accel_sensor, IMU_ACCEL_AXIS_MAP), _remap(gyro_sensor, IMU_GYRO_AXIS_MAP)

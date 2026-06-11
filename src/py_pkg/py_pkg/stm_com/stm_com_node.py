@@ -23,6 +23,21 @@ Inbound (STM -> Pi):
     0x2410  EXT_TEMP       int16   0.01 °C / LSB
     0x2411  INT_TEMP       int16   0.01 °C / LSB
     0x2420  LEAKS          uint8   bitmask; any nonzero bit = water detected
+    0x2430  ACCEL_X        int16   raw accelerometer counts (±6 g full scale)
+    0x2431  ACCEL_Y        int16   raw accelerometer counts
+    0x2432  ACCEL_Z        int16   raw accelerometer counts
+    0x2433  GYRO_X         int16   raw gyro counts (±2000 °/s full scale)
+    0x2434  GYRO_Y         int16   raw gyro counts
+    0x2435  GYRO_Z         int16   raw gyro counts (last of the batch -> publish)
+
+The six IMU words are raw sensor counts; physics.imu_counts_to_body turns them
+into an SI sensor_msgs/Imu (m/s^2, rad/s) in the FLU body frame, published on
+IMU_LEFT -- the same topic the sim HAL bridge feeds, so the prefilter -> EKF ->
+MQTT -> UI chain runs unchanged on hardware. The STM sends the six contiguously
+each cycle, so we assemble + publish one Imu when GYRO_Z arrives. Crucially the
+IMU frames are NOT treated as a setpoint-send cue (see _poll_serial): only the
+housekeeping/status frames pace our downward RPM/valve TX, so a faster IMU
+stream doesn't multiply what we push back to the STM.
 
 Until the depth PID has published a single RPM (and the BCU a valve bitmap)
 we send 0 -- safe default: motor off, valves closed, if the STM polls before
@@ -34,9 +49,10 @@ import struct
 import rclpy
 import serial
 from rclpy.node import Node
-from sensor_msgs.msg import Temperature
+from sensor_msgs.msg import Imu, Temperature
 from std_msgs.msg import Int16, Int32, UInt8, UInt8MultiArray
 
+from py_pkg.physics import imu_counts_to_body
 from py_pkg.robot_specs import (
     STM_BCU_RPM_SIGN,
     STM_PRESSURE_LSB_PA,
@@ -63,6 +79,27 @@ INT_PRESSURE_VAR_ID = 0x2402  # <H — uint16
 EXT_TEMP_VAR_ID = 0x2410  # <h — int16
 INT_TEMP_VAR_ID = 0x2411  # <h — int16
 LEAKS_VAR_ID = 0x2420  # <B — uint8
+
+# IMU: six int16 count words, STM → us. Sent contiguously each cycle in this
+# order, so GYRO_Z is the cue to assemble + publish one sensor_msgs/Imu.
+ACCEL_X_VAR_ID = 0x2430  # <h — int16 raw accel count
+ACCEL_Y_VAR_ID = 0x2431  # <h — int16
+ACCEL_Z_VAR_ID = 0x2432  # <h — int16
+GYRO_X_VAR_ID = 0x2433  # <h — int16 raw gyro count
+GYRO_Y_VAR_ID = 0x2434  # <h — int16
+GYRO_Z_VAR_ID = 0x2435  # <h — int16 (last of the batch)
+IMU_VAR_IDS = (
+    ACCEL_X_VAR_ID,
+    ACCEL_Y_VAR_ID,
+    ACCEL_Z_VAR_ID,
+    GYRO_X_VAR_ID,
+    GYRO_Y_VAR_ID,
+    GYRO_Z_VAR_ID,
+)
+
+# Frame the published Imu is stamped with. Cosmetic for our consumers (the EKF
+# reads accel/gyro directly), but kept descriptive and stable.
+IMU_FRAME_ID = "imu_left"
 
 PAYLOAD_FMT = "<h"  # little-endian signed 16-bit
 BCU_RPM_PAYLOAD_LEN = struct.calcsize(PAYLOAD_FMT)
@@ -102,6 +139,9 @@ class STMComNode(Node):
         # 0 until the BCU first commands -- safe default, valves closed.
         self._latest_valves: int = 0
         self._rx_buf = bytearray()
+        # Latest raw IMU counts, accumulated across the six per-axis frames and
+        # converted to one Imu when GYRO_Z lands.
+        self._imu_counts = {var_id: 0 for var_id in IMU_VAR_IDS}
 
         create_subscription_for_topic(self, UUVTopics.BCU_RPM, self._on_rpm)
         create_subscription_for_topic(self, UUVTopics.BCU_VALVES, self._on_valves)
@@ -136,6 +176,9 @@ class STMComNode(Node):
         self._bcu_feedback_valves_pub = create_publisher_for_topic(
             self, UUVTopics.BCU_FEEDBACK_VALVES
         )
+        # Single hardware IMU -> IMU_LEFT (Imu + SENSOR_STREAM via the registry),
+        # the same topic the sim bridge publishes and the prefilter consumes.
+        self._imu_pub = create_publisher_for_topic(self, UUVTopics.IMU_LEFT)
 
     def _on_rpm(self, msg) -> None:
         self._latest_rpm = int(msg.data)
@@ -174,12 +217,19 @@ class STMComNode(Node):
             payload = bytes(self._rx_buf[1 + HEADER_LEN : frame_len])
             del self._rx_buf[:frame_len]
 
-            self._dispatch(var_id, payload)
-            # Every framed message from the STM is also the poll cue for
-            # us to push the latest actuator setpoints back down.
-            self._send_setpoints()
+            # Housekeeping/status frames double as the poll cue to push the
+            # latest actuator setpoints back down -- but IMU frames do NOT, so a
+            # high-rate IMU stream can't multiply our downward RPM/valve TX.
+            if self._dispatch(var_id, payload):
+                self._send_setpoints()
 
-    def _dispatch(self, var_id: int, payload: bytes) -> None:
+    def _dispatch(self, var_id: int, payload: bytes) -> bool:
+        """Route one frame to its publisher; return True if it's a setpoint cue.
+
+        Every frame except the IMU stream paces our downward setpoint TX, so all
+        the housekeeping/status branches (and unknown ids, preserving the prior
+        behaviour) return True; the six IMU ids return False.
+        """
         if var_id == EXT_PRESSURE_VAR_ID:
             self._publish_pressure(self._ext_pressure_pub, payload)
         elif var_id == TANK_PRESSURE_VAR_ID:
@@ -199,8 +249,12 @@ class STMComNode(Node):
             self._publish_bcu_rpm_feedback(payload)
         elif var_id == VALVES_STATUS_VAR_ID:
             self._publish_valves_feedback(payload)
+        elif var_id in IMU_VAR_IDS:
+            self._handle_imu(var_id, payload)
+            return False  # IMU frames never cue a setpoint send
         else:
             self.get_logger().debug(f"unknown var_id=0x{var_id:04x} len={len(payload)}")
+        return True
 
     def _publish_pressure(self, pub, payload: bytes) -> None:
         if len(payload) != UINT16_LEN:
@@ -248,6 +302,38 @@ class STMComNode(Node):
         self._leak_pub.publish(UInt8MultiArray(data=[raw]))
         if raw:
             self.get_logger().warning(f"leak detected, bitmask=0x{raw:02x}")
+
+    def _handle_imu(self, var_id: int, payload: bytes) -> None:
+        # Latch one axis' raw count; assemble + publish the whole Imu when the
+        # last word of the batch (GYRO_Z) arrives.
+        if len(payload) != INT16_LEN:
+            self.get_logger().warning(
+                f"imu payload wrong length: 0x{var_id:04x} len={len(payload)}"
+            )
+            return
+        (self._imu_counts[var_id],) = struct.unpack(INT16_FMT, payload)
+        if var_id == GYRO_Z_VAR_ID:
+            self._publish_imu()
+
+    def _publish_imu(self) -> None:
+        c = self._imu_counts
+        accel, gyro = imu_counts_to_body(
+            c[ACCEL_X_VAR_ID],
+            c[ACCEL_Y_VAR_ID],
+            c[ACCEL_Z_VAR_ID],
+            c[GYRO_X_VAR_ID],
+            c[GYRO_Y_VAR_ID],
+            c[GYRO_Z_VAR_ID],
+        )
+        msg = Imu()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = IMU_FRAME_ID
+        msg.linear_acceleration.x, msg.linear_acceleration.y, msg.linear_acceleration.z = accel
+        msg.angular_velocity.x, msg.angular_velocity.y, msg.angular_velocity.z = gyro
+        # This IMU streams no orientation; the REP-145 / sensor_msgs convention is
+        # to flag that with orientation_covariance[0] = -1 so the EKF skips it.
+        msg.orientation_covariance[0] = -1.0
+        self._imu_pub.publish(msg)
 
     def _send_setpoints(self) -> None:
         # The STM treats every frame from us as a cue to latch the latest
