@@ -136,15 +136,25 @@ Then, an interactive session as close as to real-life can be initialized as foll
 
 #### Mission Laptop
 
-Go to the `nautilus-command-bridge-frontend` folder and:
 
 ```bash
+cd ~/dave_ws/nautilus-command-bridge-frontend
 mosquitto -c ./mosquitto/mosquitto.conf -v
 ```
 
 ```bash
+cd ~/dave_ws/nautilus-command-bridge-frontend
 npm run dev
 ```
+
+(Optional) Database Supervisor:
+```
+cd ~/dave_ws/nautilus-command-bridge-frontend/db
+./run.sh
+```
+
+Do not forget to press the START DB button when ready.
+
 
 #### Main Board Simulation
 
@@ -167,3 +177,4 @@ Start control:
 ```bash
 ros2 launch py_pkg control_stack.launch.py
 ```
+
