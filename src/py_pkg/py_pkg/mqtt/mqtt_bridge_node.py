@@ -48,7 +48,7 @@ import json
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 import paho.mqtt.client as mqtt
 import rclpy
@@ -84,6 +84,10 @@ class EgressMapping:
     # last one, with retain=True so a fresh UI tab gets the last value. Use for
     # state-like signals that hold steady (valves, setpoint Pose).
     on_change: bool = False
+    # Custom message -> dict encoder. None falls back to message_to_ordereddict
+    # (the full message). Set it to trim a fat message down to the fields the UI
+    # and DB actually use (see _encode_imu_compact).
+    encoder: Callable[[Any], dict] | None = None
 
 
 # MQTT command topics the bridge references by name (mission mirror, lifeguard,
@@ -118,6 +122,22 @@ INGRESS_MAP: tuple[IngressMapping, ...] = (
 )
 
 
+def _encode_imu_compact(msg) -> dict:
+    """Trim the filtered Imu to the two fields the UI and DB actually use.
+
+    The prefilter passes orientation + all three covariance matrices straight
+    through from the raw IMU; nothing past the tether reads them (the 3D
+    attitude model runs off position/estimation, the covariances are unfilled).
+    Sending only the two vectors shrinks the frame (~450 B -> ~95 B) and keeps
+    the DB from logging ~30 dead covariance/orientation channels per sample.
+    """
+    av, la = msg.angular_velocity, msg.linear_acceleration
+    return {
+        "angular_velocity": {"x": av.x, "y": av.y, "z": av.z},
+        "linear_acceleration": {"x": la.x, "y": la.y, "z": la.z},
+    }
+
+
 # Telemetry the bridge mirrors out to the UI. Periodic signals run at 10 Hz --
 # enough resolution for the strip charts to show oscillations and short
 # transients, cheap at JSON-scalar sizes. State-like signals (valves, setpoint
@@ -133,7 +153,12 @@ EGRESS_MAP: tuple[EgressMapping, ...] = (
         0.0,
         on_change=True,
     ),
-    EgressMapping(UUVTopics.IMU_FILTERED, "nautilus/telemetry/imu", 10.0),
+    EgressMapping(
+        UUVTopics.IMU_FILTERED,
+        "nautilus/telemetry/imu",
+        10.0,
+        encoder=_encode_imu_compact,
+    ),
     EgressMapping(UUVTopics.BCU_PRESSURE, "nautilus/telemetry/bcu/pressure", 10.0),
     EgressMapping(
         UUVTopics.EXTERNAL_PRESSURE, "nautilus/telemetry/external/pressure", 10.0
@@ -368,9 +393,11 @@ class MqttBridge(Node):
         throttle/dedup state in _last_emit and _last_payload.
         """
 
+        encode = mapping.encoder or message_to_ordereddict
+
         def _callback(msg) -> None:
             try:
-                payload_dict = message_to_ordereddict(msg)
+                payload_dict = encode(msg)
                 payload_str = _safe_json(payload_dict)
             except Exception as exc:
                 # Log and drop one bad message; keep the subscription alive.

@@ -376,9 +376,11 @@ class TestStructuredEgress:
         assert payload["position"]["z"] == pytest.approx(-5.0)
         assert payload["orientation"]["w"] == pytest.approx(1.0)
 
-    def test_imu_carries_header_and_axes(self, bridge_harness):
-        # Single IMU now: filtered IMU egresses to nautilus/telemetry/imu with
-        # frame_id "imu" (the /right egress is gone).
+    def test_imu_sends_only_axes(self, bridge_harness):
+        # The filtered IMU egresses compactly: only angular_velocity and
+        # linear_acceleration cross the tether. orientation, the covariance
+        # arrays, and the header are trimmed (nothing past the tether reads
+        # them, and dropping them keeps the DB from logging dead channels).
         h = bridge_harness
         m = Imu()
         m.header.frame_id = "imu"
@@ -390,9 +392,15 @@ class TestStructuredEgress:
             lambda: h.fake.publishes_on("nautilus/telemetry/imu"), timeout=1.0
         )
         payload = h.fake.last_payload_on("nautilus/telemetry/imu")
-        assert payload["header"]["frame_id"] == "imu"
         assert payload["angular_velocity"]["x"] == pytest.approx(0.05)
         assert payload["linear_acceleration"]["z"] == pytest.approx(-9.81)
+        # Trimming contract: the fat fields must not be on the wire.
+        assert payload.keys() == {"angular_velocity", "linear_acceleration"}
+        assert "header" not in payload
+        assert "orientation" not in payload
+        assert "orientation_covariance" not in payload
+        assert "angular_velocity_covariance" not in payload
+        assert "linear_acceleration_covariance" not in payload
 
 
 # ---------------------------------------------------------------------------
