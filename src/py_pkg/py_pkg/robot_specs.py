@@ -36,28 +36,22 @@ BLADDER_VOLUME_M3 = 0.0025
 # BCU motor (Maxon EPOS4)
 # ---------------------------------------------------------------------------
 
-BCU_MOTOR_MAX_RPM = 4000
+BCU_MOTOR_MAX_RPM = 3000
 BCU_MOTOR_MIN_RPM = 0
 
 # Gauge pressure above which the pump can no longer push oil out into the
 # bladder against the surrounding water (inflating only gets harder the
 # deeper we are). When we are deeper than this AND the controller wants to
-# descend further, we skip the pump entirely — open valve 1 (the free/bypass
-# way) and let the high external pressure squeeze oil out of the bladder back
-# into the tank for us, free of pump energy. At shallower depths, the pump can
-# still drive flow in either direction through valve 2 (the motor way), so no
-# special-casing is needed.
+# descend further, we skip the pump entirely by opening valve 1.
 
 BCU_DEEP_THRESHOLD_PA = 301_534.5  # = 30 m * 1025 kg/m^3 * 9.806 m/s^2
 
-# BCU valve wire bitmask. The STM/CAN PDO carries valve state as two bits, and
-# everyone who packs or reads that byte -- depth_node (producer), bcu_debug_node,
-# the bridges, and their tests -- goes through these masks.
+# BCU valve wire bitmask. The STM/CAN PDO carries valve state as two bits..
 BCU_MOTOR_VALVE_MASK = 0b01  # bit0 -- pump flow path ("valve 2" in the UI)
 BCU_FREE_VALVE_MASK = 0b10  # bit1 -- passive free/bypass vent ("valve 1")
 
 # ---------------------------------------------------------------------------
-# ACU mechanics
+# ACU mechanics (DEPRECATED: ingore for now)
 # ---------------------------------------------------------------------------
 # Values mirror the Gazebo glider_nautilus model
 # (src/dave/models/dave_robot_models/description/glider_nautilus/model.sdf,
@@ -113,9 +107,7 @@ STM_BCU_RPM_SIGN = -1
 # The STM streams six int16 words per IMU sample -- accel x/y/z on var ids
 # 0x2430..0x2432 and gyro x/y/z on 0x2433..0x2435 -- as raw sensor counts (the
 # datasheet's "Accel_X_int16" / gyro equivalent). The per-count scales below are
-# fixed by how the IMU is configured in firmware; the SI conversion that uses
-# them (and gravity) lives in physics.py, so robot_specs stays import-free of
-# physics.
+# fixed by how the IMU is configured in firmware.
 #
 # Accelerometer, ±6 g full scale (ACC_RANGE=1):
 #   Accel_mg = counts / 32768 * 1000 * 2**(ACC_RANGE+1) * 1.5
@@ -128,21 +120,15 @@ STM_ACCEL_MG_PER_LSB = STM_ACCEL_FULLSCALE_MG / 32768.0
 STM_GYRO_FULLSCALE_DPS = 2000.0
 STM_GYRO_DPS_PER_LSB = STM_GYRO_FULLSCALE_DPS / 32768.0
 
-# How the IMU is mounted: sensor axes -> the FLU body frame the rest of the
-# stack (and the sim IMU) use -- x forward, y left, z up (REP-103/145). Each
-# entry is (source sensor axis, sign) for one body axis, in (x, y, z) order.
-# Derived from the firmware's documented sign table:
-#   accel:  +ax = left,    +ay = forward,  +az = up (≈+1 g at rest)
+# How the IMU is mounted: sensor axes -> the NED body frame the rest of the
+# stack:
+
+#   accel:  +ax = right,   +ay = forward,  +az = up   (≈+1 g at rest)
 #   gyro:   +gx = pitch-up, +gy = roll-right, +gz = yaw-left
-# giving, in the FLU body frame,
-#   (a_x, a_y, a_z)_body = (+ay, +ax, +az)_sensor
-#   (w_x, w_y, w_z)_body = (+gy, -gx, +gz)_sensor   (ROS +pitch about +y is nose-down)
+
+# giving, in the NED body frame (forward / right / down),
+#   (a_x, a_y, a_z)_body = (+ay, +ax, -az)_sensor   (down = -up, so a_z ≈ -1 g level)
+#   (w_x, w_y, w_z)_body = (+gy, +gx, -gz)_sensor   (NED +pitch about +y is nose-up)
 #
-# NOTE: those two documented tables are NOT a single right-handed triad (the
-# accel map is a reflection, the gyro map a rotation), so treat these signs as a
-# starting point and CONFIRM them at bring-up -- static-level gives a_z ≈ +9.81
-# and a manual roll-right / pitch-up / yaw-left must land on the matching ROS
-# axis and sign. This is the single source of truth: flip one entry here (and
-# its assertion in test_imu_conversions.py) if a real axis comes out wrong.
-IMU_ACCEL_AXIS_MAP = (("y", +1.0), ("x", +1.0), ("z", +1.0))
-IMU_GYRO_AXIS_MAP = (("y", +1.0), ("x", -1.0), ("z", +1.0))
+IMU_ACCEL_AXIS_MAP = (("y", +1.0), ("x", +1.0), ("z", -1.0))
+IMU_GYRO_AXIS_MAP = (("y", +1.0), ("x", +1.0), ("z", -1.0))

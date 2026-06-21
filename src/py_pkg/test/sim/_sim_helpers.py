@@ -7,8 +7,8 @@ of our world. Needed because launch_testing's SIGTERM doesn't reliably
 reap the gz-sim-server child of the Ruby ``gz sim`` wrapper.
 
 ``spin_for`` / ``spin_until`` are the standard executor-pumping loops
-every sim test needs, and ``sim_gui_enabled`` reads the shared
-``BCU_SIM_GUI`` switch — defined once here so the polling slice and the
+every sim test needs, and ``sim_gui_enabled`` reads the single shared
+``SIM_GUI`` switch — defined once here so the polling slice and the
 env vocabulary can't drift between tests.
 """
 
@@ -36,8 +36,8 @@ def spin_until(executor, predicate, timeout_s: float, slice_s: float = 0.05) -> 
 
 
 def sim_gui_enabled() -> bool:
-    """``BCU_SIM_GUI=1`` (or true/yes/on) shows the Gazebo GUI."""
-    return os.environ.get("BCU_SIM_GUI", "").lower() in ("1", "true", "yes", "on")
+    """``SIM_GUI=1`` (or true/yes/on) shows the Gazebo GUI."""
+    return os.environ.get("SIM_GUI", "").lower() in ("1", "true", "yes", "on")
 
 
 # Catches the Ruby wrapper for our world, and the "gz sim server" child

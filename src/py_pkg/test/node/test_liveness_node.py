@@ -31,8 +31,7 @@ ALL_ROWS = {
     "bcu_pump",
     "bcu_valve_1",
     "bcu_valve_2",
-    "imu_left",
-    "imu_right",
+    "imu",
     "external_pressure",
     "tank_pressure",
 }
@@ -44,7 +43,8 @@ class _LivenessTesterNode(Node):
     def __init__(self):
         super().__init__("liveness_tester")
         self.latest: DiagnosticArray | None = None
-        self.imu_left_pub = create_publisher_for_topic(self, UUVTopics.IMU_LEFT)
+        # One physical IMU now -> a single "imu" subsystem row fed by IMU.
+        self.imu_pub = create_publisher_for_topic(self, UUVTopics.IMU)
         self.valves_pub = create_publisher_for_topic(
             self, UUVTopics.BCU_FEEDBACK_VALVES
         )
@@ -55,8 +55,8 @@ class _LivenessTesterNode(Node):
     def _on_liveness(self, msg: DiagnosticArray) -> None:
         self.latest = msg
 
-    def feed_imu_left(self) -> None:
-        self.imu_left_pub.publish(Imu())
+    def feed_imu(self) -> None:
+        self.imu_pub.publish(Imu())
 
     def feed_valves(self) -> None:
         m = UInt8()
@@ -130,11 +130,11 @@ class TestLivenessTransitions:
     def test_fed_source_goes_online(self, liveness_harness):
         h = liveness_harness
         for _ in range(6):
-            h.tester.feed_imu_left()
+            h.tester.feed_imu()
             h.tester.feed_valves()
             h.spin_for(0.05)
         states = h.states()
-        assert states["imu_left"] == "online"
+        assert states["imu"] == "online"
         # One bitmask proves both valves alive.
         assert states["bcu_valve_1"] == "online"
         assert states["bcu_valve_2"] == "online"
@@ -144,12 +144,12 @@ class TestLivenessTransitions:
     def test_source_goes_offline_after_staleness(self, liveness_harness):
         h = liveness_harness
         for _ in range(4):
-            h.tester.feed_imu_left()
+            h.tester.feed_imu()
             h.spin_for(0.05)
-        h.spin_until(lambda: h.states().get("imu_left") == "online", timeout=1.0)
+        h.spin_until(lambda: h.states().get("imu") == "online", timeout=1.0)
         # Stop feeding; after the staleness window it must flip back to offline.
         h.spin_until(
-            lambda: h.states().get("imu_left") == "offline",
+            lambda: h.states().get("imu") == "offline",
             timeout=STALENESS_S + 1.0,
         )
-        assert h.states()["imu_left"] == "offline"
+        assert h.states()["imu"] == "offline"

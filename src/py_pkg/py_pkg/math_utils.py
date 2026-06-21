@@ -55,6 +55,30 @@ def rpy_to_quaternion(roll: float, pitch: float, yaw: float) -> tuple:
     return float(qx), float(qy), float(qz), float(qw)
 
 
+def gravity_to_roll_pitch(ax: float, ay: float, az: float) -> tuple:
+    """Infer (roll, pitch) in radians from a body-frame accelerometer reading.
+
+    At low dynamics the accelerometer measures the gravity reaction (specific
+    force), which in a level NED body frame (x forward, y right, z DOWN) points
+    "up" -- i.e. along ``-z``: ``(0, 0, -g)``. Tilting the body rotates that
+    vector, and the tilt falls straight out of its components -- no integration,
+    no filter state. Yaw is unobservable from gravity alone (rotating about the
+    vertical doesn't move the vector), so only roll and pitch are recovered.
+
+    Same ZYX Tait-Bryan convention as ``rpy_to_quaternion`` /
+    ``quaternion_to_roll_pitch``: for a body at (roll, pitch, any yaw) the NED
+    specific force is ``(g·sin p, -g·cos p·sin r, -g·cos p·cos r)``, which
+    inverts to ``roll = atan2(-ay, -az)`` and ``pitch = atan2(ax, hypot(ay, az))``.
+    (NED specific force is just the negation of the FLU one, so this is the FLU
+    inverse applied to ``-a``; roll comes out identical, pitch flips sign.) The
+    ratios make the result independent of the vector's magnitude, so no
+    normalization (or knowledge of g) is needed.
+    """
+    roll = float(np.arctan2(-ay, -az))
+    pitch = float(np.arctan2(ax, np.hypot(ay, az)))
+    return roll, pitch
+
+
 def clamp(val: float, lo: float, hi: float) -> float:
     """Saturate ``val`` into ``[lo, hi]``."""
     if val > hi:
@@ -82,3 +106,18 @@ def deadband_snap(val: float, zero_below: float, snap_to: float, limit: float) -
     if mag < snap_to:
         return snap_to if val > 0 else -snap_to
     return clamp(val, -limit, limit)
+
+
+def span_band_guards(
+    lo_endpoint: float, hi_endpoint: float, band: float
+) -> tuple[float, float]:
+    """Inset both ends of a range by ``band`` fraction of its span.
+
+    Returns ``(low_guard, high_guard) = (lo + band*span, hi - band*span)``,
+    where ``span = hi_endpoint - lo_endpoint``. Used to stop actuating once a
+    reading is within ``band`` of an endpoint -- the last sliver of travel does
+    no useful work (e.g. dead-heading the BCU pump against a full/empty tank).
+    With ``band == 0`` the guards collapse onto the endpoints themselves.
+    """
+    span = hi_endpoint - lo_endpoint
+    return lo_endpoint + band * span, hi_endpoint - band * span

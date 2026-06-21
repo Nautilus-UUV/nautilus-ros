@@ -52,6 +52,7 @@ class PlantSpec(StrictModel):
     bladder_nominal_m3: float = BLADDER_VOLUME_M3
     bcu_motor_min_rpm: int = BCU_MOTOR_MIN_RPM
     bcu_motor_max_rpm: int = BCU_MOTOR_MAX_RPM
+
     # Internal tank pressure sensor model. The tank feeds the
     # bladder, so tank pressure runs INVERSE to bladder fill: oil pushed out
     # into the bladder drains the tank. Dive tests saw a ~0.7-1.5 barg gauge
@@ -86,7 +87,7 @@ class FaultInjectorSpec(StrictModel):
 
 
 class FaultsSpec(StrictModel):
-    # Add more injectors here as they appear (acu_pitch, imu_left, ...).
+    # Add more injectors here as they appear (acu_pitch, imu, ...).
     bcu_rpm: FaultInjectorSpec = Field(default_factory=FaultInjectorSpec)
 
 
@@ -132,27 +133,27 @@ class PhysicsKnobs(StrictModel):
     ``doc/hydrodynamic_coefficient_sampling_plan.md`` §1 for derivation.
     """
 
-    # ── Body geometry (3) ──
+    # Body geometry (3)
     L: float = 1.50       # hull length [m]
     D: float = 0.15       # hull max diameter [m]
     nabla: float = 0.018  # displaced volume [m³]
 
-    # ── Horizontal fin pair (3) ──
+    # Horizontal fin pair (3)
     b_f: float = 0.33     # horizontal fin span, root-to-tip [m]
     c_f: float = 0.22     # horizontal fin chord, mean [m]
     x_f: float = 0.70     # horizontal fin lever arm from x_CB [m]
 
-    # ── Top rudder (3) ──
+    # Top rudder (3)
     b_r: float = 0.22     # rudder span, root-to-tip [m]
     c_r: float = 0.11     # rudder chord, mean [m]
     x_r: float = 0.939    # rudder lever arm from x_CB [m]
 
-    # ── Foil profile / fin nonlinear envelope (3 — alpha_stall split) ──
+    # Foil profile / fin nonlinear envelope (3 — alpha_stall split)
     t_over_c: float = 0.12         # fin thickness ratio [-]
     alpha_stall_horiz: float = 0.17  # stall angle, horizontal pair [rad]
     alpha_stall_rudder: float = 0.17  # stall angle, top rudder [rad]
 
-    # ── Empirical / flow-physics (4) ──
+    # Empirical / flow-physics (4)
     C_d_c: float = 1.10        # 2D cylinder cross-flow drag coeff [-]
     one_plus_k: float = 1.20   # hull form-factor multiplier [-]
     C_p_base: float = 0.08     # base-pressure drag coefficient [-]

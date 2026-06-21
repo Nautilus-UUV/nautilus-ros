@@ -8,7 +8,7 @@ Gazebo buoyancy plugin; depth-tracking is intentionally out of scope.
 Composed lean (bridges + Gazebo + robot, no controller) so the test
 owns BCU_RPM exclusively. Marker-gated ``@pytest.mark.sim``; opt in with
 ``pytest -m sim test/sim/`` after sourcing the workspace install.
-``BCU_SIM_GUI=1`` shows the Gazebo GUI. Don't run alongside any other
+``SIM_GUI=1`` shows the Gazebo GUI. Don't run alongside any other
 sim/rclpy process on the host — the production topic names overlap.
 """
 
@@ -36,7 +36,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import Imu
 from std_msgs.msg import Float32, Int16, Int32
 
-from ._sim_helpers import reap_lingering_gz
+from ._sim_helpers import reap_lingering_gz, sim_gui_enabled
 
 # ---------------------------------------------------------------------------
 # Launch description — composed, NOT a wholesale include of an end-to-end
@@ -70,12 +70,7 @@ def generate_test_description():
     )
 
     # DAVE convention: `gui` is always "true"; `headless` controls the display.
-    gui_enabled = os.environ.get("BCU_SIM_GUI", "").lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    )
+    gui_enabled = sim_gui_enabled()
 
     robot_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -118,7 +113,7 @@ def generate_test_description():
 
 
 class _BCUTestDriver(Node):
-    """Publishes BCU_RPM, captures BCU_FLOW_RATE / BCU_VOLUME / IMU_LEFT."""
+    """Publishes BCU_RPM, captures BCU_FLOW_RATE / BCU_VOLUME / IMU."""
 
     def __init__(self):
         super().__init__("bcu_sim_test_driver")
@@ -129,9 +124,9 @@ class _BCUTestDriver(Node):
         self.rpm_pub = create_publisher_for_topic(self, UUVTopics.BCU_RPM)
         create_subscription_for_topic(self, UUVTopics.BCU_FLOW_RATE, self._on_flow)
         create_subscription_for_topic(self, UUVTopics.BCU_VOLUME, self._on_volume)
-        # IMU_LEFT is the sim-readiness signal: imu_sim_bridge has no timer,
+        # IMU is the sim-readiness signal: imu_sim_bridge has no timer,
         # so any message proves Gazebo physics + plugins are alive.
-        create_subscription_for_topic(self, UUVTopics.IMU_LEFT, self._on_imu)
+        create_subscription_for_topic(self, UUVTopics.IMU, self._on_imu)
 
     def _on_flow(self, msg: Float32) -> None:
         self.received_flow.append(float(msg.data))
@@ -197,7 +192,7 @@ class BCUSimTest(unittest.TestCase):
     def test_positive_rpm_fills_bladder(self):
         """Sustained positive RPM -> positive flow + monotonic volume rise.
 
-        Sequence: wait for IMU_LEFT (sim ready), settle, send RPM=0 a few
+        Sequence: wait for IMU (sim ready), settle, send RPM=0 a few
         times to fire the bridge's startup clamp to rig.plant.bladder_min_m3
         (otherwise the +RPM accumulation gets subtracted from the SDF's
         ~1250 mL initial volume and looks like a decrease), snapshot the
@@ -213,7 +208,7 @@ class BCUSimTest(unittest.TestCase):
         drive_period_s = 0.1  # 10 Hz, mirrors the production control loop
         settle_s = 2.0
 
-        # 1) Wait for sim. IMU_LEFT is the readiness signal — BCU_VOLUME
+        # 1) Wait for sim. IMU is the readiness signal — BCU_VOLUME
         # isn't (its timer publishes 0 immediately).
         sim_ready = self._spin_until(
             lambda: self.driver.imu_msg_count >= 1,
@@ -221,7 +216,7 @@ class BCUSimTest(unittest.TestCase):
         )
         self.assertTrue(
             sim_ready,
-            f"IMU_LEFT never arrived within {startup_timeout_s}s — "
+            f"IMU never arrived within {startup_timeout_s}s — "
             "is Gazebo up and is the model spawned with its IMU plugin?",
         )
 
@@ -238,7 +233,7 @@ class BCUSimTest(unittest.TestCase):
         self.assertGreater(
             len(self.driver.received_volume_ml),
             0,
-            "BCU_VOLUME never arrived even after IMU_LEFT confirmed sim "
+            "BCU_VOLUME never arrived even after IMU confirmed sim "
             "readiness — bcu_sim_bridge may be down.",
         )
         starting_volume_ml = self.driver.received_volume_ml[-1]

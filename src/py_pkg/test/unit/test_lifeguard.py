@@ -99,27 +99,39 @@ class TestLatch:
 
 class TestTankBlowExhausted:
     """The blow drains the tank toward the registered empty endpoint;
-    within 10% of it there's nothing left to pump."""
+    within 10% of the full--empty span there's nothing left to pump. Shares
+    the span-based band with the depth controller's tank clamp."""
 
     EMPTY = 70_000.0
+    FULL = 150_000.0
+    # empty + 10% of the (full - empty) span = 70k + 8k = 78k.
+    LOW_GUARD = EMPTY + 0.10 * (FULL - EMPTY)
 
     def test_unregistered_is_never_exhausted(self):
         # No pre-dive Initialize -> blow stays continuous and dumb.
-        assert tank_blow_exhausted(0.0, None) is False
-        assert tank_blow_exhausted(None, self.EMPTY) is False
-        assert tank_blow_exhausted(None, None) is False
+        assert tank_blow_exhausted(0.0, None, self.FULL) is False
+        assert tank_blow_exhausted(None, self.EMPTY, self.FULL) is False
+        assert tank_blow_exhausted(None, None, None) is False
 
     def test_non_positive_empty_is_never_exhausted(self):
         # A half-filled payload decodes missing fields as 0.0 -- treat it
         # as not registered, not as "every reading is at the limit".
-        assert tank_blow_exhausted(0.0, 0.0) is False
-        assert tank_blow_exhausted(50_000.0, -1.0) is False
+        assert tank_blow_exhausted(0.0, 0.0, self.FULL) is False
+        assert tank_blow_exhausted(50_000.0, -1.0, self.FULL) is False
+
+    def test_missing_or_inverted_full_is_never_exhausted(self):
+        # No full endpoint -> no span to measure the 10% against; an inverted
+        # or zero span (full <= empty) is equally unusable. Either way the
+        # blow stays continuous rather than standing down on bad data.
+        assert tank_blow_exhausted(self.EMPTY, self.EMPTY, None) is False
+        assert tank_blow_exhausted(self.EMPTY, self.EMPTY, self.EMPTY) is False
+        assert tank_blow_exhausted(self.EMPTY, self.EMPTY, self.EMPTY - 1.0) is False
 
     def test_exactly_at_the_band_boundary_is_exhausted(self):
-        assert tank_blow_exhausted(self.EMPTY * 1.10, self.EMPTY) is True
+        assert tank_blow_exhausted(self.LOW_GUARD, self.EMPTY, self.FULL) is True
 
     def test_just_outside_the_band_is_not_exhausted(self):
-        assert tank_blow_exhausted(self.EMPTY * 1.10 + 1.0, self.EMPTY) is False
+        assert tank_blow_exhausted(self.LOW_GUARD + 1.0, self.EMPTY, self.FULL) is False
 
     def test_below_the_empty_endpoint_is_exhausted(self):
-        assert tank_blow_exhausted(self.EMPTY - 5_000.0, self.EMPTY) is True
+        assert tank_blow_exhausted(self.EMPTY - 5_000.0, self.EMPTY, self.FULL) is True

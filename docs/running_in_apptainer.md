@@ -1,4 +1,4 @@
-# Running the Nautilus simulation in Apptainer
+# Running the Nautilus Simulation in Apptainer
 
 ## Sample Coefficients
 
@@ -73,19 +73,11 @@ All three arguments should be advertised.
 
 ### Visualization
 
-`run_analysis.py` runs host-side (outside the SIF) — it reads the recorded MCAP bags
-off disk, writes a markdown statistics report (always) and renders the plot PNG(s).
-Use `/usr/bin/python3` (the system interpreter that carries `rosbags`/`matplotlib`,
-not the conda one on `$PATH`); install its deps once with
-`/usr/bin/python3 -m pip install -r src/nautilus-ros/scripts/requirements-analysis.txt`,
-then, from the workspace root:
+`run_analysis.py` runs host-side (outside the SIF) and reads the recorded MCAP bags off disk, writes a markdown statistics report and renders the plot PNG(s).
 
 ```bash
-/usr/bin/python3 src/nautilus-ros/scripts/run_analysis.py sim_data/nominal_pid_sweep_with_min_rpm
+python src/nautilus-ros/scripts/run_analysis.py sim_data/nominal_pid_sweep_with_min_rpm
 ```
-
-This writes `<sweep>_stats.md` plus the plots to `scripts/output/`; pass
-`--plot {pose_multi_plot,error_box_plot,all}` to pick which plots to render.
 
 
 ### Canonical Invocation
@@ -109,21 +101,16 @@ apptainer exec --cleanenv \
 Arguments:
 
 - `--cleanenv` strips the host's env (DISPLAY, ROS_DOMAIN_ID, etc.) so
-  the container starts from a known baseline.
+  the container starts from a baseline.
 - `--env GZ_IP=127.0.0.1` keeps the Gazebo transport off any VPN-routable
   interface. Required when the host is on a VPN, harmless otherwise.
-- `--bind ./sim_data:/ros2_ws/sim_data` is where recorded bags land —
-  the launch builds `[{sampler_id}/]{run_id}_{ts}/raw/` *inside* this
-  dir, so bind the parent (not the inner `raw` like older flows did).
+- `--bind ./sim_data:/ros2_ws/sim_data` is where recorded bags land.
+  The launch builds `[{sampler_id}/]{run_id}_{ts}/raw/` *inside* this
+  dir, so bind the parent.
 - `--bind ./scenarios:/ros2_ws/scenarios:ro` exposes a host directory of
-  YAMLs you can edit without rebuilding the SIF. Drop this bind to use
-  only the in-image library YAMLs at
-  `/ros2_ws/install/py_pkg/share/py_pkg/scenarios/library/`.
-- `headless:=true` is required under `--cleanenv` — there's no DISPLAY
-  to render a Gazebo GUI to. If you ever need the GUI you'll have to
-  forward X11 through (skip `--cleanenv`, bind `/tmp/.X11-unix`, etc.).
-- `xvfb-run` is **not** used. The headless server has nothing to render
-  to a virtual display, so wrapping with xvfb is dead weight here.
+  YAMLs you can edit without rebuilding the SIF.
+- `headless:=true` is required under `--cleanenv`: there's no DISPLAY
+  to render a Gazebo GUI to.
 
 A scenario YAML with a `rig.hydrodynamics:` block is detected by
 `nautilus_hal.render_sdf.description_file_for_scenario` and triggers a

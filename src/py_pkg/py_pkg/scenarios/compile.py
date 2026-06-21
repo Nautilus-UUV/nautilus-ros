@@ -43,7 +43,7 @@ from .spec.rig import FinAeroSpec, HydrodynamicsSpec, PhysicsKnobs, RigScenario
 # ---------------------------------------------------------------------------
 
 
-def params_for_depth_node(scen: ControlScenario) -> dict[str, Any]:
+def params_for_bcu_node(scen: ControlScenario) -> dict[str, Any]:
     d = scen.controllers.depth
     return {
         "frequency_hz": d.frequency_hz,
@@ -64,7 +64,7 @@ def params_for_depth_node(scen: ControlScenario) -> dict[str, Any]:
     }
 
 
-def depth_spec_from_node(node: Node) -> DepthSpec:
+def bcu_spec_from_node(node: Node) -> DepthSpec:
     """Read depth-controller params off `node` into a typed DepthSpec.
 
     Defaults come from the dataclass — absent any scenario override at

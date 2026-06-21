@@ -1,8 +1,8 @@
 """Tier 2: BcuDebugNode end-to-end via in-process rclpy harness.
 
 There's no override gate now: the node drives /bcu/rpm + /bcu/valves whenever
-it holds a command. Contention with depth_node is avoided upstream (the UI
-stops the mission first, so depth_node goes silent). When idle the node
+it holds a command. Contention with bcu_node is avoided upstream (the UI
+stops the mission first, so bcu_node goes silent). When idle the node
 publishes nothing; a short trailing-zero flush carries the terminal 0 out after
 a command ends. Emergency surface is the safety path and always acts.
 
@@ -10,7 +10,7 @@ Asserts the behaviours the bench operator depends on:
 * a pump command reaches /bcu/rpm immediately (no gate),
 * a 0 follows after the requested duration (motor stops),
 * a fresh command supersedes an in-flight stop without a 0 in between,
-* when idle the node is silent (depth_node owns the BCU),
+* when idle the node is silent (bcu_node owns the BCU),
 * a session end flushes trailing zeros so the reset-to-0 reaches the UI stream,
 * /debug/reset all-stops the node (zero, then silent),
 * pump-until-pressure runs without a feasibility pre-check and stops when the
@@ -111,7 +111,7 @@ def test_second_command_cancels_pending_stop(bcu_debug_node_harness):
 
 def test_reset_zeros_motor_and_silences(bcu_debug_node_harness):
     # The red Reset all-stops the debug node: zero the motor (with a short
-    # trailing-zero flush), then go silent so depth_node can reclaim the wire.
+    # trailing-zero flush), then go silent so bcu_node can reclaim the wire.
     h = bcu_debug_node_harness
     h.publish_pump(rpm=500, duration_s=5.0)
     h.spin_until(lambda: 500 in h.received_rpm, timeout=1.0)
@@ -190,7 +190,7 @@ def test_emergency_surface_blows_ballast_continuously(bcu_debug_node_harness):
 
 def test_idle_is_silent(bcu_debug_node_harness):
     # With no active command the node publishes nothing, leaving /bcu/rpm to
-    # depth_node. (The trailing-zero flush only runs right after a command ends.)
+    # bcu_node. (The trailing-zero flush only runs right after a command ends.)
     h = bcu_debug_node_harness
     h.spin_for(0.5)
     assert (

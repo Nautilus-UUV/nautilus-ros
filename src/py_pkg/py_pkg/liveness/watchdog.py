@@ -1,7 +1,6 @@
 """Pure freshness watchdog behind the liveness node.
 
-No ROS and no clock of its own: the caller hands in timestamps, so the decision
-logic is directly unit-testable (Tier 1). A subsystem reads *online* while its
+No ROS and no clock of its own. A subsystem reads *online* while its
 most recent mark is younger than the staleness timeout, and *offline* once it
 ages past that — or until it has ever been marked at all.
 """

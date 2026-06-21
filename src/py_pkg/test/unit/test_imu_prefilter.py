@@ -1,4 +1,4 @@
-"""Tier 1 unit tests for the EMA math in py_pkg.ekf_prefilter.
+"""Tier 1 unit tests for the EMA math in py_pkg.imu_prefilter.
 
 The prefilter is a ROS node, but its smoothing logic is the pure
 function `ema(self, x_new, x_prev)` that only depends on `self.alpha`.
@@ -18,12 +18,12 @@ Two goals:
 from types import SimpleNamespace
 
 import pytest
-from py_pkg.ekf_prefilter.ekf_prefilter import EkfPrefilter
+from py_pkg.imu_prefilter.imu_prefilter import ImuPrefilter
 
 
 def ema(alpha, x_new, x_prev):
-    """Call EkfPrefilter.ema as an unbound method with a fake self."""
-    return EkfPrefilter.ema(SimpleNamespace(alpha=alpha), x_new, x_prev)
+    """Call ImuPrefilter.ema as an unbound method with a fake self."""
+    return ImuPrefilter.ema(SimpleNamespace(alpha=alpha), x_new, x_prev)
 
 
 class TestFirstSample:
@@ -82,7 +82,7 @@ class TestDCInvariance:
     """A constant input must produce a constant output (gain = 1 at DC).
     This is the most important property: the filter must not bias
     accelerometer or gyro measurements when the underlying signal is
-    steady, otherwise the EKF gets a wrong mean."""
+    steady, otherwise the attitude estimate gets a wrong mean."""
 
     @pytest.mark.parametrize("alpha", [0.1, 0.25, 0.5, 0.75, 0.9])
     def test_constant_input_gives_constant_output(self, alpha):

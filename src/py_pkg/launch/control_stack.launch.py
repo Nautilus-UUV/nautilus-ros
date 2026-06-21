@@ -10,14 +10,16 @@ Parameterized by a single ``scenario:=`` launch arg. The scenario YAML's
 ``py_pkg.scenarios.compile``; the ``rig:`` block is never read here.
 
 Composition (inputs -> outputs):
-    /imu/left           -> ekf_prefilter -> /imu/filtered/left
-    /imu/filtered/left  -> ekf_node      -> /position/estimation
-    /position/target +  -> depth_node    -> /bcu/rpm + /bcu/valves
-      /external/pressure
+    /imu                -> imu_prefilter -> /imu/filtered
+    /imu/filtered +     -> attitude_node -> /position/estimation
+      /external/pressure                    (roll/pitch from gravity; gauge
+      + /init/dive                          depth in position.z)
+    /position/target +  -> bcu_node    -> /bcu/rpm + /bcu/valves
+      /position/estimation
     /position/target +  -> acu_node      -> /acu/pitch + /acu/roll
       /position/estimation
     /path + /command    -> pathfinding_node -> /position/target
-      (/command is std_msgs/Bool: true=start, false=stop. depth_node and
+      (/command is std_msgs/Bool: true=start, false=stop. bcu_node and
        acu_node also subscribe to /command and reset to a safe-silent state
        on false.)
     feedback + sensors  -> liveness_node -> /status/liveness (per-subsystem
@@ -64,7 +66,7 @@ def _wire_control_stack(context, *_args, **_kwargs):
     # `.control` half of the scenario is read here.
     from py_pkg.scenarios.compile import (
         params_for_acu_node,
-        params_for_depth_node,
+        params_for_bcu_node,
     )
     from py_pkg.scenarios.loader import load_scenario
 
@@ -74,29 +76,25 @@ def _wire_control_stack(context, *_args, **_kwargs):
     lifeguard_timeout_s = float(
         LaunchConfiguration("lifeguard_timeout_s").perform(context)
     )
-    ekf_publish_enabled = (
-        LaunchConfiguration("ekf_publish_enabled").perform(context).lower() == "true"
-    )
     return [
         Node(
             package="py_pkg",
-            executable="ekf_prefilter",
-            name="ekf_prefilter",
+            executable="imu_prefilter",
+            name="imu_prefilter",
             output="screen",
         ),
         Node(
             package="py_pkg",
-            executable="ekf_node",
-            name="ekf_node",
+            executable="attitude_node",
+            name="attitude_node",
             output="screen",
-            parameters=[{"publish_enabled": ekf_publish_enabled}],
         ),
         Node(
             package="py_pkg",
-            executable="depth_node",
-            name="depth_control_node",
+            executable="bcu_node",
+            name="bcu_node",
             output="screen",
-            parameters=[params_for_depth_node(control)],
+            parameters=[params_for_bcu_node(control)],
         ),
         Node(
             package="py_pkg",
@@ -191,18 +189,6 @@ def generate_launch_description():
                     "(nautilus/cmd/lifeguard), this many seconds without a "
                     "laptop heartbeat latches the emergency surface. Tests "
                     "shorten it further."
-                ),
-            ),
-            DeclareLaunchArgument(
-                "ekf_publish_enabled",
-                default_value="true",
-                description=(
-                    "Let ekf_node publish /position/estimation. Set false to "
-                    "silence the EKF while its tuning is in flux -- the node "
-                    "still runs the math, but no Pose goes out, so the "
-                    "Telemetry tab's EKF panels freeze instead of jittering. "
-                    "Closed-loop dive control (depth + ACU pitch) does not "
-                    "depend on EKF output."
                 ),
             ),
             DeclareLaunchArgument(

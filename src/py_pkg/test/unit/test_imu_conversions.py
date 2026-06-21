@@ -1,14 +1,14 @@
 """Tier 1 unit tests for the STM IMU conversions.
 
 Pure math (no ROS, no hardware): raw int16 sensor counts -> SI, plus the
-sensor -> FLU body-frame axis/sign remap. These tests are the executable record
+sensor -> NED body-frame axis/sign remap. These tests are the executable record
 of the firmware sign table -- if a real axis comes out wrong at bring-up and an
 entry in IMU_ACCEL_AXIS_MAP / IMU_GYRO_AXIS_MAP gets flipped, the matching
 assertion below moves with it.
 
   - accel_counts_to_mps2: count -> m/s^2 (±6 g full scale)
   - gyro_counts_to_rads:  count -> rad/s (±2000 °/s full scale)
-  - imu_counts_to_body:   six counts -> SI accel + gyro in the FLU body frame
+  - imu_counts_to_body:   six counts -> SI accel + gyro in the NED body frame
 """
 
 import math
@@ -60,10 +60,12 @@ def _body(ax=0, ay=0, az=0, gx=0, gy=0, gz=0):
 
 
 class TestAxisRemapAccel:
-    """Documented accel directions land on the right FLU body axis.
+    """Documented accel directions land on the right NED body axis.
 
-    Sensor table: +ax = left, +ay = forward, +az = up. Target body frame is
-    FLU (x forward, y left, z up).
+    Sensor table: +ay = forward, +az = up. The +ax axis was confirmed at
+    bring-up to point body-RIGHT, which IS +y in the NED body frame (x forward,
+    y right, z DOWN), so it maps to POSITIVE body y. +az (sensor up) maps to
+    NEGATIVE body z, because NED z points down.
     """
 
     def test_forward_accel_is_body_x(self):
@@ -73,29 +75,33 @@ class TestAxisRemapAccel:
         # Body x magnitude is just the scaled forward count.
         assert accel[0] == pytest.approx(accel_counts_to_mps2(1000))
 
-    def test_left_accel_is_body_y(self):
+    def test_sensor_ax_is_positive_body_y(self):
+        # +ax (sensor) points body-right, which is +y in NED.
         accel, _ = _body(ax=1000)
         assert accel[1] > 0
         assert accel[0] == 0 and accel[2] == 0
+        assert accel[1] == pytest.approx(accel_counts_to_mps2(1000))
 
-    def test_up_accel_is_body_z(self):
+    def test_up_accel_is_negative_body_z(self):
+        # Sensor +az points up; NED body z points down, so up -> negative body z.
         accel, _ = _body(az=1000)
-        assert accel[2] > 0
+        assert accel[2] < 0
         assert accel[0] == 0 and accel[1] == 0
 
-    def test_static_level_reads_plus_g_on_z(self):
-        # IMU sitting level: +1 g of specific force up -> body a_z ≈ +9.81.
+    def test_static_level_reads_minus_g_on_z(self):
+        # IMU sitting level: +1 g of specific force up -> body a_z ≈ -9.81 (NED).
         accel, _ = _body(az=ONE_G_COUNTS)
-        assert accel[2] == pytest.approx(GRAVITY_M_S2, abs=0.01)
+        assert accel[2] == pytest.approx(-GRAVITY_M_S2, abs=0.01)
         assert accel[0] == 0 and accel[1] == 0
 
 
 class TestAxisRemapGyro:
-    """Documented rotations land on the right FLU body rate + sign.
+    """Documented rotations land on the right NED body rate + sign.
 
-    Sensor table: +gx = pitch up, +gy = roll right, +gz = yaw left. In FLU,
-    positive pitch about +y is nose-DOWN, so a documented pitch-up reads
-    negative on body w_y; roll-right and yaw-left stay positive.
+    Sensor table: +gx = pitch up, +gy = roll right, +gz = yaw left. In NED
+    (x forward, y right, z down) positive pitch about +y is nose-UP, so a
+    documented pitch-up reads POSITIVE on body w_y. Roll-right stays positive on
+    w_x; yaw-left reads NEGATIVE on w_z (positive yaw about NED +z is yaw-right).
     """
 
     def test_roll_right_is_positive_body_x(self):
@@ -103,12 +109,12 @@ class TestAxisRemapGyro:
         assert gyro[0] > 0
         assert gyro[1] == 0 and gyro[2] == 0
 
-    def test_pitch_up_is_negative_body_y(self):
+    def test_pitch_up_is_positive_body_y(self):
         _, gyro = _body(gx=1000)
-        assert gyro[1] < 0
+        assert gyro[1] > 0
         assert gyro[0] == 0 and gyro[2] == 0
 
-    def test_yaw_left_is_positive_body_z(self):
+    def test_yaw_left_is_negative_body_z(self):
         _, gyro = _body(gz=1000)
-        assert gyro[2] > 0
+        assert gyro[2] < 0
         assert gyro[0] == 0 and gyro[1] == 0

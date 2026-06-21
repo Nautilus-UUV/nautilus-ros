@@ -1,8 +1,7 @@
 """Pure dead-man state machine behind the MQTT bridge's lifeguard.
 
-No ROS and no clock of its own: the caller hands in timestamps, so the decision
-logic is directly unit-testable (Tier 1), same as the liveness watchdog. The
-lifeguard is the deploy-time failsafe — armed by the operator before the glider
+No ROS and no clock of its own. The
+lifeguard is the deploy-time failsafe, armed by the operator before the glider
 goes in the water, it watches the laptop heartbeat and *engages* (latches the
 emergency-surface command) once the heartbeat has been silent for the timeout.
 
@@ -16,6 +15,8 @@ clears the latch.
 
 from __future__ import annotations
 
+from py_pkg.math_utils import span_band_guards
+
 
 class Lifeguard:
     """Tracks the laptop heartbeat and decides when to blow ballast."""
@@ -27,10 +28,7 @@ class Lifeguard:
         self._last_beat: float | None = None
 
     def arm(self, now: float) -> None:
-        """Arm the failsafe, seeding the clock so the silence window starts
-        here — not at some stale past beat. Idempotent: the UI retains the
-        arm command on the broker, so a reconnect replays it; that replay
-        must not reset the window or clear an engaged latch."""
+        """Arm the failsafe, seeding the clock so the silence window starts here"""
         if self.armed:
             return
         self.armed = True
@@ -45,7 +43,7 @@ class Lifeguard:
 
     def beat(self, now: float) -> None:
         """A laptop heartbeat arrived. Refreshes the silence window but never
-        clears the latch — surfacing continues until an explicit disarm."""
+        clears the latch."""
         if self.armed:
             self._last_beat = now
 
@@ -64,23 +62,22 @@ class Lifeguard:
 def tank_blow_exhausted(
     tank_pa: float | None,
     tank_empty_pa: float | None,
+    tank_full_pa: float | None,
     band: float = 0.10,
 ) -> bool:
     """Is there anything left for the emergency blow to pump?
 
     The blow inflates the bladder, draining the tank toward its empty
-    endpoint. Within ``band`` (10%) of the registered empty-tank pressure
-    the bladder is as full as it's going to get — continuing just
-    dead-heads the pump without buying buoyancy, so the bridge stands the
-    blow down (while keeping the lifeguard latch engaged).
+    endpoint. Within ``band`` (10%) of the full--empty span above the empty
+    endpoint the bladder is as full as it's going to get.
 
-    ``tank_empty_pa`` comes from the operator's pre-dive Initialize
-    (DIVE_INIT). Unknown or non-positive values return False: with no
-    registration the blow behaves as it always has — continuous, dumb,
-    impossible to argue out of surfacing.
+    Both endpoints come from the pre-dive initialization (DIVE_INIT).
+    A missing or non-positive empty endpoint, an absent full endpoint, or a
+    non-positive span all return False.
     """
-    if tank_pa is None or tank_empty_pa is None:
+    if tank_pa is None or tank_empty_pa is None or tank_full_pa is None:
         return False
-    if not tank_empty_pa > 0.0:
+    if not tank_empty_pa > 0.0 or tank_full_pa <= tank_empty_pa:
         return False
-    return tank_pa <= tank_empty_pa * (1.0 + band)
+    low_guard, _ = span_band_guards(tank_empty_pa, tank_full_pa, band)
+    return tank_pa <= low_guard

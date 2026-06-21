@@ -147,12 +147,7 @@ class _BridgeTesterNode(Node):
         self.position_target_pub = create_publisher_for_topic(
             self, UUVTopics.POSITION_TARGET
         )
-        self.imu_left_pub = create_publisher_for_topic(
-            self, UUVTopics.IMU_FILTERED_LEFT
-        )
-        self.imu_right_pub = create_publisher_for_topic(
-            self, UUVTopics.IMU_FILTERED_RIGHT
-        )
+        self.imu_pub = create_publisher_for_topic(self, UUVTopics.IMU_FILTERED)
         self.bcu_pressure_pub = create_publisher_for_topic(self, UUVTopics.BCU_PRESSURE)
         self.external_pressure_pub = create_publisher_for_topic(
             self, UUVTopics.EXTERNAL_PRESSURE
@@ -381,19 +376,21 @@ class TestStructuredEgress:
         assert payload["position"]["z"] == pytest.approx(-5.0)
         assert payload["orientation"]["w"] == pytest.approx(1.0)
 
-    def test_imu_left_carries_header_and_axes(self, bridge_harness):
+    def test_imu_carries_header_and_axes(self, bridge_harness):
+        # Single IMU now: filtered IMU egresses to nautilus/telemetry/imu with
+        # frame_id "imu" (the /right egress is gone).
         h = bridge_harness
         m = Imu()
-        m.header.frame_id = "imu_left"
+        m.header.frame_id = "imu"
         m.orientation.w = 1.0
         m.angular_velocity.x = 0.05
         m.linear_acceleration.z = -9.81
-        h.tester.imu_left_pub.publish(m)
+        h.tester.imu_pub.publish(m)
         h.spin_until(
-            lambda: h.fake.publishes_on("nautilus/telemetry/imu/left"), timeout=1.0
+            lambda: h.fake.publishes_on("nautilus/telemetry/imu"), timeout=1.0
         )
-        payload = h.fake.last_payload_on("nautilus/telemetry/imu/left")
-        assert payload["header"]["frame_id"] == "imu_left"
+        payload = h.fake.last_payload_on("nautilus/telemetry/imu")
+        assert payload["header"]["frame_id"] == "imu"
         assert payload["angular_velocity"]["x"] == pytest.approx(0.05)
         assert payload["linear_acceleration"]["z"] == pytest.approx(-9.81)
 
@@ -676,7 +673,7 @@ class TestLifeguard:
         h.receive_mqtt(LIFEGUARD_CMD_TOPIC, {"data": True})
         h.spin_until(lambda: True in h.tester.received_emergency, timeout=4.0)
         h.spin_until(lambda: False in h.tester.received_command, timeout=1.0)
-        # Steady engaged state leaves /command alone -- depth_node safe-stops
+        # Steady engaged state leaves /command alone -- bcu_node safe-stops
         # on every false, so per-tick re-sends would chatter the valves
         # against the emergency hold.
         h.tester.received_command.clear()

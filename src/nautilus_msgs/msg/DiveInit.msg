@@ -5,7 +5,7 @@
 #
 # surface_pressure_pa -- absolute external pressure read at the surface.
 # Replaces the standard-atmosphere constant as the gauge reference in the
-# control stack (depth_node, acu_node, pathfinding), so "0 gauge" means
+# control stack (bcu_node, acu_node, pathfinding), so "0 gauge" means
 # the actual surface on dive day, not 101325 Pa.
 #
 # tank_empty_pa / tank_full_pa -- tank pressure at the drained / full-of-oil
@@ -14,7 +14,7 @@
 # The tank runs INVERSE to bladder fill: positive bus RPM inflates the
 # bladder, draining the tank toward `tank_empty_pa`; negative RPM, or the
 # passive free-valve vent, pushes oil back, raising it toward
-# `tank_full_pa`. Consumed by depth_node's output clamp and the
+# `tank_full_pa`. Consumed by bcu_node's output clamp and the
 # lifeguard's tank-empty stand-down.
 
 float64 surface_pressure_pa

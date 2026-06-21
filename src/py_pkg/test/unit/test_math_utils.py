@@ -12,10 +12,14 @@ import pytest
 from py_pkg.math_utils import (
     clamp,
     deadband_snap,
+    gravity_to_roll_pitch,
     quaternion_to_roll_pitch,
     quaternion_to_yaw,
     rpy_to_quaternion,
+    span_band_guards,
 )
+
+from _attitude_helpers import specific_force as _specific_force
 
 pi = np.pi
 
@@ -104,6 +108,61 @@ class TestRpyToQuaternion:
             assert math.degrees(pitch) == pytest.approx(pitch_deg, abs=1e-6)
 
 
+class TestGravityToRollPitch:
+    """(roll, pitch) inferred from the NED specific-force (gravity) vector.
+
+    Must agree with rpy_to_quaternion / quaternion_to_roll_pitch so the estimator
+    feeds the ACU roll PID the same sign convention it expects.
+    """
+
+    def test_level_reads_zero(self):
+        # NED z points down, so the level gravity reaction is -g on body z.
+        roll, pitch = gravity_to_roll_pitch(0.0, 0.0, -9.806)
+        assert roll == pytest.approx(0.0)
+        assert pitch == pytest.approx(0.0)
+
+    @pytest.mark.parametrize("roll_deg", [-40.0, -10.0, 5.0, 30.0, 60.0])
+    def test_pure_roll_recovered(self, roll_deg):
+        roll = math.radians(roll_deg)
+        ax, ay, az = _specific_force(roll, 0.0, 0.0)
+        r, p = gravity_to_roll_pitch(ax, ay, az)
+        assert r == pytest.approx(roll, abs=1e-9)
+        assert p == pytest.approx(0.0, abs=1e-9)
+
+    @pytest.mark.parametrize("pitch_deg", [-50.0, -15.0, 10.0, 45.0])
+    def test_pure_pitch_recovered(self, pitch_deg):
+        pitch = math.radians(pitch_deg)
+        ax, ay, az = _specific_force(0.0, pitch, 0.0)
+        r, p = gravity_to_roll_pitch(ax, ay, az)
+        assert r == pytest.approx(0.0, abs=1e-9)
+        assert p == pytest.approx(pitch, abs=1e-9)
+
+    @pytest.mark.parametrize("roll_deg", [-30.0, 0.0, 25.0])
+    @pytest.mark.parametrize("pitch_deg", [-40.0, 0.0, 35.0])
+    def test_combined_round_trip(self, roll_deg, pitch_deg):
+        roll, pitch = math.radians(roll_deg), math.radians(pitch_deg)
+        ax, ay, az = _specific_force(roll, pitch, 0.0)
+        r, p = gravity_to_roll_pitch(ax, ay, az)
+        assert r == pytest.approx(roll, abs=1e-9)
+        assert p == pytest.approx(pitch, abs=1e-9)
+
+    @pytest.mark.parametrize("yaw_deg", [0.0, 37.0, 123.0, -90.0])
+    def test_yaw_does_not_affect_result(self, yaw_deg):
+        # Gravity is yaw-blind: spinning about the vertical can't move the vector.
+        roll, pitch = math.radians(20.0), math.radians(-15.0)
+        ax, ay, az = _specific_force(roll, pitch, math.radians(yaw_deg))
+        r, p = gravity_to_roll_pitch(ax, ay, az)
+        assert r == pytest.approx(roll, abs=1e-9)
+        assert p == pytest.approx(pitch, abs=1e-9)
+
+    def test_magnitude_independent(self):
+        # atan2 ratios -> the vector's length (g) is irrelevant.
+        base = gravity_to_roll_pitch(1.0, -2.0, 9.0)
+        scaled = gravity_to_roll_pitch(5.0, -10.0, 45.0)
+        assert scaled[0] == pytest.approx(base[0])
+        assert scaled[1] == pytest.approx(base[1])
+
+
 class TestClamp:
     """clamp(val, lo, hi) — saturates val into [lo, hi]."""
 
@@ -182,3 +241,34 @@ class TestDeadbandSnap:
         assert deadband_snap(val, 0, 0, self.LIMIT) == pytest.approx(
             clamp(val, -self.LIMIT, self.LIMIT)
         )
+
+
+class TestSpanBandGuards:
+    """span_band_guards(lo, hi, band) — insets both ends by band·span.
+
+    Shared by the depth controller's tank clamp and the lifeguard blow
+    stand-down. Pinned to the BCU tank endpoints (empty=70k, full=150k,
+    span=80k); at band=0.10 the guards land at 78k / 142k.
+    """
+
+    EMPTY = 70_000.0
+    FULL = 150_000.0
+
+    def test_ten_percent_of_span(self):
+        low, high = span_band_guards(self.EMPTY, self.FULL, 0.10)
+        assert low == pytest.approx(78_000.0)
+        assert high == pytest.approx(142_000.0)
+
+    def test_zero_band_returns_endpoints(self):
+        assert span_band_guards(self.EMPTY, self.FULL, 0.0) == (
+            pytest.approx(self.EMPTY),
+            pytest.approx(self.FULL),
+        )
+
+    def test_margin_is_symmetric_in_absolute_pa(self):
+        # band·span is inset equally from each end -- the basis is the span,
+        # not the (different-magnitude) endpoint values.
+        low, high = span_band_guards(self.EMPTY, self.FULL, 0.25)
+        span = self.FULL - self.EMPTY
+        assert low - self.EMPTY == pytest.approx(self.FULL - high)
+        assert low - self.EMPTY == pytest.approx(0.25 * span)

@@ -39,7 +39,7 @@ class TestStartCapturesTargetDepth:
 
 
 class TestStartCapturesHorizontalPosition:
-    """`x`/`y` come from the start-time EKF pose so the ACU holds station
+    """`x`/`y` come from the start-time estimator pose so the ACU holds station
     instead of drifting (relevant once horizontal control lands)."""
 
     def test_pose_xy_captured(self):

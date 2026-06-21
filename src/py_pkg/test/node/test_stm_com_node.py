@@ -128,7 +128,7 @@ class _STMTesterNode(Node):
         create_subscription_for_topic(
             self, UUVTopics.BCU_FEEDBACK_RPM, self._on_feedback_rpm
         )
-        create_subscription_for_topic(self, UUVTopics.IMU_LEFT, self._on_imu)
+        create_subscription_for_topic(self, UUVTopics.IMU, self._on_imu)
 
     def _on_valves(self, msg: UInt8) -> None:
         self.received_valves.append(int(msg.data))
@@ -257,7 +257,7 @@ class TestSTMRpmSign:
 
 class TestSTMImu:
     """The six 0x2430-0x2435 frames assemble into one sensor_msgs/Imu on
-    /imu/left, in SI body-frame units, and -- crucially -- IMU frames are not a
+    /imu, in SI body-frame units, and -- crucially -- IMU frames are not a
     setpoint-send cue, so a high-rate IMU stream can't multiply our downward TX.
     """
 
@@ -277,7 +277,8 @@ class TestSTMImu:
         assert msg.angular_velocity.x == pytest.approx(gyro[0])
         assert msg.angular_velocity.y == pytest.approx(gyro[1])
         assert msg.angular_velocity.z == pytest.approx(gyro[2])
-        # No orientation from this IMU -- REP-145 flag so the EKF skips it.
+        # No orientation from this IMU -- REP-145 flag (-1) marks the
+        # orientation field unavailable; the estimator uses linear_acceleration.
         assert msg.orientation_covariance[0] == -1.0
 
     def test_one_imu_per_batch(self, stm_harness):

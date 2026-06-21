@@ -204,7 +204,7 @@ def imu_counts_to_body(
     gy: float,
     gz: float,
 ) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
-    """Six raw IMU counts -> SI accel + angular velocity in the FLU body frame.
+    """Six raw IMU counts -> SI accel + angular velocity in the NED body frame.
 
     Scales each count to SI, then applies the mounting remap from robot_specs
     (``IMU_ACCEL_AXIS_MAP`` / ``IMU_GYRO_AXIS_MAP``). Returns

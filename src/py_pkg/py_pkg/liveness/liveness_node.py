@@ -3,14 +3,9 @@
 Subscribes to the steady glider-side feedback/sensor streams and publishes one
 ``diagnostic_msgs/DiagnosticArray`` on ``/status/liveness`` summarizing which
 subsystems are reporting. A subsystem reads "online" while its source is fresh
-and "offline" once it goes stale (see ``py_pkg.liveness.watchdog``).
+and "offline" once it goes stale.
 
-The MQTT bridge forwards the array to the operator UI. The UI keys off each
-``DiagnosticStatus.message`` ("online"/"offline"), *not* the byte ``level`` --
-``level`` is a ROS ``byte`` that the egress JSON path turns into a control-char
-string.
-``level`` is still set correctly here for native ROS consumers (``ros2 topic
-echo``, ``rqt_robot_monitor``).
+The MQTT bridge forwards the array to the operator UI.
 """
 
 from dataclasses import dataclass
@@ -38,14 +33,13 @@ class LivenessSource:
 
 # Ordered: this is also the row order in the published array. The valve bitmask
 # is the one source feeding two rows -- in sim the two valves share a single
-# byte, so they're liveness-correlated (can't fail independently).
+# byte, so they're liveness-correlated.
 LIVENESS_SOURCES: tuple[LivenessSource, ...] = (
     LivenessSource(UUVTopics.ACU_FEEDBACK_OFFSET, ("acu_pitch",)),
     LivenessSource(UUVTopics.ACU_FEEDBACK_ANGLE, ("acu_roll",)),
     LivenessSource(UUVTopics.BCU_FEEDBACK_RPM, ("bcu_pump",)),
     LivenessSource(UUVTopics.BCU_FEEDBACK_VALVES, ("bcu_valve_1", "bcu_valve_2")),
-    LivenessSource(UUVTopics.IMU_LEFT, ("imu_left",)),
-    LivenessSource(UUVTopics.IMU_RIGHT, ("imu_right",)),
+    LivenessSource(UUVTopics.IMU, ("imu",)),
     LivenessSource(UUVTopics.EXTERNAL_PRESSURE, ("external_pressure",)),
     LivenessSource(UUVTopics.BCU_PRESSURE, ("tank_pressure",)),
 )

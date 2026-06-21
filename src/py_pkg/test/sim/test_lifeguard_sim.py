@@ -10,7 +10,7 @@ EMERGENCY_SURFACE_RPM with valve 2 (the motor way) open, and the simulated
 bladder must actually inflate.
 
 Marker-gated ``@pytest.mark.sim``; opt in with ``pytest -m sim test/sim/``
-after sourcing the workspace install. ``BCU_SIM_GUI=1`` shows the Gazebo GUI.
+after sourcing the workspace install. ``SIM_GUI=1`` shows the Gazebo GUI.
 Skipped entirely when no mosquitto binary is installed.
 """
 
@@ -148,7 +148,7 @@ def generate_test_description():
 
 
 class _LifeguardTestDriver(Node):
-    """Captures BCU_RPM / BCU_VALVES / BCU_VOLUME / BCU_PRESSURE / IMU_LEFT."""
+    """Captures BCU_RPM / BCU_VALVES / BCU_VOLUME / BCU_PRESSURE / IMU."""
 
     def __init__(self):
         super().__init__("lifeguard_sim_test_driver")
@@ -164,9 +164,9 @@ class _LifeguardTestDriver(Node):
         # Live tank pressure, for the stand-down test to anchor its
         # registered empty endpoint against.
         create_subscription_for_topic(self, UUVTopics.BCU_PRESSURE, self._on_tank)
-        # IMU_LEFT is the sim-readiness signal: imu_sim_bridge has no timer,
+        # IMU is the sim-readiness signal: imu_sim_bridge has no timer,
         # so any message proves Gazebo physics + plugins are alive.
-        create_subscription_for_topic(self, UUVTopics.IMU_LEFT, self._on_imu)
+        create_subscription_for_topic(self, UUVTopics.IMU, self._on_imu)
 
     def _on_rpm(self, msg: Int16) -> None:
         self.received_rpm.append(int(msg.data))
@@ -252,7 +252,7 @@ class LifeguardSimTest(unittest.TestCase):
         )
         self.assertTrue(
             sim_ready,
-            f"IMU_LEFT never arrived within {startup_timeout_s}s -- "
+            f"IMU never arrived within {startup_timeout_s}s -- "
             "is Gazebo up and is the model spawned with its IMU plugin?",
         )
         spin_for(self.executor, post_ready_settle_s)
@@ -288,8 +288,8 @@ class LifeguardSimTest(unittest.TestCase):
 
         # 4) Continuous hold: bcu_debug heartbeats the emergency command at
         # 10 Hz, so a 2 s window must show it repeatedly -- and nothing else
-        # on the wire (the engage stopped the mission; depth_node is silent).
-        # Settle first: the engage's one-shot /command=false makes depth_node
+        # on the wire (the engage stopped the mission; bcu_node is silent).
+        # Settle first: the engage's one-shot /command=false makes bcu_node
         # emit a single safe-stop 0 that must not leak into the clean window.
         spin_for(self.executor, 1.0)
         self.driver.received_rpm.clear()

@@ -1,6 +1,11 @@
 from py_pkg.utils_controls import PIDController
 
 
+"""
+
+DEPRECATED; It is not implemented, ingore for now
+"""
+
 class AxisController:
     """Controls a single axis (roll or pitch) of the vehicle.
 

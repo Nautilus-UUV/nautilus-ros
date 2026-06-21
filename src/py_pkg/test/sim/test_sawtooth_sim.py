@@ -1,15 +1,15 @@
 """Tier 3 sim test: full SAWTOOTH cycle, bang-bang ACU pitch endpoints.
 
-Pipeline under test (mission state machine + cascaded controllers + EKF):
+Pipeline under test (mission state machine + cascaded controllers + attitude estimator):
 
     /path + /command -> pathfinding_node -> /position/target
                                           ^
                        /external/pressure -|
-    /position/target +-> depth_node       -> /bcu/rpm + /bcu/valves -> bridge -> Gazebo
+    /position/target +-> bcu_node       -> /bcu/rpm + /bcu/valves -> bridge -> Gazebo
     /position/target +-> acu_node         -> /acu/pitch + /acu/roll -> bridge -> Gazebo
                        /position/estimation
                           ^
-                          ekf_node <- ekf_prefilter <- /imu/left
+                          attitude_node <- imu_prefilter <- /imu/left
 
 The ACU pitch axis is now a bang-bang controller on
 ``EXTERNAL_PRESSURE`` vs the pressure setpoint pathfinding stamps onto
@@ -23,15 +23,15 @@ shows up on ``ACU_PITCH`` during each leg:
     ascend  leg (current_pa > target=0)   -> front-stroke endpoint (mass forward)
 
 That's a strict regression check on the wiring + state machine without
-relying on the EKF pose, which means the EKF orientation drift
-(``docs/ekf_node_issues.md``) doesn't flake this test the way it does
-the GT-mirror tests for the closed-loop pitch attitude.
+relying on the estimator pose, which means any estimator orientation
+drift doesn't flake this test the way it does the GT-mirror tests for
+the closed-loop pitch attitude.
 
 Composed via ``nautilus_hal/launch/sawtooth_sim.launch.py`` (which
 ``IncludeLaunchDescription``s ``py_pkg/launch/control_stack.launch.py``).
 Marker-gated ``@pytest.mark.sim``; opt in with
 ``pytest -m sim test/sim/`` after sourcing the workspace install.
-``SAWTOOTH_SIM_GUI=1`` shows the Gazebo GUI.
+``SIM_GUI=1`` shows the Gazebo GUI.
 """
 
 import math
@@ -64,7 +64,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import Imu
 from std_msgs.msg import Bool, Int16
 
-from ._sim_helpers import reap_lingering_gz
+from ._sim_helpers import reap_lingering_gz, sim_gui_enabled
 
 TARGET_PRESSURE_PA = 73575.0  # ~7.5 m of seawater (gauge); spawn is ~5 m
 # TARGET_PRESSURE_PA = 703575.0
@@ -85,12 +85,7 @@ ACU_PITCH_BACK_MM = int(round(_PITCH_OUTPUT_LIMITS_M[0] * 1000.0))
 def generate_test_description():
     reap_lingering_gz()
 
-    gui_enabled = os.environ.get("SAWTOOTH_SIM_GUI", "").lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    )
+    gui_enabled = sim_gui_enabled()
 
     sawtooth_sim_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -136,7 +131,7 @@ class _SawtoothTestDriver(Node):
         self.path_pub = create_publisher_for_topic(self, UUVTopics.PATH)
         self.command_pub = create_publisher_for_topic(self, UUVTopics.COMMAND)
 
-        create_subscription_for_topic(self, UUVTopics.IMU_LEFT, self._on_imu)
+        create_subscription_for_topic(self, UUVTopics.IMU, self._on_imu)
         create_subscription_for_topic(self, UUVTopics.POSITION_TARGET, self._on_target)
         create_subscription_for_topic(self, UUVTopics.ACU_PITCH, self._on_acu_pitch)
 
@@ -244,7 +239,7 @@ class SawtoothSimTest(unittest.TestCase):
         )
         self.assertTrue(
             sim_ready,
-            f"IMU_LEFT never arrived within {startup_timeout_s}s -- "
+            f"IMU never arrived within {startup_timeout_s}s -- "
             "is Gazebo up and is the model spawned with its IMU plugin?",
         )
 

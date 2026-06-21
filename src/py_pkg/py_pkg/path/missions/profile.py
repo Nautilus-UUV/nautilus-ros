@@ -15,7 +15,7 @@ from geometry_msgs.msg import Pose
 class MissionState:
     """Snapshot of glider state + operator-supplied parameters at start.
 
-    `pose` is the last EKF estimate (used by missions that hold horizontal
+    `pose` is the last estimator pose (used by missions that hold horizontal
     position). The remaining fields mirror `nautilus_msgs/MissionCommand`;
     each mission consumes the fields it needs and ignores the rest.
     """
@@ -43,14 +43,12 @@ class MissionProfile(Protocol):
         """Setpoint at `mission_t` seconds since start.
 
         `position.z` MUST be gauge Pa. `orientation` encodes target
-        roll/pitch for the ACU (yaw is unused — Nautilus has no yaw
-        actuator).
+        roll/pitch for the ACU (yaw is unused).
 
         Returning `None` means "no setpoint this tick": the executor
         publishes nothing, so the controllers hold their last target
         (the SURFACE/SAWTOOTH missions decline to command between phases
-        this way). It does NOT silence the controllers — that only
-        happens on an explicit /command=false stop.
+        this way). The controllers are silenced only by /command=false stop.
         """
 
     def is_done(self, mission_t: float) -> bool:

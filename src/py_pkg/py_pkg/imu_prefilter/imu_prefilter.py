@@ -11,20 +11,21 @@ from py_pkg.uuv_ros_core.node_runtime import spin_node
 from py_pkg.uuv_ros_core.topics import UUVTopics
 
 
-class EkfPrefilter(Node):
+class ImuPrefilter(Node):
     """
-    Exponential Moving Average (EMA) prefilter for IMU data before EKF.
+    Exponential Moving Average (EMA) prefilter for the IMU stream.
 
-    - Subscribes:  UUVTopics.IMU_LEFT          (sensor_msgs/Imu)
-    - Publishes:   UUVTopics.IMU_FILTERED_LEFT (sensor_msgs/Imu)
+    - Subscribes:  UUVTopics.IMU          (sensor_msgs/Imu)
+    - Publishes:   UUVTopics.IMU_FILTERED (sensor_msgs/Imu)
 
     Purpose:
-        Smooth out high-frequency noise from raw IMU data (acceleration
-        and angular velocity) before passing it to an EKF node.
+        Smooth out high-frequency noise from the raw IMU (acceleration and
+        angular velocity) before the attitude estimator reads the gravity
+        vector off it.
     """
 
     def __init__(self):
-        super().__init__("ekf_prefilter")
+        super().__init__("imu_prefilter")
 
         # Filter coefficient: 0 = very smooth, 1 = no filtering
         self.alpha = 0.5
@@ -38,11 +39,11 @@ class EkfPrefilter(Node):
         self.prev_wz = None
 
         self.sub = create_subscription_for_topic(
-            self, UUVTopics.IMU_LEFT, self.imu_callback
+            self, UUVTopics.IMU, self.imu_callback
         )
-        self.pub = create_publisher_for_topic(self, UUVTopics.IMU_FILTERED_LEFT)
+        self.pub = create_publisher_for_topic(self, UUVTopics.IMU_FILTERED)
 
-        self.get_logger().info(f"EKF prefilter started (alpha={self.alpha})")
+        self.get_logger().info(f"IMU prefilter started (alpha={self.alpha})")
 
     def ema(self, x_new, x_prev):
         """Exponential Moving Average step; on first sample return x_new directly."""
@@ -91,7 +92,7 @@ class EkfPrefilter(Node):
 
 def main():
     rclpy.init()
-    node = EkfPrefilter()
+    node = ImuPrefilter()
     spin_node(node)
 
 

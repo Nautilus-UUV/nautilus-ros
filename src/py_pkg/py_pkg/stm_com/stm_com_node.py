@@ -31,8 +31,8 @@ Inbound (STM -> Pi):
     0x2435  GYRO_Z         int16   raw gyro counts (last of the batch -> publish)
 
 The six IMU words are raw sensor counts; physics.imu_counts_to_body turns them
-into an SI sensor_msgs/Imu (m/s^2, rad/s) in the FLU body frame, published on
-IMU_LEFT -- the same topic the sim HAL bridge feeds, so the prefilter -> EKF ->
+into an SI sensor_msgs/Imu (m/s^2, rad/s) in the NED body frame, published on
+IMU -- the same topic the sim HAL bridge feeds, so the prefilter -> attitude ->
 MQTT -> UI chain runs unchanged on hardware. The STM sends the six contiguously
 each cycle, so we assemble + publish one Imu when GYRO_Z arrives. Crucially the
 IMU frames are NOT treated as a setpoint-send cue (see _poll_serial): only the
@@ -97,9 +97,9 @@ IMU_VAR_IDS = (
     GYRO_Z_VAR_ID,
 )
 
-# Frame the published Imu is stamped with. Cosmetic for our consumers (the EKF
-# reads accel/gyro directly), but kept descriptive and stable.
-IMU_FRAME_ID = "imu_left"
+# Frame the published Imu is stamped with. Cosmetic for our consumers (the
+# estimator reads accel/gyro directly), but kept descriptive and stable.
+IMU_FRAME_ID = "imu"
 
 PAYLOAD_FMT = "<h"  # little-endian signed 16-bit
 BCU_RPM_PAYLOAD_LEN = struct.calcsize(PAYLOAD_FMT)
@@ -176,9 +176,9 @@ class STMComNode(Node):
         self._bcu_feedback_valves_pub = create_publisher_for_topic(
             self, UUVTopics.BCU_FEEDBACK_VALVES
         )
-        # Single hardware IMU -> IMU_LEFT (Imu + SENSOR_STREAM via the registry),
+        # Single hardware IMU -> IMU (Imu + SENSOR_STREAM via the registry),
         # the same topic the sim bridge publishes and the prefilter consumes.
-        self._imu_pub = create_publisher_for_topic(self, UUVTopics.IMU_LEFT)
+        self._imu_pub = create_publisher_for_topic(self, UUVTopics.IMU)
 
     def _on_rpm(self, msg) -> None:
         self._latest_rpm = int(msg.data)
@@ -331,7 +331,7 @@ class STMComNode(Node):
         msg.linear_acceleration.x, msg.linear_acceleration.y, msg.linear_acceleration.z = accel
         msg.angular_velocity.x, msg.angular_velocity.y, msg.angular_velocity.z = gyro
         # This IMU streams no orientation; the REP-145 / sensor_msgs convention is
-        # to flag that with orientation_covariance[0] = -1 so the EKF skips it.
+        # to flag that with orientation_covariance[0] = -1 so consumers skip it.
         msg.orientation_covariance[0] = -1.0
         self._imu_pub.publish(msg)
 

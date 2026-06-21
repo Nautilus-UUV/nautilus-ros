@@ -1,21 +1,34 @@
 #!/usr/bin/env python3
 """Mission executor.
 
-Dispatches `/path` (`nautilus_msgs/MissionCommand`) through the mission
-factory and pumps the resulting profile's setpoint onto `POSITION_TARGET`
-at 10 Hz. `/command` (`std_msgs/Bool`: true=start, false=stop) latches the
-operator's run intent. A stop clears the loaded mission; the controllers
-reset themselves off the same `/command`=false (they subscribe to it
-directly), so no separate reset signal is emitted here.
+Turns an operator's mission request into a stream of depth/attitude
+setpoints for the controllers downstream.
 
-There is no explicit state enum -- the node's situation is read straight
-off three fields: `_mission` (a mission loaded?), `_mission_t0_s` (has it
-started running?), and `_run_requested` (does the operator want it
-running?). `_tick` owns the load->run transition: once all three line up
-(and pressure is in), it calls `mission.start()` once and stamps t0.
+Inputs (what this node listens to):
+  - /path    (MissionCommand) -- which mission to run, plus its parameters
+               (target pressure, glide angle, how many times to resurface).
+  - /command (Bool)           -- the operator's run intent: true=start,
+               false=stop.
+  - position estimate (Pose)  -- current vehicle state. position.z is the
+               depth expressed as a gauge pressure (0 at the surface);
+               orientation is the current attitude.
 
-`POSITION_TARGET.position.z` is gauge Pa (depth_node's contract);
-`orientation` carries roll/pitch for acu_node.
+Output:
+  - POSITION_TARGET (Pose)    -- the setpoint the controllers track.
+               position.z is gauge Pa (bcu_node's contract); orientation
+               carries the roll/pitch targets for acu_node.
+
+The node's situation is just read off three fields each tick:
+  - _mission        -- is a mission loaded?
+  - _mission_t0_s   -- has it started running? (None until start, then the
+                       wall-clock time it began -- so a value means running.)
+  - _run_requested  -- does the operator currently want it running?
+
+_tick handles the one transition that matters: once a mission is loaded,
+the operator has asked to run, and we have a pressure reading, it calls
+mission.start() once and stamps t0. A stop clears everything; the
+controllers reset themselves off the same /command=false (they subscribe
+to it directly), so this node doesn't have to tell them.
 """
 
 import rclpy
@@ -24,7 +37,6 @@ from nautilus_msgs.msg import MissionCommand
 from rclpy.node import Node
 from std_msgs.msg import Bool
 
-from ..physics import SurfaceReference
 from ..uuv_ros_core import (
     UUVTopics,
     create_publisher_for_topic,
@@ -42,32 +54,18 @@ class PathfindingNode(Node):
 
         self._mission: MissionProfile | None = None
         self._mission_cmd: MissionCommand | None = None
-        # `None` until the mission starts; set => running.
+        # None until the mission starts; once set, it's the start time (=> running).
         self._mission_t0_s: float | None = None
-        # Latched `/command`. `start` may arrive before `/path` or before
-        # pressure ingress; we just remember the intent and let `_tick` fire
-        # the mission once the preconditions line up.
         self._run_requested: bool = False
 
         self._current_pressure_pa: float | None = None
         self._current_pose: Pose | None = None
 
-        # Gauge reference: standard atmosphere until the operator's
-        # pre-dive Initialize registers the real surface pressure
-        # (DIVE_INIT). Matters here more than anywhere -- "surfaced" is
-        # defined as ~0.5 m of water (SURFACE_THRESHOLD_PA), well inside
-        # what weather alone moves the surface pressure by.
-        self._surface_ref = SurfaceReference()
-
         create_subscription_for_topic(
             self, UUVTopics.POSITION_ESTIMATION, self._on_pose
         )
-        create_subscription_for_topic(
-            self, UUVTopics.EXTERNAL_PRESSURE, self._on_pressure
-        )
         create_subscription_for_topic(self, UUVTopics.COMMAND, self._on_command)
         create_subscription_for_topic(self, UUVTopics.PATH, self._on_path)
-        create_subscription_for_topic(self, UUVTopics.DIVE_INIT, self._on_dive_init)
 
         self._target_pub = create_publisher_for_topic(self, UUVTopics.POSITION_TARGET)
         self.create_timer(1.0 / REFERENCE_RATE_HZ, self._tick)
@@ -76,23 +74,13 @@ class PathfindingNode(Node):
 
     def _on_pose(self, msg: Pose) -> None:
         self._current_pose = msg
-
-    def _on_pressure(self, msg) -> None:
-        # EXTERNAL_PRESSURE is absolute Pa; the depth stack works in gauge,
-        # referenced to the registered surface pressure once it's in.
-        self._current_pressure_pa = self._surface_ref.gauge(float(msg.data))
-
-    def _on_dive_init(self, msg) -> None:
-        self._surface_ref.register_logged(
-            float(msg.surface_pressure_pa), self.get_logger()
-        )
+        self._current_pressure_pa = float(msg.position.z)
 
     def _on_path(self, msg: MissionCommand) -> None:
-        # `/path` is latched (transient-local), so the same MissionCommand can be
-        # redelivered on discovery re-matching. Reloading unconditionally would
-        # null `_mission_t0_s` on a running mission, which then strands `_tick`
-        # (it only publishes once running) -- the glider never gets a setpoint
-        # and just drifts. Ignore a redelivery of the mission we're already on.
+        # /path is a latched topic: its last message is kept and re-sent to any
+        # subscriber that (re)connects later, so we can receive the same
+        # mission more than once. We ignore a command we're already running so we
+        # don't reset the timestamp.
         if (
             self._mission_cmd is not None
             and msg.mission_id == self._mission_cmd.mission_id
@@ -113,9 +101,9 @@ class PathfindingNode(Node):
             f"Received /command: {'start' if self._run_requested else 'stop'}"
         )
         if not self._run_requested:
-            # Stop -> clean initial state. The controllers reset themselves off
-            # this same /command=false (they subscribe to it directly), emitting
-            # one safe-stop then going silent, so we publish nothing here.
+            # Stop: forget the mission and go back to the initial state. We
+            # don't publish anything -- the controllers see this same
+            # /command=false themselves and reset, so there's nothing to send.
             self._reset()
             self.get_logger().info("Mission stopped; stack reset to initial state.")
 
@@ -127,10 +115,10 @@ class PathfindingNode(Node):
         self._run_requested = False
 
     def _tick(self) -> None:
-        # Load->run transition: fire the mission once the operator has asked for
-        # it, a mission is loaded, it isn't already running, and pressure is in.
-        # The `_mission_t0_s is None` guard keeps this idempotent -- a redelivered
-        # /command can't re-`start()` and reset the mission clock mid-run.
+        # Start the mission once everything lines up: the operator asked to run,
+        # a mission is loaded, it isn't already running, and we have a pressure
+        # reading. The "not already running" check (_mission_t0_s is None) means
+        # a repeated /command can't restart a mission that's already underway.
         if (
             self._run_requested
             and self._mission is not None
@@ -156,9 +144,10 @@ class PathfindingNode(Node):
             self.get_logger().info("Mission complete.")
             self._reset()
             return
-        # A mission may decline to command this tick (reference -> None), e.g.
-        # SURFACE/SAWTOOTH between phases. Publish nothing so the controllers
-        # hold their last target rather than tracking a stale setpoint.
+        # A mission can choose not to issue a setpoint this tick (reference
+        # returns None) -- e.g. SURFACE/SAWTOOTH while between phases. When that
+        # happens we publish nothing, so the controllers just hold their last
+        # target instead of chasing a stale one.
         ref = self._mission.reference(mission_t)
         if ref is not None:
             self._target_pub.publish(ref)

@@ -1,4 +1,4 @@
-"""Tier 1 unit tests for the depth_node valve-selection rule.
+"""Tier 1 unit tests for the bcu_node valve-selection rule.
 
 `select_pump_and_valves(current_pressure_pa, q, pump_rpm, deep_threshold_pa)`
 is the pure decision: pass the pump command through with the motor way (the
@@ -14,7 +14,7 @@ were corrected elsewhere in the stack.
 """
 
 from py_pkg.physics import depth_to_pressure_pa, gauge_pressure_pa
-from py_pkg.pid.depth_node import select_pump_and_valves
+from py_pkg.pid.bcu_node import select_pump_and_valves
 
 
 def _gauge_pa_for_depth(depth_m: float) -> float:

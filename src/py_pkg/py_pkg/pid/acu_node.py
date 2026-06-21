@@ -1,29 +1,7 @@
 #!/usr/bin/env python3
-"""Outer-loop attitude control node — bang-bang on pitch, PID on roll.
+"""
 
-The two axes are doing very different jobs and the controllers reflect
-that.
-
-Pitch is bang-bang on pressure error. We don't ask the EKF where the
-nose is pointing; we just look at the external pressure sensor versus
-the pressure setpoint pathfinding put on POSITION_TARGET.position.z. If
-we are shallower than the setpoint we are diving, so we throw the
-pitch mass-shifter all the way back. If we are deeper we are climbing,
-so we throw it all the way front. That's the whole loop. Two values on
-the wire, one comparison per tick. The HAL bridge handles the EPOS-side
-slew rate.
-
-Roll keeps the existing PID. Roll dynamics are well-behaved (the ring
-motor is itself an angular position so the controller is unit-clean),
-the gains were tuned conservatively against EKF noise, and there's no
-analogue of pitch's "just rail it" simplification here — we want a
-quiet ring sitting at zero unless the pose actually rolls off.
-
-Wire formats are unchanged:
-
-- `ACU_PITCH` is `Int16` in millimetres (one of two extremes from
-  the pitch axis's `output_limits` in `AcuPitchSpec`).
-- `ACU_ROLL` is `Int16` in centidegrees (degrees * `ACU_ROLL_CDEG_PER_DEG`).
+DEPRECATED; It is not implemented, ingore for now
 """
 
 import math
@@ -32,10 +10,9 @@ import rclpy
 from geometry_msgs.msg import Pose
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
-from std_msgs.msg import Bool, Int16, Int32
+from std_msgs.msg import Bool, Int16
 
 from py_pkg.math_utils import quaternion_to_roll_pitch
-from py_pkg.physics import SurfaceReference
 from py_pkg.pid.acu_axis_controller import AxisController
 from py_pkg.robot_specs import ACU_ROLL_CDEG_PER_DEG
 from py_pkg.scenarios.compile import acu_pitch_spec_from_node, acu_roll_spec_from_node
@@ -74,15 +51,11 @@ class ACUControlNode(Node):
         )
 
         # Bang-bang state: gate the first command on having both a
-        # pressure reading and a setpoint, so we don't pick a side from
-        # uninitialized zeros.
+        # depth reading and a setpoint, so we don't pick a side from
+        # uninitialized zeros. Depth (gauge Pa) arrives on
+        # POSITION_ESTIMATION.position.z, already gauged by attitude_node.
         self.current_pressure_pa: float | None = None
         self.target_pressure_pa: float | None = None
-
-        # Gauge reference: standard atmosphere until the operator's
-        # pre-dive Initialize registers the real surface pressure
-        # (DIVE_INIT) -- same frame as depth_node and pathfinding.
-        self._surface_ref = SurfaceReference()
 
         # Roll PID state.
         self.target_roll_deg = 0.0
@@ -97,26 +70,16 @@ class ACUControlNode(Node):
 
         create_subscription_for_topic(
             self,
-            UUVTopics.EXTERNAL_PRESSURE,
-            self.pressure_callback,
-            callback_group=self.callback_group,
-        )
-        create_subscription_for_topic(
-            self,
             UUVTopics.POSITION_TARGET,
             self.target_pose_callback,
             callback_group=self.callback_group,
         )
+        # Single vehicle-state input: roll (off the quaternion) for the roll PID
+        # and gauge depth (position.z) for the bang-bang pitch leg select.
         create_subscription_for_topic(
             self,
             UUVTopics.POSITION_ESTIMATION,
             self.current_pose_callback,
-            callback_group=self.callback_group,
-        )
-        create_subscription_for_topic(
-            self,
-            UUVTopics.DIVE_INIT,
-            self._on_dive_init,
             callback_group=self.callback_group,
         )
 
@@ -141,19 +104,6 @@ class ACUControlNode(Node):
 
         self.get_logger().info("ACU control node started (bang-bang pitch, PID roll).")
 
-    def pressure_callback(self, msg: Int32):
-        # EXTERNAL_PRESSURE is absolute Pa; POSITION_TARGET.position.z is
-        # gauge Pa (pathfinding's mission convention). Same conversion
-        # depth_node.py and pathfinding.py apply at ingress -- without it,
-        # absolute (~101 kPa at the surface) is always above any realistic
-        # gauge target and the bang-bang never flips legs.
-        self.current_pressure_pa = self._surface_ref.gauge(float(msg.data))
-
-    def _on_dive_init(self, msg):
-        self._surface_ref.register_logged(
-            float(msg.surface_pressure_pa), self.get_logger()
-        )
-
     def target_pose_callback(self, msg: Pose):
         # POSITION_TARGET.position.z carries the target pressure in Pa
         # (pathfinding's TRIM convention). Roll comes off the quaternion
@@ -164,11 +114,12 @@ class ACUControlNode(Node):
         self.target_roll_deg = math.degrees(roll)
 
     def current_pose_callback(self, msg: Pose):
-        # Used by the roll PID only — pitch deliberately ignores the
-        # pose estimate.
+        # Roll feeds the roll PID; gauge depth (position.z) feeds the bang-bang
+        # pitch leg select. Pitch off the pose is deliberately ignored.
         q = msg.orientation
         roll, _ = quaternion_to_roll_pitch(q.x, q.y, q.z, q.w)
         self.current_roll_deg = math.degrees(roll)
+        self.current_pressure_pa = float(msg.position.z)
 
     def _publish_acu_neutral(self) -> None:
         pitch = Int16()
@@ -201,7 +152,7 @@ class ACUControlNode(Node):
             # No active mission target -> stay off /acu/pitch and /acu/roll
             # entirely (roll PID included) so acu_debug can own the wire after a
             # stop. The one neutral sample was already emitted on stop/boot.
-            # (Mirrors depth_node's no-target gate -- same None sentinel.)
+            # (Mirrors bcu_node's no-target gate -- same None sentinel.)
             return
         self._update_pitch()
         self._update_roll()

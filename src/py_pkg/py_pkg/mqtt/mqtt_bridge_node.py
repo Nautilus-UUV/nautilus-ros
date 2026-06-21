@@ -147,8 +147,7 @@ EGRESS_MAP: tuple[EgressMapping, ...] = (
         0.0,
         on_change=True,
     ),
-    EgressMapping(UUVTopics.IMU_FILTERED_LEFT, "nautilus/telemetry/imu/left", 10.0),
-    EgressMapping(UUVTopics.IMU_FILTERED_RIGHT, "nautilus/telemetry/imu/right", 10.0),
+    EgressMapping(UUVTopics.IMU_FILTERED, "nautilus/telemetry/imu", 10.0),
     EgressMapping(UUVTopics.BCU_PRESSURE, "nautilus/telemetry/bcu/pressure", 10.0),
     EgressMapping(
         UUVTopics.EXTERNAL_PRESSURE, "nautilus/telemetry/external/pressure", 10.0
@@ -323,6 +322,7 @@ class MqttBridge(Node):
         # retained init replay and the first tank sample stand it down
         # again.
         self._init_tank_empty_pa: float | None = None
+        self._init_tank_full_pa: float | None = None
         self._tank_pa: float | None = None
         self._lifeguard_stood_down = False
 
@@ -524,12 +524,17 @@ class MqttBridge(Node):
             self._tank_pa = float(msg.data)
 
     def _on_dive_init(self, msg) -> None:
-        # Registered empty endpoint for the lifeguard's stand-down check.
+        # Registered tank endpoints for the lifeguard's stand-down check.
+        # Both feed the span-based band -- the empty endpoint sets the floor,
+        # the full endpoint sets the span the 10% is measured against.
         with self._lifeguard_lock:
             empty_pa = float(msg.tank_empty_pa)
+            full_pa = float(msg.tank_full_pa)
             # Non-positive (including a missing field decoding as 0.0)
-            # means "not registered" -- tank_blow_exhausted double-guards.
+            # means "not registered" -- tank_blow_exhausted double-guards
+            # (it also rejects a full <= empty span).
             self._init_tank_empty_pa = empty_pa if empty_pa > 0.0 else None
+            self._init_tank_full_pa = full_pa if full_pa > 0.0 else None
 
     def _update_manual_emergency(self, mqtt_topic: str, payload: dict) -> None:
         # Track the operator's manual blow so the tick can stand it down at
@@ -586,7 +591,7 @@ class MqttBridge(Node):
             # blows ballast -- same sequencing as the UI's emergency slider.
             # Unconditionally on the engage transition; afterwards only while
             # the mission mirror shows one loaded/running (an operator starting
-            # a mission over a restored link without disarming first). depth_node
+            # a mission over a restored link without disarming first). bcu_node
             # safe-stops on EVERY /command=false, so re-sending it each tick in
             # the steady engaged state would chatter the valves against the
             # emergency hold.
@@ -602,7 +607,9 @@ class MqttBridge(Node):
             # stays continuous and dumb, exactly as before.
             if self._lifeguard_stood_down:
                 return
-            if tank_blow_exhausted(self._tank_pa, self._init_tank_empty_pa):
+            if tank_blow_exhausted(
+                self._tank_pa, self._init_tank_empty_pa, self._init_tank_full_pa
+            ):
                 self._lifeguard_stood_down = True
                 self._publish_ingress_bool(EMERGENCY_SURFACE_CMD_TOPIC, False)
                 self._publish_lifeguard_status()
@@ -627,7 +634,9 @@ class MqttBridge(Node):
         """
         if not self._manual_emergency_active:
             return
-        if not tank_blow_exhausted(self._tank_pa, self._init_tank_empty_pa):
+        if not tank_blow_exhausted(
+            self._tank_pa, self._init_tank_empty_pa, self._init_tank_full_pa
+        ):
             return
         self._manual_emergency_active = False
         self._publish_ingress_bool(EMERGENCY_SURFACE_CMD_TOPIC, False)

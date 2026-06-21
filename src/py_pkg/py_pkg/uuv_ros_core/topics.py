@@ -42,11 +42,9 @@ class UUVTopics:
     ACU_FEEDBACK_OFFSET = "/acu/feedback/offset"
     ACU_FEEDBACK_ANGLE = "/acu/feedback/angle"
 
-    # IMU data
-    IMU_LEFT = "/imu/left"
-    IMU_RIGHT = "/imu/right"
-    IMU_FILTERED_LEFT = "/imu/filtered/left"
-    IMU_FILTERED_RIGHT = "/imu/filtered/right"
+    # IMU data.
+    IMU = "/imu"
+    IMU_FILTERED = "/imu/filtered"
 
     # Navigation and control
     POSITION_TARGET = "/position/target"

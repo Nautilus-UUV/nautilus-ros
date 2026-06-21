@@ -1,9 +1,14 @@
 """Tier 2 in-process rclpy tests for PathfindingNode.
 
-Black-box: drive the node via PATH (MissionCommand) / EXTERNAL_PRESSURE /
+Black-box: drive the node via PATH (MissionCommand) / POSITION_ESTIMATION /
 COMMAND and assert on what it publishes on POSITION_TARGET. The node is
 now a thin mission dispatcher — the planner is gone, and per-mission
 setpoint generation lives in `path/missions/`.
+
+The current depth arrives already gauged on POSITION_ESTIMATION.position.z
+(attitude_node owns the absolute->gauge conversion), so the tests feed gauge
+Pa straight in via ``publish_depth_gauge`` -- pathfinding no longer subscribes
+to EXTERNAL_PRESSURE or holds its own SurfaceReference.
 """
 
 import time
@@ -17,10 +22,10 @@ SAWTOOTH = int(MissionId.SAWTOOTH)
 TRIM = int(MissionId.TRIM_AND_NEUTRAL_BUOYANCY)
 SURFACE = int(MissionId.SURFACE)
 
-# Surface absolute pressure (Pa). gauge_pressure_pa() yields ~0 -> "at surface".
-PRESSURE_AT_SURFACE_PA = 101_325
-# Deep absolute pressure (Pa) -> ~6 m gauge, well above SURFACE_THRESHOLD_PA.
-PRESSURE_AT_DEPTH_PA = 161_325
+# Surface gauge pressure (Pa): ~0 -> "at surface".
+GAUGE_AT_SURFACE_PA = 0.0
+# Deep gauge pressure (Pa) -> ~6 m, well above SURFACE_THRESHOLD_PA.
+GAUGE_AT_DEPTH_PA = 60_000.0
 
 
 class TestWiringSmoke:
@@ -30,10 +35,6 @@ class TestWiringSmoke:
     def test_position_estimation_subscription_present(self, pathfinding_node_harness):
         names = [s.topic_name for s in pathfinding_node_harness.node.subscriptions]
         assert "/position/estimation" in names
-
-    def test_external_pressure_subscription_present(self, pathfinding_node_harness):
-        names = [s.topic_name for s in pathfinding_node_harness.node.subscriptions]
-        assert "/external/pressure" in names
 
     def test_command_subscription_present(self, pathfinding_node_harness):
         names = [s.topic_name for s in pathfinding_node_harness.node.subscriptions]
@@ -76,7 +77,7 @@ class TestPathIngress:
 class TestStartPreconditions:
     def test_start_without_mission_emits_nothing(self, pathfinding_node_harness):
         h = pathfinding_node_harness
-        h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
+        h.publish_depth_gauge(GAUGE_AT_SURFACE_PA)
         h.spin_until(lambda: h.node._current_pressure_pa is not None, timeout=1.0)
         h.publish_command(True)
         h.spin_for(0.5)
@@ -108,7 +109,7 @@ class TestStartRaceTolerance:
         assert h.node._mission is None
         assert h.node._run_requested is True
 
-        h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
+        h.publish_depth_gauge(GAUGE_AT_SURFACE_PA)
         h.publish_mission_command(TRIM, target_pressure_pa=50_000.0)
         h.spin_until(lambda: h.node._mission_t0_s is not None, timeout=1.0)
         h.spin_until(lambda: len(h.received_targets) >= 1, timeout=1.0)
@@ -123,7 +124,7 @@ class TestStartRaceTolerance:
         assert h.node._mission is not None and h.node._mission_t0_s is None
         assert h.node._run_requested is True
 
-        h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
+        h.publish_depth_gauge(GAUGE_AT_SURFACE_PA)
         h.spin_until(lambda: h.node._mission_t0_s is not None, timeout=1.0)
         h.spin_until(lambda: len(h.received_targets) >= 1, timeout=1.0)
         assert h.node._mission_t0_s is not None
@@ -138,7 +139,7 @@ class TestStartRaceTolerance:
         # got no setpoints and just drifted at spawn.
         h = pathfinding_node_harness
         h.publish_mission_command(TRIM, target_pressure_pa=50_000.0)
-        h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
+        h.publish_depth_gauge(GAUGE_AT_SURFACE_PA)
         h.spin_until(lambda: h.node._current_pressure_pa is not None, timeout=1.0)
         h.publish_command(True)
         h.spin_until(lambda: h.node._mission_t0_s is not None, timeout=1.0)
@@ -150,7 +151,7 @@ class TestStartRaceTolerance:
         h.publish_mission_command(TRIM, target_pressure_pa=50_000.0)
         before = len(h.received_targets)
         for _ in range(8):
-            h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
+            h.publish_depth_gauge(GAUGE_AT_SURFACE_PA)
             h.spin_for(0.05)
 
         assert h.node._mission_t0_s is not None
@@ -168,7 +169,7 @@ class TestStartRaceTolerance:
         assert h.node._mission is None
 
         h.publish_mission_command(TRIM, target_pressure_pa=50_000.0)
-        h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
+        h.publish_depth_gauge(GAUGE_AT_SURFACE_PA)
         h.spin_for(0.5)
         # The stop cleared the run intent, so the new /path loads the mission
         # but does not auto-fire -- it sits loaded-not-running.
@@ -180,7 +181,7 @@ class TestStartHappyPath:
     def test_start_emits_at_10hz(self, pathfinding_node_harness):
         h = pathfinding_node_harness
         h.publish_mission_command(TRIM, target_pressure_pa=50_000.0)
-        h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
+        h.publish_depth_gauge(GAUGE_AT_SURFACE_PA)
         h.spin_until(
             lambda: (
                 h.node._mission is not None and h.node._current_pressure_pa is not None
@@ -197,7 +198,7 @@ class TestStartHappyPath:
         h = pathfinding_node_harness
         target_pa = 50_000.0
         h.publish_mission_command(TRIM, target_pressure_pa=target_pa)
-        h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
+        h.publish_depth_gauge(GAUGE_AT_SURFACE_PA)
         h.spin_until(
             lambda: (
                 h.node._mission is not None and h.node._current_pressure_pa is not None
@@ -212,40 +213,27 @@ class TestStartHappyPath:
         assert first.orientation.w == pytest.approx(1.0, abs=1e-9)
 
 
-class TestSurfaceReferenceIngress:
-    """A registered surface pressure (DIVE_INIT) becomes the gauge
-    reference for the mission phase detection; until then -- or on a
-    garbage registration -- the standard atmosphere applies."""
+class TestPoseEstimationIngress:
+    """POSITION_ESTIMATION.position.z (gauge Pa) flows straight into
+    ``_current_pressure_pa`` -- attitude_node owns the gauge conversion now,
+    so the node stores the value verbatim and uses it for phase detection."""
 
-    def test_fallback_uses_standard_atmosphere(self, pathfinding_node_harness):
+    def test_surface_gauge_lands_at_zero(self, pathfinding_node_harness):
         h = pathfinding_node_harness
-        h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
+        h.publish_depth_gauge(GAUGE_AT_SURFACE_PA)
         h.spin_until(lambda: h.node._current_pressure_pa is not None, timeout=1.0)
         assert h.node._current_pressure_pa == pytest.approx(0.0, abs=1e-3)
 
-    def test_registered_surface_shifts_gauge_zero(self, pathfinding_node_harness):
+    def test_gauge_depth_stored_verbatim(self, pathfinding_node_harness):
         h = pathfinding_node_harness
-        surface_pa = 111_325.0
-        h.publish_dive_init(surface_pa)
-        h.spin_until(
-            lambda: h.node._surface_ref.reference_pa == pytest.approx(surface_pa),
-            timeout=1.0,
-        )
-        # The registered surface itself now reads "at the surface".
-        h.publish_external_pressure(int(surface_pa))
+        h.publish_depth_gauge(GAUGE_AT_DEPTH_PA)
         h.spin_until(
             lambda: h.node._current_pressure_pa is not None
-            and h.node._current_pressure_pa == pytest.approx(0.0, abs=1e-3),
+            and h.node._current_pressure_pa == pytest.approx(
+                GAUGE_AT_DEPTH_PA, abs=1e-3
+            ),
             timeout=1.0,
         )
-
-    def test_zero_surface_is_rejected(self, pathfinding_node_harness):
-        h = pathfinding_node_harness
-        h.publish_dive_init(0.0)
-        h.spin_for(0.3)
-        h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
-        h.spin_until(lambda: h.node._current_pressure_pa is not None, timeout=1.0)
-        assert h.node._current_pressure_pa == pytest.approx(0.0, abs=1e-3)
 
 
 class TestStopCommand:
@@ -254,7 +242,7 @@ class TestStopCommand:
     ):
         h = pathfinding_node_harness
         h.publish_mission_command(TRIM, target_pressure_pa=50_000.0)
-        h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
+        h.publish_depth_gauge(GAUGE_AT_SURFACE_PA)
         h.spin_until(
             lambda: (
                 h.node._mission is not None and h.node._current_pressure_pa is not None
@@ -290,7 +278,7 @@ class TestSurfaceMission:
         # Stay below the surface threshold so the mission doesn't immediately
         # self-terminate before the test can assert on emissions.
         h.publish_mission_command(SURFACE)
-        h.publish_external_pressure(PRESSURE_AT_DEPTH_PA)
+        h.publish_depth_gauge(GAUGE_AT_DEPTH_PA)
         h.spin_until(
             lambda: (
                 h.node._mission is not None and h.node._current_pressure_pa is not None
@@ -314,7 +302,7 @@ class TestSurfaceMission:
 
         h = pathfinding_node_harness
         h.publish_mission_command(SURFACE)
-        h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
+        h.publish_depth_gauge(GAUGE_AT_SURFACE_PA)
         h.spin_until(
             lambda: (
                 h.node._mission is not None and h.node._current_pressure_pa is not None
@@ -326,7 +314,7 @@ class TestSurfaceMission:
         # Keep feeding "at surface" pressure across the dwell window.
         deadline = time.monotonic() + 1.5
         while time.monotonic() < deadline and h.node._mission_t0_s is not None:
-            h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
+            h.publish_depth_gauge(GAUGE_AT_SURFACE_PA)
             h.spin_for(0.05)
         # After the dwell, pathfinding_node returns to IDLE and clears state.
         h.spin_until(lambda: h.node._mission is None, timeout=1.0)
@@ -346,7 +334,7 @@ class TestSurfaceMission:
 
         h = pathfinding_node_harness
         h.publish_mission_command(SURFACE)
-        h.publish_external_pressure(PRESSURE_AT_DEPTH_PA)
+        h.publish_depth_gauge(GAUGE_AT_DEPTH_PA)
         h.spin_until(
             lambda: (
                 h.node._mission is not None and h.node._current_pressure_pa is not None
@@ -359,7 +347,7 @@ class TestSurfaceMission:
         # stay RUNNING and keep emitting setpoints.
         deadline = time.monotonic() + 1.5
         while time.monotonic() < deadline:
-            h.publish_external_pressure(PRESSURE_AT_DEPTH_PA)
+            h.publish_depth_gauge(GAUGE_AT_DEPTH_PA)
             h.spin_for(0.05)
         assert h.node._mission_t0_s is not None
         assert len(h.received_targets) >= 5
@@ -369,7 +357,7 @@ class TestTickGating:
     def test_loaded_does_not_emit(self, pathfinding_node_harness):
         h = pathfinding_node_harness
         h.publish_mission_command(TRIM, target_pressure_pa=50_000.0)
-        h.publish_external_pressure(PRESSURE_AT_SURFACE_PA)
+        h.publish_depth_gauge(GAUGE_AT_SURFACE_PA)
         h.spin_until(
             lambda: (
                 h.node._mission is not None and h.node._current_pressure_pa is not None
