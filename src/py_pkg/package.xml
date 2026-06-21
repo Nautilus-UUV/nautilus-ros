@@ -12,6 +12,7 @@
   <depend>can_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>sensor_msgs</depend>
+  <depend>diagnostic_msgs</depend>
   <depend>nautilus_msgs</depend>
   <depend>python3-scipy</depend>
   <depend>python3-paho-mqtt</depend>

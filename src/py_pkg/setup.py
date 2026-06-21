@@ -28,23 +28,21 @@ setup(
         "test": [
             "pytest",
         ],
-        "analysis": [
-            "matplotlib",
-            "rosbags",
-        ],
     },
     entry_points={
         "console_scripts": [
             "pathfinding_node = py_pkg.path.pathfinding:main",
-            "ekf_prefilter = py_pkg.ekf_prefilter.ekf_prefilter:main",
-            "ekf_node = py_pkg.ekf.ekf_node:main",
+            "imu_prefilter = py_pkg.imu_prefilter.imu_prefilter:main",
+            "attitude_node = py_pkg.attitude.attitude_node:main",
             "mqtt_bridge_node = py_pkg.mqtt.mqtt_bridge_node:main",
-            "depth_node = py_pkg.pid.depth_node:main",
+            "bcu_node = py_pkg.pid.bcu_node:main",
             "acu_node = py_pkg.pid.acu_node:main",
             "stm_com_node = py_pkg.stm_com.stm_com_node:main",
+            "can_com_node = py_pkg.stm_com.can_com_node:main",
+            "liveness_node = py_pkg.liveness.liveness_node:main",
             "bcu_debug_node = py_pkg.debug.bcu_debug_node:main",
-            "auto_bcu_oscillator = py_pkg.debug.auto_bcu_oscillator:main",
-            "plot_sweep = py_pkg.analysis.cli:main",
+            "acu_debug_node = py_pkg.debug.acu_debug_node:main",
+            "auto_mission = py_pkg.debug.auto_mission:main",
         ],
     },
 )

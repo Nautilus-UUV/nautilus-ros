@@ -46,15 +46,26 @@ TOPIC_QOS_MAP = {
     UUVTopics.INTERNAL_PRESSURE: UUVQoS.SAFETY_CRITICAL,
     UUVTopics.EXTERNAL_PRESSURE: UUVQoS.SAFETY_CRITICAL,
     # High-frequency sensors
-    UUVTopics.IMU_LEFT: UUVQoS.SENSOR_STREAM,
-    UUVTopics.IMU_RIGHT: UUVQoS.SENSOR_STREAM,
+    UUVTopics.IMU: UUVQoS.SENSOR_STREAM,
     # Commands
     UUVTopics.COMMAND: UUVQoS.COMMAND,
     UUVTopics.PATH: UUVQoS.COMMAND,
+    # Pre-dive registration is state, not an event: TRANSIENT_LOCAL latches
+    # the last Initialize so a controller that (re)starts mid-deployment
+    # still sees the registered values.
+    UUVTopics.DIVE_INIT: UUVQoS.COMMAND,
     UUVTopics.DEBUG_BCU_RPM: UUVQoS.COMMAND,
-    # Latched control-state flag; TRANSIENT_LOCAL via COMMAND profile so a
-    # late-joining depth_node sees the current override state immediately.
-    UUVTopics.CONTROL_MANUAL_OVERRIDE: UUVQoS.COMMAND,
+    UUVTopics.DEBUG_BCU_RPM_UNTIL_PRESSURE: UUVQoS.COMMAND,
+    UUVTopics.DEBUG_BCU_VALVES: UUVQoS.COMMAND,
+    UUVTopics.DEBUG_ACU_PITCH: UUVQoS.COMMAND,
+    UUVTopics.DEBUG_ACU_ROLL: UUVQoS.COMMAND,
+    UUVTopics.DEBUG_EMERGENCY_SURFACE: UUVQoS.COMMAND,
+    # The debug all-stop is a transient event, not a state to latch — RELIABLE
+    # but volatile, so a debug node that (re)starts later doesn't replay an old
+    # reset. Volatile is safe here precisely because the debug nodes construct
+    # in the silent/idle state: one that's down at publish time isn't driving
+    # the wire and comes up safe, so a missed reset can't strand an actuator.
+    UUVTopics.DEBUG_RESET: UUVQoS.CONTROL,
     # Everything else: control
     UUVTopics.INTERNAL_TEMPERATURE: UUVQoS.CONTROL,
     UUVTopics.INTERNAL_HUMIDITY: UUVQoS.CONTROL,
@@ -64,13 +75,15 @@ TOPIC_QOS_MAP = {
     UUVTopics.BCU_FLOW_RATE: UUVQoS.CONTROL,
     UUVTopics.BCU_RPM: UUVQoS.CONTROL,
     UUVTopics.BCU_VALVES: UUVQoS.CONTROL,
+    UUVTopics.BCU_FEEDBACK_RPM: UUVQoS.CONTROL,
+    UUVTopics.BCU_FEEDBACK_VALVES: UUVQoS.CONTROL,
     UUVTopics.ACU_PITCH: UUVQoS.CONTROL,
     UUVTopics.ACU_ROLL: UUVQoS.CONTROL,
     UUVTopics.ACU_FEEDBACK_OFFSET: UUVQoS.CONTROL,
     UUVTopics.ACU_FEEDBACK_ANGLE: UUVQoS.CONTROL,
-    UUVTopics.IMU_FILTERED_LEFT: UUVQoS.CONTROL,
-    UUVTopics.IMU_FILTERED_RIGHT: UUVQoS.CONTROL,
+    UUVTopics.IMU_FILTERED: UUVQoS.CONTROL,
     UUVTopics.POSITION_TARGET: UUVQoS.CONTROL,
     UUVTopics.POSITION_ESTIMATION: UUVQoS.CONTROL,
     UUVTopics.CAN_OUT: UUVQoS.CONTROL,
+    UUVTopics.STATUS_LIVENESS: UUVQoS.CONTROL,
 }

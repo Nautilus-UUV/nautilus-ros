@@ -1,7 +1,7 @@
 """Deterministic seed derivation for per-component RNGs.
 
 Python's built-in `hash()` is PYTHONHASHSEED-salted across processes
-and would silently destroy reproducibility — different runs of the
+and would silently destroy reproducibility. Different runs of the
 same scenario would seed BCU's fault RNG to different values.
 blake2b is in the stdlib, fast, and deterministic everywhere.
 
@@ -15,13 +15,7 @@ import hashlib
 
 
 def derive_seed(parent_seed: int, component_id: str) -> int:
-    # ROS 2 INTEGER parameters are signed int64 (max 2**63 - 1). A full
-    # 8-byte unsigned digest lands above that range about half the time,
-    # which rclpy then serializes as DOUBLE — and any node that declares
-    # the seed param as INTEGER (e.g. bcu_sim_bridge's rng_seed) dies at
-    # startup with InvalidParameterTypeException. Mask off the sign bit
-    # so every derived seed fits in INT64_MAX; 63 bits of entropy is more
-    # than any RNG seed will ever need.
+    # ROS 2 INTEGER parameters are signed int64 (max 2**63 - 1).
     h = hashlib.blake2b(
         f"{parent_seed}:{component_id}".encode("utf-8"),
         digest_size=8,

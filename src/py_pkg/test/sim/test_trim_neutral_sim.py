@@ -5,11 +5,11 @@ Pipeline under test:
     /path + /command -> pathfinding_node -> /position/target
                                           ^
                        /external/pressure -|
-    /position/target +-> depth_node       -> /bcu/rpm + /bcu/valves -> bridge -> Gazebo
+    /position/target +-> bcu_node       -> /bcu/rpm + /bcu/valves -> bridge -> Gazebo
     /position/target +-> acu_node         -> /acu/pitch + /acu/roll -> bridge -> Gazebo
                        /position/estimation
                           ^
-                          ekf_node <- ekf_prefilter <- /imu/left
+                          attitude_node <- imu_prefilter <- /imu/left
 
 The test loads ``MissionId.TRIM_AND_NEUTRAL_BUOYANCY = 0`` with
 ``target_pressure_pa = 65332`` (~6.5 m of seawater) and asserts the
@@ -22,19 +22,16 @@ the model's already-bridged ``/model/glider_nautilus/odometry`` topic
 — privileged sim-only info kept *out* of the Nautilus topic registry
 so production controllers can't accidentally depend on it.
 
-Tolerances here are deliberately looser than ``test_trim_neutral_sim_gt``
-(the EKF-bypass mirror): the EKF is in the loop, and its known
-orientation drift (``src/nautilus-ros/docs/ekf_node_issues.md``) feeds
-the ACU. This test also acts as an EKF-stability smoke alongside
-``test_ekf_pipeline_sim``. If only the |omega| assertion regresses,
-add a narrow xfail there pointing at the EKF; don't blanket-skip the
-test.
+Tolerances here are deliberately loose: the estimator is in the loop, and
+any orientation drift it carries feeds the ACU. This test also doubles as
+an estimator-stability smoke. If only the |omega| assertion regresses, add
+a narrow xfail pointing at the estimator; don't blanket-skip the test.
 
 Composed via ``nautilus_hal/launch/trim_sim.launch.py`` (which
 ``IncludeLaunchDescription``s ``py_pkg/launch/control_stack.launch.py``).
 Marker-gated ``@pytest.mark.sim``; opt in with
 ``pytest -m sim test/sim/`` after sourcing the workspace install.
-``TRIM_SIM_GUI=1`` shows the Gazebo GUI.
+``SIM_GUI=1`` shows the Gazebo GUI.
 """
 
 import math
@@ -65,9 +62,9 @@ from py_pkg.uuv_ros_core import (
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from sensor_msgs.msg import Imu
-from std_msgs.msg import Int32, String
+from std_msgs.msg import Bool, Int32
 
-from ._sim_helpers import reap_lingering_gz
+from ._sim_helpers import reap_lingering_gz, sim_gui_enabled
 
 TARGET_PRESSURE_PA = 65332.0  # ~6.5 m of seawater (gauge); spawn is ~5 m
 GROUND_TRUTH_TOPIC = "/model/glider_nautilus/odometry"
@@ -80,12 +77,7 @@ def generate_test_description():
     # Reap MUST happen here, not in setUpClass
     reap_lingering_gz()
 
-    gui_enabled = os.environ.get("TRIM_SIM_GUI", "").lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    )
+    gui_enabled = sim_gui_enabled()
 
     test_scenario = os.path.join(
         os.path.dirname(__file__), "scenarios", "test_trim_neutral.yaml"
@@ -137,8 +129,8 @@ class _TrimNeutralTestDriver(Node):
         self.path_pub = create_publisher_for_topic(self, UUVTopics.PATH)
         self.command_pub = create_publisher_for_topic(self, UUVTopics.COMMAND)
 
-        # IMU_LEFT readiness signal (same convention as test_bcu_sim et al.).
-        create_subscription_for_topic(self, UUVTopics.IMU_LEFT, self._on_imu)
+        # IMU readiness signal (same convention as test_bcu_sim et al.).
+        create_subscription_for_topic(self, UUVTopics.IMU, self._on_imu)
         # SAFETY_CRITICAL on the producer side; the factory matches QoS.
         create_subscription_for_topic(
             self, UUVTopics.EXTERNAL_PRESSURE, self._on_pressure
@@ -175,8 +167,8 @@ class _TrimNeutralTestDriver(Node):
         self.path_pub.publish(cmd)
 
     def publish_start(self) -> None:
-        msg = String()
-        msg.data = "start"
+        msg = Bool()
+        msg.data = True
         self.command_pub.publish(msg)
 
 
@@ -227,29 +219,28 @@ class TrimNeutralSimTest(unittest.TestCase):
         startup_timeout_s = 60.0
         post_ready_settle_s = 2.0
         # Mission timeline: spawn is at z=-5 (~51 kPa), target is ~65 kPa
-        # (6.5 m). 120 s matches test_trim_neutral_sim_gt — see the
-        # rationale there (saturated drain + bladder swing + momentum
-        # bleed budget for the BCU plant).
+        # (6.5 m). 120 s covers the saturated-drain + bladder-swing +
+        # momentum-bleed budget for the BCU plant.
         mission_duration_s = 120.0
         drain_s = 2.0
         # Last 5 s used for the convergence assertions
         assert_window_s = 5.0
 
-        # Looser than test_trim_neutral_sim_gt — the EKF is in the loop
-        # here, so attitude noise drives extra ACU activity that this
-        # test has to absorb. Tighten as the EKF stabilises.
+        # Loose tolerances: the estimator is in the loop here, so attitude
+        # noise drives extra ACU activity that this test has to absorb.
+        # Tighten as the estimator stabilises.
         pressure_tol_pa = 4000.0  # ~0.4 m
         v_linear_max = 0.10  # m/s
         omega_max = 0.15  # rad/s
 
-        # 1) Wait for sim. IMU_LEFT is the readiness signal.
+        # 1) Wait for sim. IMU is the readiness signal.
         sim_ready = self._spin_until(
             lambda: self.driver.imu_msg_count >= 1,
             timeout_s=startup_timeout_s,
         )
         self.assertTrue(
             sim_ready,
-            f"IMU_LEFT never arrived within {startup_timeout_s}s — "
+            f"IMU never arrived within {startup_timeout_s}s — "
             "is Gazebo up and is the model spawned with its IMU plugin?",
         )
 
@@ -333,12 +324,11 @@ class TrimNeutralSimTest(unittest.TestCase):
             mean_w,
             omega_max,
             f"mean |omega| over last {assert_window_s}s = {mean_w:.3f} rad/s "
-            f"(>= {omega_max} rad/s). ACU/EKF combination keeps disturbing "
-            "attitude — see docs/ekf_node_issues.md.",
+            f"(>= {omega_max} rad/s). ACU/estimator combination keeps disturbing "
+            "attitude.",
         )
 
         # 6d) Sanity: every odom pose is finite + quaternion unit-norm.
-        #     Same defensive check as test_ekf_pipeline_sim.py.
         for i, odom in enumerate(window_odom):
             p = odom.pose.pose.position
             for axis_name, axis_value in (("x", p.x), ("y", p.y), ("z", p.z)):

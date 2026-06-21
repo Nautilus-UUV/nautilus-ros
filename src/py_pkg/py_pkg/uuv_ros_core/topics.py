@@ -33,6 +33,8 @@ class UUVTopics:
     BCU_FLOW_RATE = "/bcu/flow_rate"
     BCU_VALVES = "/bcu/valves"
     BCU_RPM = "/bcu/rpm"
+    BCU_FEEDBACK_RPM = "/bcu/feedback/rpm"
+    BCU_FEEDBACK_VALVES = "/bcu/feedback/valves"
 
     # Attitude Control Unit (ACU)
     ACU_PITCH = "/acu/pitch"
@@ -40,11 +42,9 @@ class UUVTopics:
     ACU_FEEDBACK_OFFSET = "/acu/feedback/offset"
     ACU_FEEDBACK_ANGLE = "/acu/feedback/angle"
 
-    # IMU data
-    IMU_LEFT = "/imu/left"
-    IMU_RIGHT = "/imu/right"
-    IMU_FILTERED_LEFT = "/imu/filtered/left"
-    IMU_FILTERED_RIGHT = "/imu/filtered/right"
+    # IMU data.
+    IMU = "/imu"
+    IMU_FILTERED = "/imu/filtered"
 
     # Navigation and control
     POSITION_TARGET = "/position/target"
@@ -52,14 +52,29 @@ class UUVTopics:
     PATH = "/path"
     COMMAND = "/command"
 
+    # Operator initialization. One latched message carries the pre-dive
+    # registrations (surface pressure + tank empty/full endpoints) -- a
+    # single topic because the UI registers all three atomically with one
+    # button, so consumers can never see a torn empty/full pair.
+    DIVE_INIT = "/init/dive"
+
     # CAN communication
     CAN_OUT = "/can/out"
 
-    # Debug / bench overrides (manual injection points; bypass closed-loop control)
+    # Debug / bench overrides
     DEBUG_BCU_RPM = "/debug/bcu/rpm"
+    DEBUG_BCU_RPM_UNTIL_PRESSURE = "/debug/bcu/rpm_until_pressure"
+    DEBUG_BCU_VALVES = "/debug/bcu/valves"
+    DEBUG_ACU_PITCH = "/debug/acu/pitch"
+    DEBUG_ACU_ROLL = "/debug/acu/roll"
+    DEBUG_EMERGENCY_SURFACE = "/debug/emergency_surface"
+    # All-stop for the debug nodes: zero RPM, close valves, neutral ACU, cancel
+    # any emergency surface, then go silent. Published by the operator's red
+    # Reset button. The mission/controller stop rides /command=false instead.
+    DEBUG_RESET = "/debug/reset"
 
-    # Control-graph coordination
-    # True while a manual-override node (bcu_debug, future hand-controllers,
-    # ...) is actively driving an actuator topic. Closed-loop publishers must
-    # honour it and stop emitting on the contested topic until it goes False.
-    CONTROL_MANUAL_OVERRIDE = "/control/manual_override"
+    # System status
+    # Per-subsystem health, one DiagnosticArray published by the liveness node
+    # from a freshness watchdog over the steady glider-side feedback/sensor
+    # streams.
+    STATUS_LIVENESS = "/status/liveness"

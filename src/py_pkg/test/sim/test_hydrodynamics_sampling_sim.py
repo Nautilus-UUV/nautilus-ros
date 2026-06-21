@@ -61,9 +61,9 @@ from py_pkg.uuv_ros_core import (
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from sensor_msgs.msg import Imu
-from std_msgs.msg import String
+from std_msgs.msg import Bool
 
-from ._sim_helpers import reap_lingering_gz
+from ._sim_helpers import reap_lingering_gz, sim_gui_enabled
 
 # Short sawtooth: spawn at z=-5 m (~50 kPa gauge) → dive to ~6 m
 # (~60 kPa) → return to surface. About 1 m of glide each leg, a tiny
@@ -111,12 +111,7 @@ def generate_test_description(scenario_yaml):
         f"({rendered_path}) for {scenario_yaml}; expected a temp render."
     )
 
-    gui_enabled = os.environ.get("HYDRO_SAMPLING_SIM_GUI", "").lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    )
+    gui_enabled = sim_gui_enabled()
 
     sawtooth_sim_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -158,7 +153,7 @@ class _SawtoothSamplingDriver(Node):
         self.path_pub = create_publisher_for_topic(self, UUVTopics.PATH)
         self.command_pub = create_publisher_for_topic(self, UUVTopics.COMMAND)
 
-        create_subscription_for_topic(self, UUVTopics.IMU_LEFT, self._on_imu)
+        create_subscription_for_topic(self, UUVTopics.IMU, self._on_imu)
         create_subscription_for_topic(self, UUVTopics.POSITION_TARGET, self._on_target)
         create_subscription_for_topic(
             self, UUVTopics.EXTERNAL_PRESSURE, self._on_pressure
@@ -182,8 +177,8 @@ class _SawtoothSamplingDriver(Node):
         self.path_pub.publish(cmd)
 
     def publish_start(self) -> None:
-        msg = String()
-        msg.data = "start"
+        msg = Bool()
+        msg.data = True
         self.command_pub.publish(msg)
 
 
@@ -239,7 +234,7 @@ class HydroSamplingSimTest(unittest.TestCase):
         )
         self.assertTrue(
             sim_ready,
-            f"[{scenario_yaml}] IMU_LEFT never arrived within "
+            f"[{scenario_yaml}] IMU never arrived within "
             f"{startup_timeout_s}s -- did the rendered SDF spawn? "
             "Check the launch log for the 'Spawning SDF: ...' line.",
         )

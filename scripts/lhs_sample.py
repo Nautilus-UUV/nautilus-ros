@@ -37,7 +37,17 @@ import numpy as np
 import yaml
 from scipy.stats import qmc
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src/py_pkg"))
+from py_pkg.scenarios.compile import forward_map
+from py_pkg.scenarios.spec.rig import FinAeroSpec, HydrodynamicsSpec, PhysicsKnobs
+
 SAMPLER_VERSION = "1.0.0"
+
+# The bare-name dimensions a "physics" sweep feeds to the deterministic
+# forward map. Any dimension whose path is *not* one of these is treated as a
+# plain scenario dot-path overlay (e.g. rig.faults.bcu_rpm.mttf_sec), so a
+# sweep can perturb the plant geometry and a scenario knob in one joint LHS.
+_PHYSICS_KNOB_FIELDS = frozenset(PhysicsKnobs.model_fields)
 
 SUPPORTED_DISTRIBUTIONS = ("uniform", "loguniform")
 
@@ -95,6 +105,8 @@ class SweepSpec:
     seed: int
     base_scenario: str
     dimensions: tuple[Dimension, ...]
+    sampling_mode: str = "lhs"
+    isotropic_jitter_sigma: float = 0.0
 
     @classmethod
     def load(cls, path: Path) -> "SweepSpec":
@@ -111,6 +123,8 @@ class SweepSpec:
             seed=int(raw.get("seed", 0)),
             base_scenario=raw["base_scenario"],
             dimensions=dims,
+            sampling_mode=raw.get("sampling_mode", "lhs"),
+            isotropic_jitter_sigma=float(raw.get("isotropic_jitter_sigma", 0.0)),
         )
 
 
@@ -162,19 +176,92 @@ def draw_samples(spec: SweepSpec) -> np.ndarray:
     return scaled
 
 
+def jitter_hydrodynamics(
+    spec: HydrodynamicsSpec, sigma: float, seed: int
+) -> HydrodynamicsSpec:
+    """Multiply each scalable coefficient by exp(N(0, sigma^2)).
+
+    This is the §12.7 isotropic off-manifold knob, deliberately kept *out* of
+    the deterministic `forward_map` and applied only here, for the FDI
+    training distribution. Geometry-exact slots are left untouched: fin
+    `area` stays exactly b*c, and the SDF-default stalls / a0 aren't jittered.
+    So only added mass, hull linear damping, and per-fin cla/cda/alpha_stall
+    move.
+    """
+    if sigma <= 0.0:
+        return spec
+    rng = np.random.default_rng(seed)
+
+    def n() -> float:
+        return math.exp(rng.normal(0.0, sigma))
+
+    # The 12 body coefficients are exactly the float-valued fields on the
+    # spec (the fins are sub-models, `knobs` is None), so we don't have to
+    # re-list their names here.
+    body = {
+        name: getattr(spec, name) * n()
+        for name in spec.model_fields
+        if isinstance(getattr(spec, name), float)
+    }
+
+    def jit_fin(fin: FinAeroSpec, cla_n: float, cda_n: float, stall_n: float) -> FinAeroSpec:
+        return fin.model_copy(
+            update={
+                "cla": fin.cla * cla_n,
+                "cda": fin.cda * cda_n,
+                "alpha_stall": fin.alpha_stall * stall_n,
+            }
+        )
+
+    # The horizontal fins are a mirror pair (identical in the canonical SDF
+    # and in the deterministic map), so they share one draw per coefficient —
+    # jitter must not invent a left/right asymmetry. The rudder draws its own.
+    h_cla, h_cda, h_stall = n(), n(), n()
+    return spec.model_copy(
+        update={
+            **body,
+            "left_fin": jit_fin(spec.left_fin, h_cla, h_cda, h_stall),
+            "right_fin": jit_fin(spec.right_fin, h_cla, h_cda, h_stall),
+            "top_rudder": jit_fin(spec.top_rudder, n(), n(), n()),
+        }
+    )
+
+
 def render_scenario(
     base: dict, spec: SweepSpec, row: Sequence[float], idx: int
 ) -> dict:
     """Deep-copy the base, overlay the row's perturbations, set per-run seed."""
     scenario = copy.deepcopy(base)
-    for dim, value in zip(spec.dimensions, row):
-        # YAML round-trips Python floats fine; cast to float so numpy
-        # scalars don't end up serialized as `!!python/object/apply`.
-        set_dotted(scenario, dim.path, float(value))
     # Each run gets its own fault-RNG seed so MC outcomes are
     # decorrelated across samples while still being deterministic. Mix
     # the spec seed with the sample index to keep reproducibility.
     scenario["seed"] = (spec.seed * 1_000_003 + idx) & 0xFFFFFFFF
+
+    if spec.sampling_mode == "lhs":
+        for dim, value in zip(spec.dimensions, row):
+            # YAML round-trips Python floats fine; cast to float so numpy
+            # scalars don't end up serialized as `!!python/object/apply`.
+            set_dotted(scenario, dim.path, float(value))
+    elif spec.sampling_mode == "physics":
+        # Split the row: bare PhysicsKnobs names drive the deterministic
+        # forward map; any dotted path is a plain scenario overlay, exactly as
+        # in lhs mode. This lets one joint LHS perturb the plant geometry *and*
+        # a scenario knob like the fault MTTF together.
+        knobs: dict[str, float] = {}
+        for dim, value in zip(spec.dimensions, row):
+            if dim.path in _PHYSICS_KNOB_FIELDS:
+                knobs[dim.path] = float(value)
+            else:
+                set_dotted(scenario, dim.path, float(value))
+        hydro_spec = forward_map(knobs)
+        if spec.isotropic_jitter_sigma > 0.0:
+            hydro_spec = jitter_hydrodynamics(
+                hydro_spec, spec.isotropic_jitter_sigma, seed=scenario["seed"]
+            )
+        scenario.setdefault("rig", {})["hydrodynamics"] = hydro_spec.model_dump()
+    else:
+        raise ValueError(f"Unsupported sampling_mode: {spec.sampling_mode}")
+
     return scenario
 
 

@@ -5,17 +5,22 @@ publishing one of two ``Int16`` mm extremes pulled from
 ``AcuPitchSpec.output_limits``. Roll keeps the same PID/AxisController
 contract on ``ACU_ROLL`` (Int16 centidegrees).
 
+POSITION_ESTIMATION is now the single vehicle-state input: its orientation
+drives current_roll_deg (roll PID) and its position.z carries the current
+gauge depth (Pa) the bang-bang pitch loop compares against. attitude_node
+owns the absolute->gauge conversion, so the node has no EXTERNAL_PRESSURE /
+DIVE_INIT / SurfaceReference path anymore — the harness feeds gauge depth
+directly via ``publish_current_attitude(gauge_pa=...)``.
+
 The harness publishes:
 * ``POSITION_TARGET``  — orientation = roll target, position.z = target
   gauge pressure (Pa, pathfinding's TRIM convention).
-* ``POSITION_ESTIMATION`` — orientation = current roll. Pitch dimension
-  is deliberately ignored by the node.
-* ``EXTERNAL_PRESSURE`` — absolute pressure sensor reading (Pa, Int32).
+* ``POSITION_ESTIMATION`` — orientation = current roll, position.z =
+  current gauge depth (Pa). Pitch dimension is deliberately ignored.
 """
 
 import pytest
 
-from py_pkg.physics import ATMOSPHERIC_PRESSURE_PA
 from py_pkg.robot_specs import ACU_ROLL_CDEG_PER_DEG, ACU_ROLL_MAX_ANGLE_DEG
 from py_pkg.scenarios.spec.control import AcuPitchSpec
 
@@ -27,13 +32,6 @@ PITCH_BACK_MM = int(round(_PITCH_OUTPUT_LIMITS_M[0] * 1000.0))
 PITCH_FRONT_MM = int(round(_PITCH_OUTPUT_LIMITS_M[1] * 1000.0))
 
 ROLL_MAX_CDEG = int(round(ACU_ROLL_MAX_ANGLE_DEG * ACU_ROLL_CDEG_PER_DEG))
-
-
-def _abs_pa_for_gauge(gauge_pa: float) -> int:
-    """Build an EXTERNAL_PRESSURE (absolute Pa) reading that, after the
-    node's `gauge_pressure_pa` ingress conversion, lands at ``gauge_pa``.
-    """
-    return int(round(gauge_pa + ATMOSPHERIC_PRESSURE_PA))
 
 
 class TestWiringSmoke:
@@ -49,10 +47,6 @@ class TestWiringSmoke:
     def test_position_estimation_subscription_present(self, acu_node_harness):
         names = [sub.topic_name for sub in acu_node_harness.node.subscriptions]
         assert "/position/estimation" in names
-
-    def test_external_pressure_subscription_present(self, acu_node_harness):
-        names = [sub.topic_name for sub in acu_node_harness.node.subscriptions]
-        assert "/external/pressure" in names
 
     def test_pitch_publisher_present(self, acu_node_harness):
         names = [pub.topic_name for pub in acu_node_harness.node.publishers]
@@ -100,9 +94,10 @@ class TestTargetIngress:
 
 
 class TestEstimationIngress:
-    """``POSITION_ESTIMATION`` orientation drives current_roll_deg only —
-    pitch deliberately ignores the pose estimate (the bang-bang loop
-    reads pressure directly)."""
+    """``POSITION_ESTIMATION`` is the single vehicle-state input: orientation
+    drives current_roll_deg (roll PID) and position.z drives
+    current_pressure_pa (gauge Pa) for the bang-bang pitch leg select. Pitch
+    off the pose is deliberately ignored."""
 
     def test_estimation_pose_updates_current_roll(self, acu_node_harness):
         h = acu_node_harness
@@ -113,21 +108,17 @@ class TestEstimationIngress:
         )
         assert h.node.current_roll_deg == pytest.approx(8.0, abs=1e-4)
 
-
-class TestPressureIngress:
-    """``EXTERNAL_PRESSURE`` is absolute Pa on the wire; the node converts
-    to gauge before storing. Without that conversion the bang-bang would
-    never flip legs against gauge-frame setpoints."""
-
-    def test_pressure_message_stored_as_gauge(self, acu_node_harness):
+    def test_estimation_pose_updates_current_pressure(self, acu_node_harness):
+        # position.z is gauge Pa, stored verbatim -- attitude_node already
+        # gauged it, so the node does no conversion.
         h = acu_node_harness
-        gauge_target = 50000.0
-        h.publish_external_pressure(_abs_pa_for_gauge(gauge_target))
+        gauge = 50000.0
+        h.publish_current_attitude(gauge_pa=gauge)
         h.spin_until(
             lambda: h.node.current_pressure_pa is not None,
             timeout=1.0,
         )
-        assert h.node.current_pressure_pa == pytest.approx(gauge_target, abs=1e-3)
+        assert h.node.current_pressure_pa == pytest.approx(gauge, abs=1e-6)
 
 
 class TestTimerEmits:
@@ -137,7 +128,7 @@ class TestTimerEmits:
     def test_emits_pitch_after_pressure_and_target(self, acu_node_harness):
         h = acu_node_harness
         h.publish_target(target_pressure_pa=50000.0)
-        h.publish_external_pressure(_abs_pa_for_gauge(20000.0))
+        h.publish_current_attitude(gauge_pa=20000.0)
         h.spin_until(lambda: len(h.received_pitch_mm) >= 1, timeout=1.5)
         assert len(h.received_pitch_mm) >= 1
 
@@ -152,19 +143,20 @@ class TestTimerEmits:
 
 class TestPitchGatedOnInputs:
     """Bang-bang refuses to pick a side from uninitialised zeros: it
-    waits for both EXTERNAL_PRESSURE and POSITION_TARGET."""
+    waits for both a gauge depth (POSITION_ESTIMATION.position.z) and a
+    setpoint (POSITION_TARGET)."""
 
     def test_no_pitch_until_pressure_seen(self, acu_node_harness):
         h = acu_node_harness
         h.publish_target(target_pressure_pa=50000.0)
-        # Drive only the target — pressure never arrives.
+        # Drive only the target — no estimation pose, so no gauge depth.
         h.spin_for(0.6)
         assert h.received_pitch_mm == []
 
     def test_no_pitch_until_target_seen(self, acu_node_harness):
         h = acu_node_harness
-        h.publish_external_pressure(_abs_pa_for_gauge(20000.0))
-        # Drive only pressure — target never arrives.
+        h.publish_current_attitude(gauge_pa=20000.0)
+        # Drive only the estimation pose — target never arrives.
         h.spin_for(0.6)
         assert h.received_pitch_mm == []
 
@@ -177,14 +169,14 @@ class TestPitchBangBang:
         # current gauge < target gauge → diving leg → BACK extreme.
         h = acu_node_harness
         h.publish_target(target_pressure_pa=80000.0)
-        h.publish_external_pressure(_abs_pa_for_gauge(20000.0))
+        h.publish_current_attitude(gauge_pa=20000.0)
         h.spin_until(lambda: len(h.received_pitch_mm) >= 1, timeout=1.5)
         assert h.received_pitch_mm[-1] == PITCH_BACK_MM
 
     def test_deeper_than_target_emits_front(self, acu_node_harness):
         h = acu_node_harness
         h.publish_target(target_pressure_pa=20000.0)
-        h.publish_external_pressure(_abs_pa_for_gauge(80000.0))
+        h.publish_current_attitude(gauge_pa=80000.0)
         h.spin_until(lambda: len(h.received_pitch_mm) >= 1, timeout=1.5)
         assert h.received_pitch_mm[-1] == PITCH_FRONT_MM
 
@@ -193,7 +185,7 @@ class TestPitchBangBang:
         # of bang-bang. No proportional region, no clamp story.
         h = acu_node_harness
         h.publish_target(target_pressure_pa=50000.0)
-        h.publish_external_pressure(_abs_pa_for_gauge(50000.0 - 100.0))
+        h.publish_current_attitude(gauge_pa=50000.0 - 100.0)
         h.spin_for(0.6)
         assert len(h.received_pitch_mm) >= 1
         for v in h.received_pitch_mm:
@@ -207,7 +199,7 @@ class TestPitchBangBang:
         # the same pressure reading. The two ticks must produce
         # different outputs.
         h = acu_node_harness
-        h.publish_external_pressure(_abs_pa_for_gauge(50000.0))
+        h.publish_current_attitude(gauge_pa=50000.0)
 
         h.publish_target(target_pressure_pa=80000.0)
         h.spin_until(lambda: len(h.received_pitch_mm) >= 1, timeout=1.5)
@@ -215,8 +207,7 @@ class TestPitchBangBang:
 
         h.publish_target(target_pressure_pa=20000.0)
         h.spin_until(
-            lambda: len(h.received_pitch_mm) >= 1
-            and h.received_pitch_mm[-1] != first,
+            lambda: len(h.received_pitch_mm) >= 1 and h.received_pitch_mm[-1] != first,
             timeout=1.5,
         )
         assert h.received_pitch_mm[-1] != first
@@ -258,9 +249,9 @@ class TestRollSaturation:
         h.spin_for(0.6)
         assert len(h.received_roll_cdeg) >= 1
         for v in h.received_roll_cdeg:
-            assert abs(v) <= ROLL_MAX_CDEG, (
-                f"published roll {v} cdeg exceeds ROLL_MAX_CDEG={ROLL_MAX_CDEG}"
-            )
+            assert (
+                abs(v) <= ROLL_MAX_CDEG
+            ), f"published roll {v} cdeg exceeds ROLL_MAX_CDEG={ROLL_MAX_CDEG}"
         assert h.received_roll_cdeg[-1] == ROLL_MAX_CDEG
 
     def test_roll_saturates_at_min_for_negative_target(self, acu_node_harness):
@@ -285,6 +276,42 @@ class TestRollQuiescence:
         # After settling at the clamp, no new emissions; allow 1 for slack.
         h.spin_for(0.6)
         late_count = len(h.received_roll_cdeg)
-        assert late_count - early_count <= 1, (
-            f"expected quiescence after saturation, got {h.received_roll_cdeg}"
-        )
+        assert (
+            late_count - early_count <= 1
+        ), f"expected quiescence after saturation, got {h.received_roll_cdeg}"
+
+
+class TestStopResetsAndSilences:
+    """/command=false drops the held target, re-primes the roll axis, emits ONE
+    neutral (0 pitch + 0 roll), then gates the whole loop off -- exactly as at
+    boot before any mission. Silence (pitch AND roll) frees the ACU wire for
+    acu_debug with no contention."""
+
+    def test_stop_emits_neutral_then_silent(self, acu_node_harness):
+        h = acu_node_harness
+        # Drive a pitch + roll command first (shallower than target -> diving).
+        h.publish_target(roll_deg=20.0, target_pressure_pa=80000.0)
+        h.publish_current_attitude(gauge_pa=20000.0)
+        h.spin_until(lambda: len(h.received_pitch_mm) >= 2, timeout=1.5)
+
+        # Stop -> target cleared, one neutral (0/0) emitted, loop gated off.
+        h.publish_command(False)
+        h.spin_until(lambda: h.node.target_pressure_pa is None, timeout=1.0)
+        assert h.node.target_pressure_pa is None
+        h.spin_for(0.2)  # let the one-shot neutral land
+        assert h.received_pitch_mm and h.received_pitch_mm[-1] == 0
+        assert h.received_roll_cdeg and h.received_roll_cdeg[-1] == 0
+
+        # The loop is fully silent now (pitch AND roll), even with pressure
+        # still flowing -- no new target has arrived to re-arm it.
+        h.received_pitch_mm.clear()
+        h.received_roll_cdeg.clear()
+        for _ in range(8):
+            h.publish_current_attitude(gauge_pa=20000.0)
+            h.spin_for(0.05)
+        assert (
+            h.received_pitch_mm == []
+        ), f"pitch must stay silent after stop, got {h.received_pitch_mm}"
+        assert (
+            h.received_roll_cdeg == []
+        ), f"roll must stay silent after stop, got {h.received_roll_cdeg}"

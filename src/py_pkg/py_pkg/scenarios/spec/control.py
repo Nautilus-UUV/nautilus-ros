@@ -108,7 +108,7 @@ class AcuRollSpec(StrictModel):
     """ACU roll axis PID.
 
     Conservative gains so the roll loop doesn't induce pitch
-    coupling. command_tolerance sits just above EKF roll noise
+    coupling. command_tolerance sits just above estimator roll noise
     (~0.5 deg) so steady-state noise alone doesn't republish to the
     EPOS bus.
 
@@ -137,17 +137,17 @@ class ControllersSpec(StrictModel):
     acu_roll: AcuRollSpec = Field(default_factory=AcuRollSpec)
 
 
-class EkfPrefilterSpec(StrictModel):
+class ImuPrefilterSpec(StrictModel):
     pass  # no tunables yet; placeholder so future params have a home
 
 
-class EkfSpec(StrictModel):
+class AttitudeSpec(StrictModel):
     pass  # same
 
 
 class EstimatorSpec(StrictModel):
-    prefilter: EkfPrefilterSpec = Field(default_factory=EkfPrefilterSpec)
-    ekf: EkfSpec = Field(default_factory=EkfSpec)
+    prefilter: ImuPrefilterSpec = Field(default_factory=ImuPrefilterSpec)
+    attitude: AttitudeSpec = Field(default_factory=AttitudeSpec)
 
 
 class ControlScenario(StrictModel):

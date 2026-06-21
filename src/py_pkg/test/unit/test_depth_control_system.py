@@ -82,3 +82,27 @@ class TestCalcAccSign:
         for t in (0.0, 0.1, 0.2):
             result = cs.calc_acc(pressure_pa=_gauge_pa_for_depth(50.0), time=t)
         assert result < 0
+
+
+class TestReset:
+    """`reset()` returns the controller to construction state so no PID
+    windup or stale setpoint carries over (mission stop)."""
+
+    def test_reset_clears_target_to_surface(self):
+        cs = _make_system(target_pressure_pa=_gauge_pa_for_depth(70.0))
+        cs.reset()
+        assert cs.target_pressure_pa == pytest.approx(0.0)
+
+    def test_reset_clears_pid_state(self):
+        cs = _make_system(target_pressure_pa=_gauge_pa_for_depth(70.0))
+        # Wind the integrator up with a sustained error.
+        for t in (0.0, 0.1, 0.2, 0.3, 0.4):
+            cs.calc_acc(pressure_pa=0.0, time=t)
+        assert cs.pid_pressure.integral != 0.0
+
+        cs.reset()
+        assert cs.pid_pressure.integral == pytest.approx(0.0)
+        assert cs.pid_pressure.prev_time is None
+        # Post-reset, the first call re-seeds prev_time and returns 0 again,
+        # exactly like a freshly constructed controller.
+        assert cs.calc_acc(pressure_pa=0.0, time=10.0) == pytest.approx(0.0)

@@ -10,17 +10,36 @@ Parameterized by a single ``scenario:=`` launch arg. The scenario YAML's
 ``py_pkg.scenarios.compile``; the ``rig:`` block is never read here.
 
 Composition (inputs -> outputs):
-    /imu/left           -> ekf_prefilter -> /imu/filtered/left
-    /imu/filtered/left  -> ekf_node      -> /position/estimation
-    /position/target +  -> depth_node    -> /bcu/rpm + /bcu/valves
-      /external/pressure
+    /imu                -> imu_prefilter -> /imu/filtered
+    /imu/filtered +     -> attitude_node -> /position/estimation
+      /external/pressure                    (roll/pitch from gravity; gauge
+      + /init/dive                          depth in position.z)
+    /position/target +  -> bcu_node    -> /bcu/rpm + /bcu/valves
+      /position/estimation
     /position/target +  -> acu_node      -> /acu/pitch + /acu/roll
       /position/estimation
     /path + /command    -> pathfinding_node -> /position/target
-    MQTT nautilus/cmd/* -> mqtt_bridge   -> /command + /path + /debug/bcu/rpm
-    /debug/bcu/rpm      -> bcu_debug     -> /bcu/rpm  (manual override)
+      (/command is std_msgs/Bool: true=start, false=stop. bcu_node and
+       acu_node also subscribe to /command and reset to a safe-silent state
+       on false.)
+    feedback + sensors  -> liveness_node -> /status/liveness (per-subsystem
+                                            DiagnosticArray; freshness watchdog)
+    MQTT nautilus/cmd/* -> mqtt_bridge   -> /command + /path + /debug/*
+                                            + /debug/reset
+    /debug/bcu/rpm +    -> bcu_debug     -> /bcu/rpm + /bcu/valves; drives the
+      /debug/bcu/valves +                   wire whenever it holds a command
+      /debug/emergency_surface              (emergency surface always acts).
+    /debug/acu/pitch +  -> acu_debug     -> /acu/pitch + /acu/roll; drives the
+      /debug/acu/roll                       wire whenever it holds a setpoint.
     /bcu/rpm            -> stm_com       -> UART (hardware only; gated by
                                             enable_stm_com:= launch arg)
+    /bcu/* + /acu/*     -> can_com       -> CAN PDO 0x181 (hardware only;
+                                            gated by enable_can_com:= launch arg)
+
+There is no manual-override flag. A controller drives its actuator only while
+it has an active mission target; on /command=false it emits one safe-stop and
+goes silent, freeing the wire for a debug node. The operator's red Reset button
+publishes /debug/reset to all-stop the debug nodes.
 """
 
 import os
@@ -47,36 +66,35 @@ def _wire_control_stack(context, *_args, **_kwargs):
     # `.control` half of the scenario is read here.
     from py_pkg.scenarios.compile import (
         params_for_acu_node,
-        params_for_depth_node,
+        params_for_bcu_node,
     )
     from py_pkg.scenarios.loader import load_scenario
 
     control = load_scenario(LaunchConfiguration("scenario").perform(context)).control
     mqtt_broker_host = LaunchConfiguration("mqtt_broker_host").perform(context)
     mqtt_broker_port = int(LaunchConfiguration("mqtt_broker_port").perform(context))
-    ekf_publish_enabled = (
-        LaunchConfiguration("ekf_publish_enabled").perform(context).lower() == "true"
+    lifeguard_timeout_s = float(
+        LaunchConfiguration("lifeguard_timeout_s").perform(context)
     )
     return [
         Node(
             package="py_pkg",
-            executable="ekf_prefilter",
-            name="ekf_prefilter",
+            executable="imu_prefilter",
+            name="imu_prefilter",
             output="screen",
         ),
         Node(
             package="py_pkg",
-            executable="ekf_node",
-            name="ekf_node",
+            executable="attitude_node",
+            name="attitude_node",
             output="screen",
-            parameters=[{"publish_enabled": ekf_publish_enabled}],
         ),
         Node(
             package="py_pkg",
-            executable="depth_node",
-            name="depth_control_node",
+            executable="bcu_node",
+            name="bcu_node",
             output="screen",
-            parameters=[params_for_depth_node(control)],
+            parameters=[params_for_bcu_node(control)],
         ),
         Node(
             package="py_pkg",
@@ -93,6 +111,12 @@ def _wire_control_stack(context, *_args, **_kwargs):
         ),
         Node(
             package="py_pkg",
+            executable="liveness_node",
+            name="liveness_node",
+            output="screen",
+        ),
+        Node(
+            package="py_pkg",
             executable="mqtt_bridge_node",
             name="mqtt_bridge",
             output="screen",
@@ -100,6 +124,7 @@ def _wire_control_stack(context, *_args, **_kwargs):
                 {
                     "broker_host": mqtt_broker_host,
                     "broker_port": mqtt_broker_port,
+                    "lifeguard_timeout_s": lifeguard_timeout_s,
                 }
             ],
         ),
@@ -111,10 +136,23 @@ def _wire_control_stack(context, *_args, **_kwargs):
         ),
         Node(
             package="py_pkg",
+            executable="acu_debug_node",
+            name="acu_debug",
+            output="screen",
+        ),
+        Node(
+            package="py_pkg",
             executable="stm_com_node",
             name="stm_com",
             output="screen",
             condition=IfCondition(LaunchConfiguration("enable_stm_com")),
+        ),
+        Node(
+            package="py_pkg",
+            executable="can_com_node",
+            name="can_com",
+            output="screen",
+            condition=IfCondition(LaunchConfiguration("enable_can_com")),
         ),
     ]
 
@@ -144,15 +182,13 @@ def generate_launch_description():
                 description="MQTT broker TCP port.",
             ),
             DeclareLaunchArgument(
-                "ekf_publish_enabled",
-                default_value="true",
+                "lifeguard_timeout_s",
+                default_value="15.0",
                 description=(
-                    "Let ekf_node publish /position/estimation. Set false to "
-                    "silence the EKF while its tuning is in flux -- the node "
-                    "still runs the math, but no Pose goes out, so the "
-                    "Telemetry tab's EKF panels freeze instead of jittering. "
-                    "Closed-loop dive control (depth + ACU pitch) does not "
-                    "depend on EKF output."
+                    "Dead-man window for the lifeguard failsafe: once armed "
+                    "(nautilus/cmd/lifeguard), this many seconds without a "
+                    "laptop heartbeat latches the emergency surface. Tests "
+                    "shorten it further."
                 ),
             ),
             DeclareLaunchArgument(
@@ -162,6 +198,18 @@ def generate_launch_description():
                     "Spawn stm_com_node, which opens /dev/serial0 to talk to "
                     "the STM32. Off by default so sim launches don't crash on "
                     "hosts without the UART device; set true on the Pi."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "enable_can_com",
+                default_value="false",
+                description=(
+                    "Spawn can_com_node, which binds a raw SocketCAN socket on "
+                    "can0 and heartbeats the actuator PDO (id 0x181) to the CU "
+                    "board. Off by default so sim/dev hosts without a CAN "
+                    "interface don't crash; set true on the vehicle (requires "
+                    "`ip link set can0 type can bitrate 125000 && ip link set "
+                    "up can0` first)."
                 ),
             ),
             OpaqueFunction(function=_wire_control_stack),

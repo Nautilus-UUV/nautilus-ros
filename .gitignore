@@ -43,3 +43,6 @@ CLAUDE.md
 flake.lock
 flake.nix
 
+# === Coding Agents ===
+.claude/
+

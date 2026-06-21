@@ -5,11 +5,11 @@ Pipeline under test (same as test_trim_neutral_sim, swapped mission):
     /path + /command -> pathfinding_node -> /position/target
                                           ^
                        /external/pressure -|
-    /position/target +-> depth_node       -> /bcu/rpm + /bcu/valves -> bridge -> Gazebo
+    /position/target +-> bcu_node       -> /bcu/rpm + /bcu/valves -> bridge -> Gazebo
     /position/target +-> acu_node         -> /acu/pitch + /acu/roll -> bridge -> Gazebo
                        /position/estimation
                           ^
-                          ekf_node <- ekf_prefilter <- /imu/left
+                          attitude_node <- imu_prefilter <- /imu/left
 
 The test loads ``MissionId.SURFACE = 2`` (no operator parameters) and
 asserts:
@@ -20,15 +20,15 @@ asserts:
     dwell — pathfinding_node returns to IDLE and stops broadcasting
     POSITION_TARGET.
 
-Tolerances are deliberately loose — the EKF is in the loop, and its
-known orientation drift (``src/nautilus-ros/docs/ekf_node_issues.md``)
-feeds the ACU. Only one Tier 3 test for SURFACE for now; a GT-pose
-mirror can be added later if the EKF-in-loop variant gets too flaky.
+Tolerances are deliberately loose — the estimator is in the loop, and
+any orientation drift it carries feeds the ACU. Only one Tier 3 test
+for SURFACE for now; a GT-pose mirror can be added later if the
+estimator-in-loop variant gets too flaky.
 
 Composed via ``nautilus_hal/launch/surface_sim.launch.py``.
 Marker-gated ``@pytest.mark.sim``; opt in with
 ``pytest -m sim test/sim/`` after sourcing the workspace install.
-``SURFACE_SIM_GUI=1`` shows the Gazebo GUI.
+``SIM_GUI=1`` shows the Gazebo GUI.
 """
 
 import math
@@ -60,9 +60,9 @@ from py_pkg.uuv_ros_core import (
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from sensor_msgs.msg import Imu
-from std_msgs.msg import Int32, String
+from std_msgs.msg import Bool, Int32
 
-from ._sim_helpers import reap_lingering_gz
+from ._sim_helpers import reap_lingering_gz, sim_gui_enabled
 
 GROUND_TRUTH_TOPIC = "/model/glider_nautilus/odometry"
 
@@ -74,12 +74,7 @@ def generate_test_description():
     # Reap MUST happen here, not in setUpClass.
     reap_lingering_gz()
 
-    gui_enabled = os.environ.get("SURFACE_SIM_GUI", "").lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    )
+    gui_enabled = sim_gui_enabled()
 
     surface_sim_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -123,8 +118,8 @@ class _SurfaceTestDriver(Node):
         self.path_pub = create_publisher_for_topic(self, UUVTopics.PATH)
         self.command_pub = create_publisher_for_topic(self, UUVTopics.COMMAND)
 
-        # IMU_LEFT readiness signal (same convention as the other Tier 3 tests).
-        create_subscription_for_topic(self, UUVTopics.IMU_LEFT, self._on_imu)
+        # IMU readiness signal (same convention as the other Tier 3 tests).
+        create_subscription_for_topic(self, UUVTopics.IMU, self._on_imu)
         create_subscription_for_topic(
             self, UUVTopics.EXTERNAL_PRESSURE, self._on_pressure
         )
@@ -157,8 +152,8 @@ class _SurfaceTestDriver(Node):
         self.path_pub.publish(cmd)
 
     def publish_start(self) -> None:
-        msg = String()
-        msg.data = "start"
+        msg = Bool()
+        msg.data = True
         self.command_pub.publish(msg)
 
 
@@ -208,10 +203,14 @@ class SurfaceSimTest(unittest.TestCase):
         """SURFACE mission -> gauge pressure ~0, then mission completes."""
         startup_timeout_s = 60.0
         post_ready_settle_s = 2.0
-        # 5 m ascent (BCU-bladder rate-limited) + 10 s dwell + margin. The
-        # trim test budgets 120 s for ~1.5 m, so 120 s for ~10 m of ascent
-        # plus the dwell window is the conservative ballpark.
-        mission_duration_s = 120.0
+        # ~5 m ascent (BCU-bladder rate-limited) + 10 s surface dwell + margin.
+        # Spawn is z=-5 (~49 kPa gauge); the BCU surfaces at the bladder-limited
+        # rate measured in sim (~300-340 Pa/s, ~0.03 m/s), so gauge pressure
+        # crosses SURFACE_THRESHOLD_PA (5 kPa) ~150 s after `start`, and the
+        # dwell completes ~10 s after that. 220 s leaves comfortable margin on
+        # top of the ~160 s the full ascent + dwell actually needs. (The trim
+        # test only moves ~1.5 m, so its 120 s budget doesn't transfer here.)
+        mission_duration_s = 220.0
         drain_s = 2.0
         # Last 5 s of the mission window — the dwell guarantees the glider
         # has been at the surface for at least 10 s by then.
@@ -221,18 +220,18 @@ class SurfaceSimTest(unittest.TestCase):
         # Allow one tick (0.1 s) of slop on top of that.
         no_target_window_s = 2.0
 
-        # Loose tolerances — EKF is in the loop. Tighten as the EKF stabilises.
+        # Loose tolerances — estimator is in the loop. Tighten as the estimator stabilises.
         v_linear_max = 0.10  # m/s
         omega_max = 0.15  # rad/s
 
-        # 1) Wait for sim. IMU_LEFT is the readiness signal.
+        # 1) Wait for sim. IMU is the readiness signal.
         sim_ready = self._spin_until(
             lambda: self.driver.imu_msg_count >= 1,
             timeout_s=startup_timeout_s,
         )
         self.assertTrue(
             sim_ready,
-            f"IMU_LEFT never arrived within {startup_timeout_s}s — "
+            f"IMU never arrived within {startup_timeout_s}s — "
             "is Gazebo up and is the model spawned with its IMU plugin?",
         )
 
@@ -334,8 +333,8 @@ class SurfaceSimTest(unittest.TestCase):
             mean_w,
             omega_max,
             f"mean |omega| over last {assert_window_s}s = {mean_w:.3f} rad/s "
-            f"(>= {omega_max} rad/s). ACU/EKF combination keeps disturbing "
-            "attitude — see docs/ekf_node_issues.md.",
+            f"(>= {omega_max} rad/s). ACU/estimator combination keeps disturbing "
+            "attitude.",
         )
 
         # 6e) Sanity: every odom pose finite + quaternion unit-norm.

@@ -8,10 +8,10 @@ with mismatched QoS will silently drop messages.
 Layout:
 * ``NodeHarness`` — generic: holds a node-under-test + tester node, drives
   them with an executor, and exposes ``spin_for`` / ``spin_until`` helpers.
-* ``_DepthTesterNode`` / ``_ACUTesterNode`` — per-node tester surfaces
+* ``_BCUTesterNode`` / ``_ACUTesterNode`` — per-node tester surfaces
   declaring the inbound publishers and outbound subscriptions specific to
   each node-under-test.
-* ``depth_node_harness`` / ``acu_node_harness`` — function-scoped pytest
+* ``bcu_node_harness`` / ``acu_node_harness`` — function-scoped pytest
   fixtures wiring node-under-test class + tester class into ``NodeHarness``.
 """
 
@@ -22,11 +22,17 @@ import time
 import pytest
 import rclpy
 from geometry_msgs.msg import Pose
-from nautilus_msgs.msg import BcuPumpCommand, MissionCommand
+from nautilus_msgs.msg import (
+    BcuPumpCommand,
+    BcuPumpUntilPressureCommand,
+    DiveInit,
+    MissionCommand,
+)
+from py_pkg.debug.acu_debug_node import AcuDebugNode
 from py_pkg.debug.bcu_debug_node import BcuDebugNode
 from py_pkg.path.pathfinding import PathfindingNode
 from py_pkg.pid.acu_node import ACUControlNode
-from py_pkg.pid.depth_node import DepthControlNode
+from py_pkg.pid.bcu_node import BCUNode
 from py_pkg.uuv_ros_core import (
     UUVTopics,
     create_publisher_for_topic,
@@ -34,7 +40,7 @@ from py_pkg.uuv_ros_core import (
 )
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
-from std_msgs.msg import Bool, Int16, Int32, String, UInt8
+from std_msgs.msg import Bool, Empty, Int16, Int32, UInt8
 
 
 def _isolated_ros_domain_id() -> int:
@@ -100,23 +106,28 @@ class NodeHarness:
 # ---------------------------------------------------------------------------
 
 
-class _DepthTesterNode(Node):
-    """Drives DepthControlNode and captures BCU_RPM + BCU_VALVES emissions."""
+class _BCUTesterNode(Node):
+    """Drives BCUNode and captures BCU_RPM + BCU_VALVES emissions."""
 
     def __init__(self):
-        super().__init__("depth_node_tester")
+        super().__init__("bcu_node_tester")
         self.received_rpm: list[int] = []
         self.received_valves: list[int] = []
 
         self.target_pose_pub = create_publisher_for_topic(
             self, UUVTopics.POSITION_TARGET
         )
-        self.external_pressure_pub = create_publisher_for_topic(
-            self, UUVTopics.EXTERNAL_PRESSURE
+        # Depth measurement now rides POSITION_ESTIMATION.position.z (gauge Pa),
+        # already gauged by attitude_node -- bcu_node no longer subscribes to
+        # EXTERNAL_PRESSURE or holds a SurfaceReference.
+        self.estimation_pose_pub = create_publisher_for_topic(
+            self, UUVTopics.POSITION_ESTIMATION
         )
-        self.manual_override_pub = create_publisher_for_topic(
-            self, UUVTopics.CONTROL_MANUAL_OVERRIDE
+        self.tank_pressure_pub = create_publisher_for_topic(
+            self, UUVTopics.BCU_PRESSURE
         )
+        self.dive_init_pub = create_publisher_for_topic(self, UUVTopics.DIVE_INIT)
+        self.command_pub = create_publisher_for_topic(self, UUVTopics.COMMAND)
         self.bcu_rpm_sub = create_subscription_for_topic(
             self, UUVTopics.BCU_RPM, self._on_rpm
         )
@@ -131,28 +142,51 @@ class _DepthTesterNode(Node):
         self.received_valves.append(int(msg.data))
 
     def publish_target_pressure(self, value_pa: float) -> None:
-        # depth_node treats position.z as the gauge-pressure setpoint
+        # bcu_node treats position.z as the gauge-pressure setpoint
         # (Pa). Other Pose fields are zeroed.
         msg = Pose()
         msg.position.z = float(value_pa)
         self.target_pose_pub.publish(msg)
 
-    def publish_external_pressure(self, value_pa: int) -> None:
+    def publish_depth_gauge(self, gauge_pa: float) -> None:
+        # The depth measurement: POSITION_ESTIMATION.position.z carries the
+        # gauge pressure (Pa, Z-positive-down) attitude_node already computed.
+        # bcu_node reads it straight off position.z -- no ingress conversion.
+        msg = Pose()
+        msg.position.z = float(gauge_pa)
+        self.estimation_pose_pub.publish(msg)
+
+    def publish_tank_pressure(self, value_pa: int) -> None:
+        # BCU_PRESSURE in the tank sensor's own frame; feeds the output clamp.
         msg = Int32()
         msg.data = int(value_pa)
-        self.external_pressure_pub.publish(msg)
+        self.tank_pressure_pub.publish(msg)
 
-    def publish_manual_override(self, active: bool) -> None:
+    def publish_dive_init(
+        self,
+        surface_pressure_pa: float = 0.0,
+        tank_empty_pa: float = 0.0,
+        tank_full_pa: float = 0.0,
+    ) -> None:
+        msg = DiveInit()
+        msg.surface_pressure_pa = float(surface_pressure_pa)
+        msg.tank_empty_pa = float(tank_empty_pa)
+        msg.tank_full_pa = float(tank_full_pa)
+        self.dive_init_pub.publish(msg)
+
+    def publish_command(self, start: bool) -> None:
+        # bcu_node subscribes to /command and resets to a safe-silent state
+        # on false (the old CONTROL_RESET path, now folded into /command).
         msg = Bool()
-        msg.data = bool(active)
-        self.manual_override_pub.publish(msg)
+        msg.data = bool(start)
+        self.command_pub.publish(msg)
 
 
-class DepthNodeHarness(NodeHarness):
-    """NodeHarness specialised for DepthControlNode + _DepthTesterNode."""
+class BCUNodeHarness(NodeHarness):
+    """NodeHarness specialised for BCUNode + _BCUTesterNode."""
 
     def __init__(self):
-        super().__init__(DepthControlNode, _DepthTesterNode)
+        super().__init__(BCUNode, _BCUTesterNode)
 
     @property
     def received_rpm(self) -> list[int]:
@@ -165,17 +199,32 @@ class DepthNodeHarness(NodeHarness):
     def publish_target_pressure(self, value_pa: float) -> None:
         self.tester.publish_target_pressure(value_pa)
 
-    def publish_external_pressure(self, value_pa: int) -> None:
-        self.tester.publish_external_pressure(value_pa)
+    def publish_depth_gauge(self, gauge_pa: float) -> None:
+        self.tester.publish_depth_gauge(gauge_pa)
 
-    def publish_manual_override(self, active: bool) -> None:
-        self.tester.publish_manual_override(active)
+    def publish_tank_pressure(self, value_pa: int) -> None:
+        self.tester.publish_tank_pressure(value_pa)
+
+    def publish_dive_init(
+        self,
+        surface_pressure_pa: float = 0.0,
+        tank_empty_pa: float = 0.0,
+        tank_full_pa: float = 0.0,
+    ) -> None:
+        self.tester.publish_dive_init(
+            surface_pressure_pa=surface_pressure_pa,
+            tank_empty_pa=tank_empty_pa,
+            tank_full_pa=tank_full_pa,
+        )
+
+    def publish_command(self, start: bool) -> None:
+        self.tester.publish_command(start)
 
 
 @pytest.fixture
-def depth_node_harness():
+def bcu_node_harness():
     """Function-scoped harness. Tears both nodes down on exit."""
-    harness = DepthNodeHarness()
+    harness = BCUNodeHarness()
     try:
         yield harness
     finally:
@@ -203,9 +252,12 @@ class _ACUTesterNode(Node):
     ACU_ROLL (Int16 cdeg).
 
     POSITION_TARGET carries the roll setpoint in its orientation and the
-    *target gauge pressure* on position.z (pathfinding's TRIM
-    convention). EXTERNAL_PRESSURE carries the *absolute* pressure
-    sensor reading the bang-bang pitch loop compares against."""
+    *target gauge pressure* on position.z (pathfinding's TRIM convention).
+    POSITION_ESTIMATION is now the single vehicle-state input: orientation =
+    current roll for the roll PID, position.z = current gauge depth (Pa) the
+    bang-bang pitch loop compares against. attitude_node owns the
+    absolute->gauge conversion, so there's no EXTERNAL_PRESSURE/DIVE_INIT path
+    on the node anymore."""
 
     def __init__(self):
         super().__init__("acu_node_tester")
@@ -218,9 +270,7 @@ class _ACUTesterNode(Node):
         self.estimation_pose_pub = create_publisher_for_topic(
             self, UUVTopics.POSITION_ESTIMATION
         )
-        self.external_pressure_pub = create_publisher_for_topic(
-            self, UUVTopics.EXTERNAL_PRESSURE
-        )
+        self.command_pub = create_publisher_for_topic(self, UUVTopics.COMMAND)
         self.pitch_sub = create_subscription_for_topic(
             self, UUVTopics.ACU_PITCH, self._on_pitch
         )
@@ -235,10 +285,12 @@ class _ACUTesterNode(Node):
         self.received_roll_cdeg.append(int(msg.data))
 
     @staticmethod
-    def _pose(roll_deg: float, target_pressure_pa: float = 0.0) -> Pose:
+    def _pose(roll_deg: float, pressure_pa: float = 0.0) -> Pose:
+        # position.z doubles as the pressure channel: a target gauge pressure
+        # on POSITION_TARGET, a current gauge depth on POSITION_ESTIMATION.
         qx, qy, qz, qw = _quat_from_roll_deg(roll_deg)
         msg = Pose()
-        msg.position.z = float(target_pressure_pa)
+        msg.position.z = float(pressure_pa)
         msg.orientation.x = float(qx)
         msg.orientation.y = float(qy)
         msg.orientation.z = float(qz)
@@ -250,13 +302,19 @@ class _ACUTesterNode(Node):
     ) -> None:
         self.target_pose_pub.publish(self._pose(roll_deg, target_pressure_pa))
 
-    def publish_current_attitude(self, roll_deg: float = 0.0) -> None:
-        self.estimation_pose_pub.publish(self._pose(roll_deg))
+    def publish_current_attitude(
+        self, roll_deg: float = 0.0, gauge_pa: float = 0.0
+    ) -> None:
+        # The single vehicle-state pose: roll (orientation) + gauge depth
+        # (position.z) the bang-bang pitch leg select reads directly.
+        self.estimation_pose_pub.publish(self._pose(roll_deg, gauge_pa))
 
-    def publish_external_pressure(self, value_pa: int) -> None:
-        msg = Int32()
-        msg.data = int(value_pa)
-        self.external_pressure_pub.publish(msg)
+    def publish_command(self, start: bool) -> None:
+        # acu_node subscribes to /command and resets to a safe-silent state
+        # on false (the old CONTROL_RESET path, now folded into /command).
+        msg = Bool()
+        msg.data = bool(start)
+        self.command_pub.publish(msg)
 
 
 class ACUNodeHarness(NodeHarness):
@@ -280,11 +338,13 @@ class ACUNodeHarness(NodeHarness):
             roll_deg=roll_deg, target_pressure_pa=target_pressure_pa
         )
 
-    def publish_current_attitude(self, roll_deg: float = 0.0) -> None:
-        self.tester.publish_current_attitude(roll_deg=roll_deg)
+    def publish_current_attitude(
+        self, roll_deg: float = 0.0, gauge_pa: float = 0.0
+    ) -> None:
+        self.tester.publish_current_attitude(roll_deg=roll_deg, gauge_pa=gauge_pa)
 
-    def publish_external_pressure(self, value_pa: int) -> None:
-        self.tester.publish_external_pressure(value_pa)
+    def publish_command(self, start: bool) -> None:
+        self.tester.publish_command(start)
 
 
 @pytest.fixture
@@ -312,9 +372,6 @@ class _PathfindingTesterNode(Node):
         self.estimation_pub = create_publisher_for_topic(
             self, UUVTopics.POSITION_ESTIMATION
         )
-        self.external_pressure_pub = create_publisher_for_topic(
-            self, UUVTopics.EXTERNAL_PRESSURE
-        )
         self.command_pub = create_publisher_for_topic(self, UUVTopics.COMMAND)
         self.path_pub = create_publisher_for_topic(self, UUVTopics.PATH)
         self.target_sub = create_subscription_for_topic(
@@ -325,6 +382,8 @@ class _PathfindingTesterNode(Node):
         self.received_targets.append(msg)
 
     def publish_pose_estimation(self, x: float, y: float, z: float) -> None:
+        # position.z is gauge depth (Pa); pathfinding reads it straight off the
+        # pose (attitude_node already gauged it) -- no absolute->gauge step here.
         msg = Pose()
         msg.position.x = float(x)
         msg.position.y = float(y)
@@ -332,15 +391,15 @@ class _PathfindingTesterNode(Node):
         msg.orientation.w = 1.0
         self.estimation_pub.publish(msg)
 
-    def publish_external_pressure(self, value_pa: int) -> None:
-        # EXTERNAL_PRESSURE is absolute Pa; the node converts to gauge.
-        msg = Int32()
-        msg.data = int(value_pa)
-        self.external_pressure_pub.publish(msg)
+    def publish_depth_gauge(self, gauge_pa: float) -> None:
+        # Single depth path now: the gauge value attitude_node would have
+        # computed, delivered on POSITION_ESTIMATION.position.z. Both gates
+        # _tick and feeds the mission's pressure-driven phases.
+        self.publish_pose_estimation(0.0, 0.0, gauge_pa)
 
-    def publish_command(self, command: str) -> None:
-        msg = String()
-        msg.data = command
+    def publish_command(self, start: bool) -> None:
+        msg = Bool()
+        msg.data = bool(start)
         self.command_pub.publish(msg)
 
     def publish_mission_command(
@@ -371,11 +430,11 @@ class PathfindingNodeHarness(NodeHarness):
     def publish_pose_estimation(self, x: float, y: float, z: float) -> None:
         self.tester.publish_pose_estimation(x, y, z)
 
-    def publish_external_pressure(self, value_pa: int) -> None:
-        self.tester.publish_external_pressure(value_pa)
+    def publish_depth_gauge(self, gauge_pa: float) -> None:
+        self.tester.publish_depth_gauge(gauge_pa)
 
-    def publish_command(self, command: str) -> None:
-        self.tester.publish_command(command)
+    def publish_command(self, start: bool) -> None:
+        self.tester.publish_command(start)
 
     def publish_mission_command(
         self,
@@ -408,8 +467,11 @@ def pathfinding_node_harness():
 
 
 class _BcuDebugTesterNode(Node):
-    """Drives BcuDebugNode and captures BCU_RPM + CONTROL_MANUAL_OVERRIDE
-    emissions with timestamps.
+    """Drives BcuDebugNode and captures BCU_RPM + BCU_VALVES emissions
+    with timestamps.
+
+    There's no override gate now -- the node drives the wire whenever it holds
+    a command. The tester publishes DEBUG_RESET to exercise the red all-stop.
 
     The debug node owns a duration timer, so tests need to reason about
     *when* each rpm value arrives -- a passthrough subscriber that only
@@ -418,27 +480,64 @@ class _BcuDebugTesterNode(Node):
     def __init__(self):
         super().__init__("bcu_debug_tester")
         self.received: list[tuple[float, int]] = []
-        self.override_events: list[tuple[float, bool]] = []
+        self.received_valves: list[int] = []
 
         self.cmd_pub = create_publisher_for_topic(self, UUVTopics.DEBUG_BCU_RPM)
+        self.pump_until_pub = create_publisher_for_topic(
+            self, UUVTopics.DEBUG_BCU_RPM_UNTIL_PRESSURE
+        )
+        self.tank_pressure_pub = create_publisher_for_topic(
+            self, UUVTopics.BCU_PRESSURE
+        )
+        self.valves_cmd_pub = create_publisher_for_topic(
+            self, UUVTopics.DEBUG_BCU_VALVES
+        )
+        self.emergency_pub = create_publisher_for_topic(
+            self, UUVTopics.DEBUG_EMERGENCY_SURFACE
+        )
+        self.reset_pub = create_publisher_for_topic(self, UUVTopics.DEBUG_RESET)
         self.rpm_sub = create_subscription_for_topic(
             self, UUVTopics.BCU_RPM, self._on_rpm
         )
-        self.override_sub = create_subscription_for_topic(
-            self, UUVTopics.CONTROL_MANUAL_OVERRIDE, self._on_override
+        self.valves_sub = create_subscription_for_topic(
+            self, UUVTopics.BCU_VALVES, self._on_valves
         )
 
     def _on_rpm(self, msg: Int16) -> None:
         self.received.append((time.monotonic(), int(msg.data)))
 
-    def _on_override(self, msg: Bool) -> None:
-        self.override_events.append((time.monotonic(), bool(msg.data)))
+    def _on_valves(self, msg: UInt8) -> None:
+        self.received_valves.append(int(msg.data))
 
     def publish_pump(self, rpm: int, duration_s: float) -> None:
         msg = BcuPumpCommand()
         msg.rpm = int(rpm)
         msg.duration_s = float(duration_s)
         self.cmd_pub.publish(msg)
+
+    def publish_pump_until_pressure(self, rpm: int, target_pressure_pa: int) -> None:
+        msg = BcuPumpUntilPressureCommand()
+        msg.rpm = int(rpm)
+        msg.target_pressure_pa = int(target_pressure_pa)
+        self.pump_until_pub.publish(msg)
+
+    def publish_tank_pressure(self, value_pa: int) -> None:
+        msg = Int32()
+        msg.data = int(value_pa)
+        self.tank_pressure_pub.publish(msg)
+
+    def publish_valves(self, mask: int) -> None:
+        msg = UInt8()
+        msg.data = int(mask)
+        self.valves_cmd_pub.publish(msg)
+
+    def publish_emergency(self, active: bool) -> None:
+        msg = Bool()
+        msg.data = bool(active)
+        self.emergency_pub.publish(msg)
+
+    def publish_reset(self) -> None:
+        self.reset_pub.publish(Empty())
 
 
 class BcuDebugNodeHarness(NodeHarness):
@@ -456,21 +555,113 @@ class BcuDebugNodeHarness(NodeHarness):
         return [rpm for _, rpm in self.tester.received]
 
     @property
-    def override_events(self) -> list[tuple[float, bool]]:
-        return self.tester.override_events
-
-    @property
-    def override_states(self) -> list[bool]:
-        return [state for _, state in self.tester.override_events]
+    def received_valves(self) -> list[int]:
+        return self.tester.received_valves
 
     def publish_pump(self, rpm: int, duration_s: float) -> None:
         self.tester.publish_pump(rpm, duration_s)
+
+    def publish_pump_until_pressure(self, rpm: int, target_pressure_pa: int) -> None:
+        self.tester.publish_pump_until_pressure(rpm, target_pressure_pa)
+
+    def publish_tank_pressure(self, value_pa: int) -> None:
+        self.tester.publish_tank_pressure(value_pa)
+
+    def publish_valves(self, mask: int) -> None:
+        self.tester.publish_valves(mask)
+
+    def publish_emergency(self, active: bool) -> None:
+        self.tester.publish_emergency(active)
+
+    def publish_reset(self) -> None:
+        self.tester.publish_reset()
 
 
 @pytest.fixture
 def bcu_debug_node_harness():
     """Function-scoped harness. Tears both nodes down on exit."""
     harness = BcuDebugNodeHarness()
+    try:
+        yield harness
+    finally:
+        harness.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# ACU debug node harness
+# ---------------------------------------------------------------------------
+
+
+class _AcuDebugTesterNode(Node):
+    """Drives AcuDebugNode and captures ACU_PITCH / ACU_ROLL emissions.
+
+    There's no override gate now -- the node holds whatever pitch/roll it's
+    commanded. The tester publishes DEBUG_RESET to exercise the release to
+    neutral + silent."""
+
+    def __init__(self):
+        super().__init__("acu_debug_tester")
+        self.received_pitch_mm: list[int] = []
+        self.received_roll_cdeg: list[int] = []
+
+        self.pitch_cmd_pub = create_publisher_for_topic(self, UUVTopics.DEBUG_ACU_PITCH)
+        self.roll_cmd_pub = create_publisher_for_topic(self, UUVTopics.DEBUG_ACU_ROLL)
+        self.reset_pub = create_publisher_for_topic(self, UUVTopics.DEBUG_RESET)
+        self.pitch_sub = create_subscription_for_topic(
+            self, UUVTopics.ACU_PITCH, self._on_pitch
+        )
+        self.roll_sub = create_subscription_for_topic(
+            self, UUVTopics.ACU_ROLL, self._on_roll
+        )
+
+    def _on_pitch(self, msg: Int16) -> None:
+        self.received_pitch_mm.append(int(msg.data))
+
+    def _on_roll(self, msg: Int16) -> None:
+        self.received_roll_cdeg.append(int(msg.data))
+
+    def publish_pitch(self, mm: int) -> None:
+        msg = Int16()
+        msg.data = int(mm)
+        self.pitch_cmd_pub.publish(msg)
+
+    def publish_roll(self, cdeg: int) -> None:
+        msg = Int16()
+        msg.data = int(cdeg)
+        self.roll_cmd_pub.publish(msg)
+
+    def publish_reset(self) -> None:
+        self.reset_pub.publish(Empty())
+
+
+class AcuDebugNodeHarness(NodeHarness):
+    """NodeHarness specialised for AcuDebugNode + _AcuDebugTesterNode."""
+
+    def __init__(self):
+        super().__init__(AcuDebugNode, _AcuDebugTesterNode)
+
+    @property
+    def received_pitch_mm(self) -> list[int]:
+        return self.tester.received_pitch_mm
+
+    @property
+    def received_roll_cdeg(self) -> list[int]:
+        return self.tester.received_roll_cdeg
+
+    def publish_pitch(self, mm: int) -> None:
+        self.tester.publish_pitch(mm)
+
+    def publish_roll(self, cdeg: int) -> None:
+        self.tester.publish_roll(cdeg)
+
+    def publish_reset(self) -> None:
+        self.tester.publish_reset()
+
+
+@pytest.fixture
+def acu_debug_node_harness():
+    """Function-scoped harness. Tears both nodes down on exit."""
+    harness = AcuDebugNodeHarness()
     try:
         yield harness
     finally:

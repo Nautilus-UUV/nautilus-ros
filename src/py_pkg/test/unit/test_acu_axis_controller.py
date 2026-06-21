@@ -204,3 +204,38 @@ class TestPIDPathWired:
         assert cmd1 is not None and cmd2 is not None and cmd3 is not None
         assert cmd2 > cmd1
         assert cmd3 > cmd2
+
+
+class TestReset:
+    """`reset()` returns the axis to construction state: PID memory wiped
+    and the publish guard re-armed so the next update re-primes (mission
+    stop)."""
+
+    def test_reset_rearms_prime_and_clears_guard(self):
+        axis = make_axis(kp=0.5, command_tolerance=0.0)
+        _prime(axis, current_pos=0.0)
+        # Drive it so last_commanded_pos and _primed are set.
+        assert axis.update(desired_value=10.0, time=_t(1)) is not None
+        assert axis.last_commanded_pos is not None
+        assert axis._primed is True
+
+        axis.reset()
+        assert axis.last_commanded_pos is None
+        assert axis._primed is False
+        assert axis.current_pos == pytest.approx(0.0)
+        assert axis.target_pos == pytest.approx(0.0)
+        # First post-reset call is the swallowed prime again -> None.
+        axis.update_sensor(0.0)
+        assert axis.update(desired_value=0.0, time=_t(10)) is None
+
+    def test_reset_clears_pid_integral(self):
+        axis = make_axis(kp=0.0, command_tolerance=0.0)
+        axis.pid.ki = 0.5
+        _prime(axis, current_pos=0.0)
+        for step in (1, 2, 3):
+            axis.update(desired_value=10.0, time=_t(step))
+        assert axis.pid.integral != 0.0
+
+        axis.reset()
+        assert axis.pid.integral == pytest.approx(0.0)
+        assert axis.pid.prev_time is None

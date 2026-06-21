@@ -10,8 +10,7 @@ seed: 0
 rig:
   faults:
     bcu_rpm:
-      probability_per_sec: 0.0
-      duration_sec: 0.0
+      mttf_sec: 0.0
   hydrodynamics:
     drag_xU: -151.2
     drag_yV: -11.2

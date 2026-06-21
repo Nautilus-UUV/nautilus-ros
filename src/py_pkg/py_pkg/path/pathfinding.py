@@ -1,26 +1,47 @@
 #!/usr/bin/env python3
 """Mission executor.
 
-Dispatches `/path` (`nautilus_msgs/MissionCommand`) through the mission
-factory and pumps the resulting profile's setpoint onto `POSITION_TARGET`
-at 10 Hz. `/command` (start/stop/abort) drives the state machine.
+Turns an operator's mission request into a stream of depth/attitude
+setpoints for the controllers downstream.
 
-`POSITION_TARGET.position.z` is gauge Pa (depth_node's contract);
-`orientation` carries roll/pitch for acu_node.
+Inputs (what this node listens to):
+  - /path    (MissionCommand) -- which mission to run, plus its parameters
+               (target pressure, glide angle, how many times to resurface).
+  - /command (Bool)           -- the operator's run intent: true=start,
+               false=stop.
+  - position estimate (Pose)  -- current vehicle state. position.z is the
+               depth expressed as a gauge pressure (0 at the surface);
+               orientation is the current attitude.
+
+Output:
+  - POSITION_TARGET (Pose)    -- the setpoint the controllers track.
+               position.z is gauge Pa (bcu_node's contract); orientation
+               carries the roll/pitch targets for acu_node.
+
+The node's situation is just read off three fields each tick:
+  - _mission        -- is a mission loaded?
+  - _mission_t0_s   -- has it started running? (None until start, then the
+                       wall-clock time it began -- so a value means running.)
+  - _run_requested  -- does the operator currently want it running?
+
+_tick handles the one transition that matters: once a mission is loaded,
+the operator has asked to run, and we have a pressure reading, it calls
+mission.start() once and stamps t0. A stop clears everything; the
+controllers reset themselves off the same /command=false (they subscribe
+to it directly), so this node doesn't have to tell them.
 """
 
 import rclpy
 from geometry_msgs.msg import Pose
 from nautilus_msgs.msg import MissionCommand
-from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from std_msgs.msg import String
+from std_msgs.msg import Bool
 
-from ..physics import gauge_pressure_pa
 from ..uuv_ros_core import (
     UUVTopics,
     create_publisher_for_topic,
     create_subscription_for_topic,
+    spin_node,
 )
 from .missions import MissionProfile, MissionState, create_mission
 
@@ -33,20 +54,15 @@ class PathfindingNode(Node):
 
         self._mission: MissionProfile | None = None
         self._mission_cmd: MissionCommand | None = None
-        self._mode: str = "IDLE"  # IDLE | LOADED | RUNNING | STOPPED
+        # None until the mission starts; once set, it's the start time (=> running).
         self._mission_t0_s: float | None = None
-        # `start` may arrive before `/path` or before pressure ingress;
-        # buffer the intent and drain it once preconditions hold.
-        self._start_pending: bool = False
+        self._run_requested: bool = False
 
         self._current_pressure_pa: float | None = None
         self._current_pose: Pose | None = None
 
         create_subscription_for_topic(
             self, UUVTopics.POSITION_ESTIMATION, self._on_pose
-        )
-        create_subscription_for_topic(
-            self, UUVTopics.EXTERNAL_PRESSURE, self._on_pressure
         )
         create_subscription_for_topic(self, UUVTopics.COMMAND, self._on_command)
         create_subscription_for_topic(self, UUVTopics.PATH, self._on_path)
@@ -58,111 +74,89 @@ class PathfindingNode(Node):
 
     def _on_pose(self, msg: Pose) -> None:
         self._current_pose = msg
-
-    def _on_pressure(self, msg) -> None:
-        # EXTERNAL_PRESSURE is absolute Pa; the depth stack works in gauge.
-        self._current_pressure_pa = gauge_pressure_pa(float(msg.data))
-        if self._start_pending:
-            self._handle_start()
+        self._current_pressure_pa = float(msg.position.z)
 
     def _on_path(self, msg: MissionCommand) -> None:
+        # /path is a latched topic: its last message is kept and re-sent to any
+        # subscriber that (re)connects later, so we can receive the same
+        # mission more than once. We ignore a command we're already running so we
+        # don't reset the timestamp.
+        if (
+            self._mission_cmd is not None
+            and msg.mission_id == self._mission_cmd.mission_id
+        ):
+            return
         try:
             self._mission = create_mission(msg.mission_id)
         except ValueError as exc:
             self.get_logger().error(str(exc))
             return
         self._mission_cmd = msg
-        self._mode = "LOADED"
         self._mission_t0_s = None
         self.get_logger().info(f"Loaded mission_id={msg.mission_id}.")
-        if self._start_pending:
-            self._handle_start()
 
-    def _on_command(self, msg: String) -> None:
-        cmd = msg.data.strip().lower()
-        self.get_logger().info(f"Received /command: '{cmd}'")
-        if cmd == "start":
-            self._handle_start()
-        elif cmd == "stop":
-            self._start_pending = False
-            self._mode = "STOPPED"
-            self.get_logger().info("Mode STOPPED (holding last setpoint).")
-        elif cmd == "abort":
-            self._handle_abort()
-        else:
-            self.get_logger().warn(f"Unknown /command: {cmd!r}")
-
-    def _handle_start(self) -> None:
-        if (
-            self._mission is None
-            or self._mission_cmd is None
-            or self._current_pressure_pa is None
-        ):
-            if not self._start_pending:
-                self.get_logger().info(
-                    "Start queued; waiting for /path and pressure ingress."
-                )
-            self._start_pending = True
-            return
-        self._mission.start(
-            MissionState(
-                pose=self._current_pose,
-                target_pressure_pa=float(self._mission_cmd.target_pressure_pa),
-                angle_rad=float(self._mission_cmd.angle_rad),
-                n_resurfaces=int(self._mission_cmd.n_resurfaces),
-            )
+    def _on_command(self, msg: Bool) -> None:
+        self._run_requested = bool(msg.data)
+        self.get_logger().info(
+            f"Received /command: {'start' if self._run_requested else 'stop'}"
         )
-        self._mission_t0_s = self.get_clock().now().nanoseconds / 1e9
-        self._mode = "RUNNING"
-        self._start_pending = False
-        self.get_logger().info("Mode RUNNING.")
+        if not self._run_requested:
+            # Stop: forget the mission and go back to the initial state. We
+            # don't publish anything -- the controllers see this same
+            # /command=false themselves and reset, so there's nothing to send.
+            self._reset()
+            self.get_logger().info("Mission stopped; stack reset to initial state.")
 
-    def _handle_abort(self) -> None:
-        # Abort -> command resurface: depth_node will drive BCU to push the
-        # glider up; ACU is left at neutral attitude.
+    def _reset(self) -> None:
+        """Drop the loaded mission and the run intent -> nothing loaded."""
         self._mission = None
         self._mission_cmd = None
-        self._mode = "IDLE"
         self._mission_t0_s = None
-        self._start_pending = False
-        pose = Pose()
-        pose.position.z = 0.0
-        pose.orientation.w = 1.0
-        self._target_pub.publish(pose)
-        self.get_logger().info("Mode ABORTED (resurfacing).")
+        self._run_requested = False
 
     def _tick(self) -> None:
+        # Start the mission once everything lines up: the operator asked to run,
+        # a mission is loaded, it isn't already running, and we have a pressure
+        # reading. The "not already running" check (_mission_t0_s is None) means
+        # a repeated /command can't restart a mission that's already underway.
         if (
-            self._mode != "RUNNING"
-            or self._mission is None
-            or self._mission_t0_s is None
-            or self._current_pressure_pa is None
+            self._run_requested
+            and self._mission is not None
+            and self._mission_t0_s is None
+            and self._current_pressure_pa is not None
         ):
+            self._mission.start(
+                MissionState(
+                    pose=self._current_pose,
+                    target_pressure_pa=float(self._mission_cmd.target_pressure_pa),
+                    angle_rad=float(self._mission_cmd.angle_rad),
+                    n_resurfaces=int(self._mission_cmd.n_resurfaces),
+                )
+            )
+            self._mission_t0_s = self.get_clock().now().nanoseconds / 1e9
+            self.get_logger().info("Mission running.")
+
+        if self._mission_t0_s is None or self._current_pressure_pa is None:
             return
         mission_t = self.get_clock().now().nanoseconds / 1e9 - self._mission_t0_s
         self._mission.update(self._current_pressure_pa)
         if self._mission.is_done(mission_t):
             self.get_logger().info("Mission complete.")
-            self._mode = "IDLE"
-            self._mission = None
-            self._mission_cmd = None
-            self._mission_t0_s = None
+            self._reset()
             return
-        self._target_pub.publish(self._mission.reference(mission_t))
+        # A mission can choose not to issue a setpoint this tick (reference
+        # returns None) -- e.g. SURFACE/SAWTOOTH while between phases. When that
+        # happens we publish nothing, so the controllers just hold their last
+        # target instead of chasing a stale one.
+        ref = self._mission.reference(mission_t)
+        if ref is not None:
+            self._target_pub.publish(ref)
 
 
 def main(args=None):
-    # Catch SIGINT/SIGTERM so the process exits 0 instead of 1 on Ctrl-C —
-    # otherwise launch_testing's exit-code check intermittently fails.
     rclpy.init(args=args)
     node = PathfindingNode()
-    try:
-        rclpy.spin(node)
-    except (KeyboardInterrupt, ExternalShutdownException):
-        pass
-    finally:
-        node.destroy_node()
-        rclpy.try_shutdown()
+    spin_node(node)
 
 
 if __name__ == "__main__":

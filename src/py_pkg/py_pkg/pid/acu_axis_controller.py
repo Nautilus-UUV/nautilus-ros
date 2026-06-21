@@ -1,6 +1,11 @@
 from py_pkg.utils_controls import PIDController
 
 
+"""
+
+DEPRECATED; It is not implemented, ingore for now
+"""
+
 class AxisController:
     """Controls a single axis (roll or pitch) of the vehicle.
 
@@ -57,6 +62,19 @@ class AxisController:
         # (asymmetric clamps where clamp(0) ≠ 0, saturated targets, etc.)
         # would never publish.
         self.last_commanded_pos: float | None = None
+        self._primed = False
+
+    def reset(self):
+        """Wipe controller memory back to construction state.
+
+        Clears the PID's integrator/filter/timing and the redundant-publish
+        guard so the next `update` re-primes exactly as it did at boot. Used
+        when the ACU is told to go fresh (mission stop).
+        """
+        self.pid.reset()
+        self.current_pos = 0.0
+        self.target_pos = 0.0
+        self.last_commanded_pos = None
         self._primed = False
 
     def update_sensor(self, measured_pos):
