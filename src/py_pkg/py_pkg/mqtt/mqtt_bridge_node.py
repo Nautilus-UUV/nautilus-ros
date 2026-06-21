@@ -153,6 +153,12 @@ EGRESS_MAP: tuple[EgressMapping, ...] = (
         UUVTopics.EXTERNAL_PRESSURE, "nautilus/telemetry/external/pressure", 10.0
     ),
     EgressMapping(UUVTopics.BCU_RPM, "nautilus/telemetry/bcu/rpm", 10.0),
+    # Measured pump RPM the STM beats back (~1 Hz on hardware; the sim HAL
+    # publishes the same shape). 10 Hz here is just a ceiling, so the natural
+    # rate passes through unchanged -- lets the UI show commanded vs reported.
+    EgressMapping(
+        UUVTopics.BCU_FEEDBACK_RPM, "nautilus/telemetry/bcu/feedback/rpm", 10.0
+    ),
     EgressMapping(
         UUVTopics.BCU_VALVES, "nautilus/telemetry/bcu/valves", 0.0, on_change=True
     ),
