@@ -138,6 +138,12 @@ EGRESS_MAP: tuple[EgressMapping, ...] = (
     EgressMapping(
         UUVTopics.EXTERNAL_PRESSURE, "nautilus/telemetry/external/pressure", 10.0
     ),
+    # Seawater temperature off the STM. Slowly varying (~1 Hz housekeeping on
+    # hardware), so the 10 Hz cap is just a ceiling -- the native rate passes
+    # through unthrottled, matching the external/pressure sibling above.
+    EgressMapping(
+        UUVTopics.EXTERNAL_TEMPERATURE, "nautilus/telemetry/external/temperature", 10.0
+    ),
     EgressMapping(UUVTopics.BCU_RPM, "nautilus/telemetry/bcu/rpm", 10.0),
     # Measured pump RPM from the STM (~1 Hz on hardware; the sim HAL matches the
     # shape). The 10 Hz cap sits above that rate, so it passes through and the
