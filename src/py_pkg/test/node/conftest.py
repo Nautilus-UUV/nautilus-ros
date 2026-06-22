@@ -406,14 +406,16 @@ class _PathfindingTesterNode(Node):
         self,
         mission_id: int,
         target_pressure_pa: float = 0.0,
+        shallow_pressure_pa: float = 0.0,
         angle_rad: float = 0.0,
-        n_resurfaces: int = 0,
+        n_oscillations: int = 0,
     ) -> None:
         msg = MissionCommand()
         msg.mission_id = int(mission_id)
         msg.target_pressure_pa = float(target_pressure_pa)
+        msg.shallow_pressure_pa = float(shallow_pressure_pa)
         msg.angle_rad = float(angle_rad)
-        msg.n_resurfaces = int(n_resurfaces)
+        msg.n_oscillations = int(n_oscillations)
         self.path_pub.publish(msg)
 
 
@@ -440,14 +442,16 @@ class PathfindingNodeHarness(NodeHarness):
         self,
         mission_id: int,
         target_pressure_pa: float = 0.0,
+        shallow_pressure_pa: float = 0.0,
         angle_rad: float = 0.0,
-        n_resurfaces: int = 0,
+        n_oscillations: int = 0,
     ) -> None:
         self.tester.publish_mission_command(
             mission_id,
             target_pressure_pa=target_pressure_pa,
+            shallow_pressure_pa=shallow_pressure_pa,
             angle_rad=angle_rad,
-            n_resurfaces=n_resurfaces,
+            n_oscillations=n_oscillations,
         )
 
 

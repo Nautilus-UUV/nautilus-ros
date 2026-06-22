@@ -147,8 +147,9 @@ class _SurfaceTestDriver(Node):
         cmd.mission_id = int(MissionId.SURFACE)
         # SURFACE has no operator parameters; leave them all at zero.
         cmd.target_pressure_pa = 0.0
+        cmd.shallow_pressure_pa = 0.0
         cmd.angle_rad = 0.0
-        cmd.n_resurfaces = 0
+        cmd.n_oscillations = 0
         self.path_pub.publish(cmd)
 
     def publish_start(self) -> None:

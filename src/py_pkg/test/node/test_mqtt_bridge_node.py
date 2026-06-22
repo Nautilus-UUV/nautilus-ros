@@ -175,6 +175,13 @@ class _BridgeTesterNode(Node):
             self, UUVTopics.DIVE_INIT, self._on_init
         )
 
+        # Mission observer: ingress on nautilus/cmd/path must land a
+        # MissionCommand on /path with all fields decoded.
+        self.received_path: list = []
+        self.path_sub = create_subscription_for_topic(
+            self, UUVTopics.PATH, self._on_path
+        )
+
     def _on_emergency(self, msg) -> None:
         self.received_emergency.append(bool(msg.data))
 
@@ -183,6 +190,9 @@ class _BridgeTesterNode(Node):
 
     def _on_init(self, msg) -> None:
         self.received_init.append(msg)
+
+    def _on_path(self, msg) -> None:
+        self.received_path.append(msg)
 
     @staticmethod
     def _int32(v: int) -> Int32:
@@ -550,12 +560,15 @@ def _mission_states(harness) -> list[str]:
 
 
 # The stock mission dispatch used wherever a test just needs "a mission
-# is loaded" -- TRIM at the nominal target.
+# is loaded" -- TRIM at the nominal target. Keys mirror
+# nautilus_msgs/MissionCommand exactly; an unknown field would fail
+# set_message_fields and drop the command before the mirror sees it.
 PATH_PAYLOAD = {
     "mission_id": 0,
     "target_pressure_pa": 75383.0,
+    "shallow_pressure_pa": 0.0,
     "angle_rad": 0.0,
-    "n_resurfaces": 0,
+    "n_oscillations": 0,
 }
 
 
@@ -578,13 +591,37 @@ class TestMissionMirror:
             {
                 "mission_id": 1,
                 "target_pressure_pa": 147150.0,
+                "shallow_pressure_pa": 49050.0,
                 "angle_rad": 0.6109,
-                "n_resurfaces": 2,
+                "n_oscillations": 2,
             },
         )
         h.receive_mqtt(COMMAND_CMD_TOPIC, {"data": True})
         states = _mission_states(h)
         assert states[-1] == "RUNNING"
+
+    def test_sawtooth_path_decodes_with_two_pressure_fields(self, bridge_harness):
+        # End-to-end ingress: a sawtooth PATH payload shaped exactly as the
+        # frontend builds it must decode onto /path with the new
+        # shallow_pressure_pa + n_oscillations fields intact (set_message_fields
+        # is generic, so this is the bridge-side "propagated all the way" proof).
+        h = bridge_harness
+        h.receive_mqtt(
+            PATH_CMD_TOPIC,
+            {
+                "mission_id": 1,
+                "target_pressure_pa": 60_000.0,
+                "shallow_pressure_pa": 30_000.0,
+                "angle_rad": 0.6109,
+                "n_oscillations": 2,
+            },
+        )
+        h.spin_until(lambda: h.tester.received_path, timeout=1.0)
+        msg = h.tester.received_path[-1]
+        assert msg.mission_id == 1
+        assert msg.target_pressure_pa == pytest.approx(60_000.0)
+        assert msg.shallow_pressure_pa == pytest.approx(30_000.0)
+        assert msg.n_oscillations == 2
 
     def test_stop_returns_to_idle_and_clears_cache(self, bridge_harness):
         h = bridge_harness

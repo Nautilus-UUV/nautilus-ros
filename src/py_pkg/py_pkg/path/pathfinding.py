@@ -6,7 +6,7 @@ setpoints for the controllers downstream.
 
 Inputs (what this node listens to):
   - /path    (MissionCommand) -- which mission to run, plus its parameters
-               (target pressure, glide angle, how many times to resurface).
+               (deep/shallow pressures, glide angle, how many oscillations).
   - /command (Bool)           -- the operator's run intent: true=start,
                false=stop.
   - position estimate (Pose)  -- current vehicle state. position.z is the
@@ -129,8 +129,9 @@ class PathfindingNode(Node):
                 MissionState(
                     pose=self._current_pose,
                     target_pressure_pa=float(self._mission_cmd.target_pressure_pa),
+                    shallow_pressure_pa=float(self._mission_cmd.shallow_pressure_pa),
                     angle_rad=float(self._mission_cmd.angle_rad),
-                    n_resurfaces=int(self._mission_cmd.n_resurfaces),
+                    n_oscillations=int(self._mission_cmd.n_oscillations),
                 )
             )
             self._mission_t0_s = self.get_clock().now().nanoseconds / 1e9

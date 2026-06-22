@@ -57,13 +57,46 @@ class TestPathIngress:
     def test_known_mission_id_loads_mission(self, pathfinding_node_harness):
         h = pathfinding_node_harness
         h.publish_mission_command(
-            SAWTOOTH, target_pressure_pa=200_000.0, angle_rad=0.5, n_resurfaces=2
+            SAWTOOTH,
+            target_pressure_pa=200_000.0,
+            shallow_pressure_pa=50_000.0,
+            angle_rad=0.5,
+            n_oscillations=2,
         )
         h.spin_until(lambda: h.node._mission is not None, timeout=1.0)
         assert h.node._mission is not None
         assert h.node._mission_cmd is not None
         assert h.node._mission_cmd.mission_id == SAWTOOTH
         assert h.node._mission_cmd.target_pressure_pa == pytest.approx(200_000.0)
+
+    def test_sawtooth_fields_propagate_into_mission(self, pathfinding_node_harness):
+        # The two-pressure sawtooth params must survive ingress on /path and
+        # reach the mission's internal state at start() (the full propagation
+        # frontend -> bridge -> /path -> pathfinding -> mission, ROS side).
+        h = pathfinding_node_harness
+        h.publish_mission_command(
+            SAWTOOTH,
+            target_pressure_pa=120_000.0,
+            shallow_pressure_pa=40_000.0,
+            angle_rad=0.6,
+            n_oscillations=3,
+        )
+        h.publish_depth_gauge(GAUGE_AT_DEPTH_PA)
+        h.spin_until(
+            lambda: (
+                h.node._mission is not None and h.node._current_pressure_pa is not None
+            ),
+            timeout=1.0,
+        )
+        # The command carries the new fields...
+        assert h.node._mission_cmd.shallow_pressure_pa == pytest.approx(40_000.0)
+        assert h.node._mission_cmd.n_oscillations == 3
+        # ...and starting the mission threads them into the state machine.
+        h.publish_command(True)
+        h.spin_until(lambda: h.node._mission_t0_s is not None, timeout=1.0)
+        assert h.node._mission._deep_pa == pytest.approx(120_000.0)
+        assert h.node._mission._shallow_pa == pytest.approx(40_000.0)
+        assert h.node._mission._n_oscillations == 3
 
     def test_unknown_mission_id_is_rejected(self, pathfinding_node_harness):
         h = pathfinding_node_harness
@@ -228,9 +261,10 @@ class TestPoseEstimationIngress:
         h = pathfinding_node_harness
         h.publish_depth_gauge(GAUGE_AT_DEPTH_PA)
         h.spin_until(
-            lambda: h.node._current_pressure_pa is not None
-            and h.node._current_pressure_pa == pytest.approx(
-                GAUGE_AT_DEPTH_PA, abs=1e-3
+            lambda: (
+                h.node._current_pressure_pa is not None
+                and h.node._current_pressure_pa
+                == pytest.approx(GAUGE_AT_DEPTH_PA, abs=1e-3)
             ),
             timeout=1.0,
         )

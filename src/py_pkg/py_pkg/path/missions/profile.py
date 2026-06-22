@@ -21,9 +21,11 @@ class MissionState:
     """
 
     pose: Pose | None = None
-    target_pressure_pa: float = 0.0  # TRIM_AND_NEUTRAL_BUOYANCY hold-depth
+    # TRIM_AND_NEUTRAL_BUOYANCY hold-depth; SAWTOOTH deep extremum (gauge Pa).
+    target_pressure_pa: float = 0.0
+    shallow_pressure_pa: float = 0.0  # SAWTOOTH shallow extremum (0 => surface)
     angle_rad: float = 0.0  # SAWTOOTH glide pitch magnitude
-    n_resurfaces: int = 0  # SAWTOOTH termination count
+    n_oscillations: int = 0  # SAWTOOTH dive count before the final surfacing
 
 
 class MissionProfile(Protocol):

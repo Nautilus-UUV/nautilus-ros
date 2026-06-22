@@ -13,9 +13,9 @@ DDS chatter stays inside that run). Optionally also slices a CPU budget
 into disjoint sets via `--cpu-budget`, handed to apptainer_exec.sh's
 `--cpus` flag so runs don't fight each other for cores.
 
-Mission knobs (`target_pressure_pa`, `angle_rad`, `n_resurfaces`) are
-not scenario-YAML fields — pass them as `--launch-args foo:=bar`. The
-same value is used for every run in the sweep.
+Mission knobs (`target_pressure_pa`, `shallow_pressure_pa`, `angle_rad`,
+`n_oscillations`) are not scenario-YAML fields — pass them as
+`--launch-args foo:=bar`. The same value is used for every run in the sweep.
 
 Before queueing anything, runs one `apptainer exec` to load the first
 scenario through `py_pkg.scenarios.loader.load_scenario` so a Pydantic
@@ -24,7 +24,7 @@ schema typo fails once instead of N times.
 The sawtooth/trim launches keep Gazebo + controllers alive after the
 mission completes (sawtooth_sim.launch.py:20 documents this), so
 without `--per-run-timeout` every slot will hang forever once its
-mission finishes. Set the timeout to roughly n_resurfaces times the
+mission finishes. Set the timeout to roughly n_oscillations times the
 single-cycle wall time plus a comfortable margin.
 
 Example:
@@ -32,7 +32,7 @@ Example:
                  --sif nautilus_sim.sif --concurrency 2 \\
                  --cpu-budget 0-7 --per-run-timeout 600 \\
                  --launch sawtooth_sim.launch.py \\
-                 --launch-args target_pressure_pa:=147150.0 angle_rad:=0.6109 n_resurfaces:=5
+                 --launch-args target_pressure_pa:=147150.0 angle_rad:=0.6109 n_oscillations:=5
 """
 
 from __future__ import annotations
@@ -651,7 +651,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Wall-clock budget per run. The sawtooth/trim launches keep the "
         "controller stack alive after the mission completes, so without a "
         "timeout the slot would hang forever. Pick this as roughly "
-        "n_resurfaces * single-cycle-wall-time with some headroom. Timed-out "
+        "n_oscillations * single-cycle-wall-time with some headroom. Timed-out "
         "runs are recorded with timed_out=true in sweep_status.csv.",
     )
     args = ap.parse_args(argv)
