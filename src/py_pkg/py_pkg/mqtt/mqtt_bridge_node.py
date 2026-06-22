@@ -253,10 +253,10 @@ class MqttBridge(Node):
         self.declare_parameter("broker_host", "127.0.0.1")
         self.declare_parameter("broker_port", 1883)
         self.declare_parameter("client_id", "nautilus_bridge")
-        self.declare_parameter("keepalive_s", 30)
-        # Dead-man window for the lifeguard once armed. The tick period sets how
-        # often the bridge re-checks silence and the tank-empty band; tests
-        # shorten it to speed up engage latency.
+        # MQTT keepalive. The broker fires our link_lost will after 1.5x this
+        # with no PINGREQ, so 10 s puts the retained link_lost at ~15 s
+        self.declare_parameter("keepalive_s", 10)
+        # Dead-man window for the lifeguard once armed.
         self.declare_parameter("lifeguard_timeout_s", 15.0)
         self.declare_parameter("lifeguard_tick_period_s", LIFEGUARD_TICK_PERIOD_S)
 
