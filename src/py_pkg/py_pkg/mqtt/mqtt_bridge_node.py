@@ -164,6 +164,9 @@ EGRESS_MAP: tuple[EgressMapping, ...] = (
     EgressMapping(
         UUVTopics.EXTERNAL_PRESSURE, "nautilus/telemetry/external/pressure", 10.0
     ),
+    EgressMapping(
+        UUVTopics.INTERNAL_PRESSURE, "nautilus/telemetry/internal/pressure", 10.0
+    ),
     # Seawater temperature off the STM. Slowly varying (~1 Hz housekeeping on
     # hardware), so the 10 Hz cap is just a ceiling -- the native rate passes
     # through unthrottled, matching the external/pressure sibling above.

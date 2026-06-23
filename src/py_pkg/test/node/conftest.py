@@ -128,6 +128,11 @@ class _BCUTesterNode(Node):
         )
         self.dive_init_pub = create_publisher_for_topic(self, UUVTopics.DIVE_INIT)
         self.command_pub = create_publisher_for_topic(self, UUVTopics.COMMAND)
+        # Stands in for a manual valve command (bcu_debug's input). bcu_node
+        # listens to this only to yield the wire -- it doesn't act on the mask.
+        self.debug_valves_pub = create_publisher_for_topic(
+            self, UUVTopics.DEBUG_BCU_VALVES
+        )
         self.bcu_rpm_sub = create_subscription_for_topic(
             self, UUVTopics.BCU_RPM, self._on_rpm
         )
@@ -181,6 +186,11 @@ class _BCUTesterNode(Node):
         msg.data = bool(start)
         self.command_pub.publish(msg)
 
+    def publish_debug_valves(self, mask: int) -> None:
+        msg = UInt8()
+        msg.data = int(mask) & 0xFF
+        self.debug_valves_pub.publish(msg)
+
 
 class BCUNodeHarness(NodeHarness):
     """NodeHarness specialised for BCUNode + _BCUTesterNode."""
@@ -219,6 +229,9 @@ class BCUNodeHarness(NodeHarness):
 
     def publish_command(self, start: bool) -> None:
         self.tester.publish_command(start)
+
+    def publish_debug_valves(self, mask: int) -> None:
+        self.tester.publish_debug_valves(mask)
 
 
 @pytest.fixture

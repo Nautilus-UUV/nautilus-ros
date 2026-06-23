@@ -10,6 +10,7 @@ from py_pkg.math_utils import deadband_snap
 from py_pkg.physics import q_to_rpm
 from py_pkg.pid import depth_control_system as ControlSystem
 from py_pkg.pid.bcu_command_gate import BcuCommandGate
+from py_pkg.pid.bcu_safe_stop_burst import BcuSafeStopBurst
 from py_pkg.pid.tank_limit_guard import TankLimitGuard
 from py_pkg.robot_specs import (
     BCU_DEEP_THRESHOLD_PA,
@@ -27,6 +28,12 @@ from py_pkg.uuv_ros_core import (
 # How long to keep re-asserting the safe-stop after a stop (or at boot)
 # before the loop goes silent.
 STOP_REASSERT_S = 1.0
+
+# How long a manual BCU command keeps bcu_node off the wire (no reassert burst).
+# >= STOP_REASSERT_S, and only needs to span the cross-topic delivery skew
+# between the paired /command=false and the manual command; large is safe because
+# bcu_debug owns the wire for the whole manual session anyway.
+MANUAL_HOLD_S = 1.5
 
 
 def select_pump_and_valves(
@@ -132,11 +139,16 @@ class BCUNode(Node):
             min_valve_dwell_s=cfg.min_valve_dwell_s,
         )
 
-        # Safe-stop re-assert burst: how many idle ticks still publish 0 RPM
-        # + valves closed before the loop goes silent. Decremented in
-        # control_loop while target is None; topped up by _begin_safe_stop.
-        self._stop_reassert_count = max(1, round(cfg.frequency_hz * STOP_REASSERT_S))
-        self._stop_reassert_remaining = 0
+        # Safe-stop re-assert burst with a manual-yield: republishes 0 RPM +
+        # valves closed for a bounded burst after a stop so the STM latches the
+        # zero, but cancels the burst when the operator drives the BCU by hand
+        # (bcu_debug owns the same wire) so the two can't flicker against each
+        # other. Driven from control_loop (tick) and _begin_safe_stop / the debug
+        # subscriptions below.
+        self._safe_stop = BcuSafeStopBurst(
+            reassert_count=max(1, round(cfg.frequency_hz * STOP_REASSERT_S)),
+            manual_hold_s=MANUAL_HOLD_S,
+        )
 
         # Held None until the first POSITION_TARGET arrives
         self.target_pressure_pa: float | None = None
@@ -204,13 +216,29 @@ class BCUNode(Node):
             callback_group=self.callback_group,
         )
 
+        # Yield the wire whenever a debug/operator path drives the BCU. We don't
+        # act on the payload -- a message on any of the manual-drive surfaces just
+        # means someone (the operator, or the lifeguard's auto emergency-surface)
+        # is driving, so we cancel any pending safe-stop burst rather than flicker
+        # against it. The surface set (which excludes DEBUG_RESET) is owned by the
+        # registry; see UUVTopics.BCU_MANUAL_DRIVE_TOPICS.
+        for manual_topic in UUVTopics.BCU_MANUAL_DRIVE_TOPICS:
+            create_subscription_for_topic(
+                self,
+                manual_topic,
+                self._on_manual_activity,
+                callback_group=self.callback_group,
+            )
+
         self.control_timer = self.create_timer(
             1.0 / cfg.frequency_hz,
             self.control_loop,
             callback_group=self.callback_group,
         )
 
-        # Leave the BCU wire unambiguously at 0/closed at boot.
+        # Leave the BCU wire unambiguously at 0/closed at boot. This runs
+        # synchronously here, before spin_node, so the boot burst arms before any
+        # subscription callback (incl. a latched manual command) can fire.
         self._begin_safe_stop()
 
         self.get_logger().info("Depth control node started.")
@@ -251,6 +279,9 @@ class BCUNode(Node):
             f"({'ok' if limits_ok else 'invalid -- clamp stays inert'})"
         )
 
+    def _now_s(self) -> float:
+        return self.get_clock().now().nanoseconds / 1e9
+
     def _publish_bcu_stop(self) -> None:
         zero_rpm = Int16()
         zero_rpm.data = 0
@@ -260,14 +291,27 @@ class BCUNode(Node):
         self.bcu_valves_publisher.publish(valves_off)
 
     def _begin_safe_stop(self) -> None:
-        # Emit one safe-stop now and arm the re-assert burst so control_loop
-        # keeps publishing 0/closed for ~STOP_REASSERT_S.
-        self._publish_bcu_stop()
-        self._stop_reassert_remaining = self._stop_reassert_count
+        # Arm the re-assert burst and emit the first safe-stop now -- unless a
+        # manual command holds the wire, in which case begin_stop yields and we
+        # publish nothing (bcu_debug is driving and we'd only flicker against it).
+        if self._safe_stop.begin_stop(self._now_s()):
+            self._publish_bcu_stop()
+
+    def _on_manual_activity(self, _msg) -> None:
+        # A message on any BCU debug command topic: the operator/lifeguard is
+        # driving the BCU. Cancel any pending safe-stop burst so we don't fight it.
+        self._safe_stop.note_manual(self._now_s())
 
     def _on_command(self, msg: Bool) -> None:
-        # /command=true (start) is a no-op for the controller
+        # /command=true (start) is a no-op for the controller.
         if bool(msg.data):
+            return
+        # Edge-trigger: only the running->stopped transition does the stop work.
+        # target_pressure_pa is None already means "stopped", so a repeated
+        # /command=false (the UI sends one before every manual command) is a
+        # no-op -- otherwise each one would re-arm the burst and chatter the wire
+        # against the manual command.
+        if self.target_pressure_pa is None:
             return
         self.control_system.reset()
         self._gate.reset()
@@ -276,23 +320,23 @@ class BCUNode(Node):
         self.target_pressure_pa = None
         self._begin_safe_stop()
         self.get_logger().info(
-            "stop -> safe-stop burst emitted, BCU going silent (fresh state)."
+            "stop -> safe-stop (or yield to manual), BCU going silent (fresh state)."
         )
 
     def control_loop(self):
         if self.target_pressure_pa is None:
-            # No target. Keep re-asserting the safe-stop for the burst window
-            # so the STM latches the zero, then go silent so a debug node can
-            # own the BCU wire with no contention.
-            if self._stop_reassert_remaining > 0:
+            # No target. Keep re-asserting the safe-stop for the burst window so
+            # the STM latches the zero, then go silent so a debug node can own the
+            # BCU wire with no contention. tick() returns False once the burst is
+            # spent or a manual command has cancelled it.
+            if self._safe_stop.tick():
                 self._publish_bcu_stop()
-                self._stop_reassert_remaining -= 1
             return
 
         # The PID is the only stateful step: it integrates over time to turn the
         # current pressure into a flow demand q. Everything downstream is the
         # pure solve_bcu_command pipeline.
-        now = self.get_clock().now().nanoseconds / 1e9
+        now = self._now_s()
         q = self.control_system.calc_acc(self.current_pressure_pa, now)
 
         pump_rpm, motor_open, free_open = solve_bcu_command(

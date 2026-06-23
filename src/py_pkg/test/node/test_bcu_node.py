@@ -456,6 +456,53 @@ class TestStopResetsAndSilences:
         ), f"bcu_node must go silent after the burst, got {h.received_rpm}"
         assert h.received_valves == []
 
+    def test_repeated_stop_does_not_rearm_burst(self, bcu_node_harness):
+        # Edge-trigger: the UI sends /command=false before every manual command,
+        # so a stop while already stopped must be a no-op -- otherwise each one
+        # re-arms the burst and chatters the wire against the manual driver.
+        h = bcu_node_harness
+        h.publish_target_pressure(TARGET_PA_70M)
+        h.publish_depth_gauge(GAUGE_AT_SURFACE_PA)
+        h.spin_until(lambda: len(h.received_rpm) >= 4, timeout=1.5)
+
+        # First stop fires the burst; let it drain to silence.
+        h.publish_command(False)
+        h.spin_until(lambda: h.node.target_pressure_pa is None, timeout=1.0)
+        h.spin_for(1.3)
+        h.received_rpm.clear()
+        h.received_valves.clear()
+
+        # A second stop while already stopped must emit nothing.
+        h.publish_command(False)
+        h.spin_for(0.5)
+        assert (
+            h.received_rpm == []
+        ), f"repeated stop must not re-arm the burst, got {h.received_rpm}"
+        assert h.received_valves == []
+
+    def test_manual_command_during_stop_yields_instead_of_bursting(
+        self, bcu_node_harness
+    ):
+        # A manual command landing with the stop makes bcu_node yield the wire to
+        # bcu_debug: at most the single immediate safe-stop sample, never a burst.
+        h = bcu_node_harness
+        h.publish_target_pressure(TARGET_PA_70M)
+        h.publish_depth_gauge(GAUGE_AT_SURFACE_PA)
+        h.spin_until(lambda: len(h.received_rpm) >= 4, timeout=1.5)
+        h.received_rpm.clear()
+        h.received_valves.clear()
+
+        # The engageManual order: stop, then the manual command, back to back.
+        h.publish_command(False)
+        h.publish_debug_valves(0b10)  # free/vent valve open
+        h.spin_for(0.5)  # a full burst would land ~5 zeros here
+
+        assert len(h.received_rpm) <= 2, (
+            f"manual command must cancel the burst (<=1 safe-stop sample), "
+            f"got {h.received_rpm}"
+        )
+        assert all(r == 0 for r in h.received_rpm), h.received_rpm
+
 
 class TestCommandGate:
     """The near-setpoint command gate is wired in: configured from the spec,
