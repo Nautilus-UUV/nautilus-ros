@@ -57,6 +57,7 @@ from rosidl_runtime_py.convert import message_to_ordereddict
 from rosidl_runtime_py.set_message import set_message_fields
 
 from py_pkg.mqtt.lifeguard import Lifeguard, tank_blow_exhausted
+from py_pkg.mqtt.reconnect import ReconnectSupervisor
 from py_pkg.uuv_ros_core import (
     TOPIC_MESSAGE_MAP,
     UUVTopics,
@@ -203,6 +204,14 @@ STATUS_TOPIC = "nautilus/status/bridge"
 MISSION_ACTIVE_TOPIC = "nautilus/telemetry/mission/active"
 HEARTBEAT_PERIOD_S = 2.0
 
+# Reconnect backstop (see reconnect.py). paho's loop_start() handles the normal
+# case; these size the watchdog that rebuilds the client when paho wedges -- a
+# half-open socket or a stuck loop thread after a yanked tether, which otherwise
+# only a reboot clears. Defaults for the matching ROS params.
+CONNECTION_WATCHDOG_PERIOD_S = 5.0  # how often the watchdog checks the link
+RECONNECT_GRACE_S = 12.0  # disconnected this long -> rebuild (paho's backoff first)
+RX_SILENCE_S = 20.0  # "connected" but silent this long -> rebuild (stale-link wedge)
+
 # Lifeguard surfaces. The bridge consumes cmd and heartbeat itself. Status is
 # retained, so a fresh UI tab and the bridge's own reconnect both get the
 # current armed/engaged state.
@@ -259,33 +268,34 @@ class MqttBridge(Node):
         # Dead-man window for the lifeguard once armed.
         self.declare_parameter("lifeguard_timeout_s", 15.0)
         self.declare_parameter("lifeguard_tick_period_s", LIFEGUARD_TICK_PERIOD_S)
+        # Reconnect watchdog tuning (see reconnect.py).
+        self.declare_parameter(
+            "connection_watchdog_period_s", CONNECTION_WATCHDOG_PERIOD_S
+        )
+        self.declare_parameter("reconnect_grace_s", RECONNECT_GRACE_S)
+        self.declare_parameter("rx_silence_s", RX_SILENCE_S)
 
-        host = self.get_parameter("broker_host").get_parameter_value().string_value
-        port = self.get_parameter("broker_port").get_parameter_value().integer_value
-        client_id = self.get_parameter("client_id").get_parameter_value().string_value
-        keepalive = (
+        self._broker_host = (
+            self.get_parameter("broker_host").get_parameter_value().string_value
+        )
+        self._broker_port = (
+            self.get_parameter("broker_port").get_parameter_value().integer_value
+        )
+        self._client_id = (
+            self.get_parameter("client_id").get_parameter_value().string_value
+        )
+        self._keepalive = (
             self.get_parameter("keepalive_s").get_parameter_value().integer_value
         )
 
         # paho v2 callback API. Tests inject a fake via ``mqtt_client_factory``
-        # so the bridge spins without a real broker.
-        if mqtt_client_factory is None:
-            self._mqtt = mqtt.Client(
-                mqtt.CallbackAPIVersion.VERSION2,
-                client_id=client_id,
-            )
-        else:
-            self._mqtt = mqtt_client_factory(client_id)
-        # Last will: the broker publishes link_lost if the connection drops
-        # uncleanly (crash, tether loss). A clean shutdown sends DISCONNECT
-        # first, which suppresses the will, so offline and link_lost stay
-        # distinct on the UI side.
-        self._mqtt.will_set(STATUS_TOPIC, payload=STATUS_LINK_LOST, qos=1, retain=True)
-        self._mqtt.on_connect = self._on_connect
-        self._mqtt.on_disconnect = self._on_disconnect
-        self._mqtt.on_message = self._on_mqtt_message
-        # Built-in exponential backoff on reconnect.
-        self._mqtt.reconnect_delay_set(min_delay=1, max_delay=30)
+        # so the bridge spins without a real broker. Kept on self because the
+        # reconnect watchdog rebuilds the client through the same path.
+        self._mqtt_client_factory = mqtt_client_factory
+        # The live client is built at the end of __init__ (below), once the
+        # ingress publishers and bridge state the on_connect callback touches
+        # exist. The watchdog rebuilds it later via the same _build_client().
+        self._mqtt: Any = None
 
         # --- ingress -----------------------------------------------------
         self._ingress_pubs: dict[str, Any] = {}
@@ -364,10 +374,23 @@ class MqttBridge(Node):
         # discovery.
         create_subscription_for_topic(self, UUVTopics.DIVE_INIT, self._on_dive_init)
 
-        # connect_async + loop_start: node init proceeds even if the broker is
-        # down at boot. The mqtt thread handles reconnect in the background.
-        self._mqtt.connect_async(host, port, keepalive=keepalive)
-        self._mqtt.loop_start()
+        # --- reconnect backstop -------------------------------------------
+        # Monotonic time of the last inbound MQTT message; None until the first
+        # one lands. Written under _state_lock in _on_mqtt_message (paho thread),
+        # read by the watchdog (executor thread). Feeds the stale-link check.
+        self._last_rx_monotonic: float | None = None
+        self._supervisor = ReconnectSupervisor(
+            down_grace_s=self.get_parameter("reconnect_grace_s")
+            .get_parameter_value()
+            .double_value,
+            rx_silence_s=self.get_parameter("rx_silence_s")
+            .get_parameter_value()
+            .double_value,
+        )
+
+        # Build + start the live client now that the publishers and state its
+        # on_connect callback touches exist. _build_client repoints self._mqtt.
+        self._build_client()
 
         self._heartbeat_timer = self.create_timer(
             HEARTBEAT_PERIOD_S, self._publish_heartbeat
@@ -378,11 +401,54 @@ class MqttBridge(Node):
             .double_value,
             self._tick_lifeguard,
         )
+        self._connection_watchdog_timer = self.create_timer(
+            self.get_parameter("connection_watchdog_period_s")
+            .get_parameter_value()
+            .double_value,
+            self._connection_watchdog,
+        )
 
         self.get_logger().info(
-            f"mqtt_bridge: broker={host}:{port}, "
+            f"mqtt_bridge: broker={self._broker_host}:{self._broker_port}, "
             f"ingress={len(INGRESS_MAP)} egress={len(EGRESS_MAP)}"
         )
+
+    def _build_client(self):
+        """Create, wire, and start a paho client (or the test fake).
+
+        Used both at startup and by the reconnect watchdog -- a rebuild is a
+        brand-new client on the same broker target, so it can't inherit a
+        wedged socket or a dead loop thread. connect_async + loop_start let node
+        init (and a rebuild) proceed even with the broker unreachable; the mqtt
+        thread connects in the background and on_connect re-subscribes and
+        re-seeds retained state.
+        """
+        if self._mqtt_client_factory is None:
+            client = mqtt.Client(
+                mqtt.CallbackAPIVersion.VERSION2,
+                client_id=self._client_id,
+            )
+        else:
+            client = self._mqtt_client_factory(self._client_id)
+        # Last will: the broker publishes link_lost if the connection drops
+        # uncleanly (crash, tether loss). A clean shutdown sends DISCONNECT
+        # first, which suppresses the will, so offline and link_lost stay
+        # distinct on the UI side.
+        client.will_set(STATUS_TOPIC, payload=STATUS_LINK_LOST, qos=1, retain=True)
+        client.on_connect = self._on_connect
+        client.on_disconnect = self._on_disconnect
+        client.on_message = self._on_mqtt_message
+        # Built-in exponential backoff on reconnect.
+        client.reconnect_delay_set(min_delay=1, max_delay=30)
+        client.connect_async(
+            self._broker_host, self._broker_port, keepalive=self._keepalive
+        )
+        # Publish self._mqtt before loop_start: the paho thread can fire
+        # on_connect the instant it spins up, and on_connect's retained re-seed
+        # publishes through self._mqtt. Point it at the new client first so that
+        # re-seed lands on the right socket.
+        self._mqtt = client
+        client.loop_start()
 
     # --- egress: ROS -> MQTT --------------------------------------------
 
@@ -446,6 +512,12 @@ class MqttBridge(Node):
     # --- ingress: MQTT -> ROS -------------------------------------------
 
     def _on_mqtt_message(self, _client, _userdata, mqtt_msg) -> None:
+        # Any inbound message is proof the link is live -- the watchdog's
+        # stale-connected check keys on this. The laptop heartbeats at ~1 Hz
+        # whenever an operator is present, so it stays fresh on a healthy link.
+        with self._state_lock:
+            self._last_rx_monotonic = time.monotonic()
+
         # Lifeguard surfaces are handled here, before the ingress map: the
         # bridge consumes them itself.
         if mqtt_msg.topic == LIFEGUARD_HEARTBEAT_TOPIC:
@@ -709,6 +781,53 @@ class MqttBridge(Node):
 
     def _publish_heartbeat(self) -> None:
         self._mqtt.publish(STATUS_TOPIC + "/tick", payload="alive", qos=0)
+
+    def _connection_watchdog(self) -> None:
+        """Periodic link-health check; rebuilds the client when paho has wedged.
+
+        Runs on the rclpy executor (single-threaded with the egress callbacks,
+        so the client swap can't race a publish). The supervisor decides;
+        is_connected() is paho's own view, rx_age the time since the last
+        inbound message.
+        """
+        now = time.monotonic()
+        with self._state_lock:
+            last_rx = self._last_rx_monotonic
+        rx_age_s = None if last_rx is None else now - last_rx
+        connected = self._mqtt.is_connected()
+        if self._supervisor.should_rebuild(
+            connected=connected, rx_age_s=rx_age_s, now=now
+        ):
+            self._rebuild_client(connected=connected, rx_age_s=rx_age_s)
+
+    def _rebuild_client(self, *, connected: bool, rx_age_s: float | None) -> None:
+        """Tear the wedged client down and stand up a fresh one.
+
+        The in-process equivalent of the reboot that used to be the only fix:
+        loop_stop joins the old paho thread (no stale callbacks afterward), then
+        a brand-new client connect_asyncs on the same target. on_connect handles
+        the re-subscribe and retained re-seed, so telemetry and the UI recover
+        on their own."""
+        reason = (
+            f"connected but silent for {rx_age_s:.0f}s"
+            if connected
+            else "disconnected past grace"
+        )
+        self.get_logger().warning(f"mqtt link wedged ({reason}); rebuilding client")
+        old = self._mqtt
+        try:
+            old.loop_stop()
+            old.disconnect()
+        except Exception:
+            pass
+        # _build_client repoints self._mqtt at the fresh client.
+        self._build_client()
+        # Fresh client: nothing received yet. Reset so its silence is measured
+        # from this rebuild, not the wedged span -- and so a healthy link with
+        # no operator (no inbound beats) doesn't thrash the watchdog.
+        with self._state_lock:
+            self._last_rx_monotonic = None
+        self._supervisor.note_rebuilt()
 
     def destroy_node(self) -> bool:
         try:

@@ -43,12 +43,15 @@ from py_pkg.mqtt.mqtt_bridge_node import (
     DEBUG_RESET_CMD_TOPIC,
     EGRESS_MAP,
     EMERGENCY_SURFACE_CMD_TOPIC,
+    INGRESS_MAP,
     INIT_CMD_TOPIC,
     LIFEGUARD_CMD_TOPIC,
     LIFEGUARD_HEARTBEAT_TOPIC,
     LIFEGUARD_STATUS_TOPIC,
     MISSION_ACTIVE_TOPIC,
     PATH_CMD_TOPIC,
+    STATUS_ONLINE,
+    STATUS_TOPIC,
     MqttBridge,
 )
 from py_pkg.scenarios.spec.rig import PlantSpec
@@ -105,6 +108,11 @@ class FakeMqttClient:
 
     def disconnect(self):
         pass
+
+    def is_connected(self):
+        # The reconnect watchdog reads this as paho's own link view. Tests flip
+        # `connected` to simulate a drop or a stale-but-claimed connection.
+        return self.connected
 
     def subscribe(self, topic, qos=0):
         self.subscribed.append((topic, qos))
@@ -222,11 +230,36 @@ TICK_PERIOD_S = 0.1
 class MqttBridgeHarness:
     """Spins MqttBridge + a tester node behind a SingleThreadedExecutor."""
 
-    def __init__(self, lifeguard_timeout_s: float | None = None):
-        self.fake = FakeMqttClient()
+    def __init__(
+        self,
+        lifeguard_timeout_s: float | None = None,
+        reconnect_grace_s: float | None = None,
+        rx_silence_s: float | None = None,
+        watchdog_period_s: float | None = None,
+    ):
+        # The factory builds a fresh fake per call and records them, so a
+        # reconnect-watchdog rebuild is observable as a new entry. `fake` stays
+        # the first (initial) client, which is what the egress/mirror/lifeguard
+        # tests drive.
+        self.fakes: list[FakeMqttClient] = []
+
+        def _factory(_client_id):
+            fake = FakeMqttClient()
+            self.fakes.append(fake)
+            return fake
+
         overrides = [
             Parameter("lifeguard_tick_period_s", Parameter.Type.DOUBLE, TICK_PERIOD_S)
         ]
+        # Park the watchdog timer far out by default so it never fires mid-test;
+        # the reconnect tests drive node._connection_watchdog() directly.
+        overrides.append(
+            Parameter(
+                "connection_watchdog_period_s",
+                Parameter.Type.DOUBLE,
+                watchdog_period_s if watchdog_period_s is not None else 1000.0,
+            )
+        )
         if lifeguard_timeout_s is not None:
             overrides.append(
                 Parameter(
@@ -235,10 +268,19 @@ class MqttBridgeHarness:
                     lifeguard_timeout_s,
                 )
             )
+        if reconnect_grace_s is not None:
+            overrides.append(
+                Parameter("reconnect_grace_s", Parameter.Type.DOUBLE, reconnect_grace_s)
+            )
+        if rx_silence_s is not None:
+            overrides.append(
+                Parameter("rx_silence_s", Parameter.Type.DOUBLE, rx_silence_s)
+            )
         self.node = MqttBridge(
-            mqtt_client_factory=lambda client_id: self.fake,
+            mqtt_client_factory=_factory,
             parameter_overrides=overrides,
         )
+        self.fake = self.fakes[0]
         self.tester = _BridgeTesterNode()
         self.executor = SingleThreadedExecutor()
         self.executor.add_node(self.node)
@@ -992,3 +1034,86 @@ class TestManualBlowStandDown:
         h.tester.received_emergency.clear()
         h.receive_mqtt(EMERGENCY_SURFACE_CMD_TOPIC, {"data": True})
         h.spin_until(lambda: False in h.tester.received_emergency, timeout=3.0)
+
+
+# ---------------------------------------------------------------------------
+# Reconnect watchdog (E-001)
+# ---------------------------------------------------------------------------
+
+
+class TestReconnectWatchdog:
+    """The bridge's reconnect backstop. paho's loop_start() normally reconnects
+    on its own; when it wedges after a yanked tether -- stuck disconnected, or
+    'connected' but mute -- the watchdog rebuilds the client in-process, which
+    used to need a Pi reboot. A rebuild surfaces as a fresh fake in
+    ``harness.fakes``; the bridge's client is repointed at it, and on the fresh
+    client's connect the bridge re-subscribes and re-publishes online so
+    telemetry and the UI recover on their own. The watchdog timer is parked far
+    out (harness default), so these drive ``_connection_watchdog()`` directly."""
+
+    def test_disconnect_past_grace_rebuilds_and_resubscribes(self):
+        # grace 0: the first watchdog tick that sees a dropped link escalates.
+        h = MqttBridgeHarness(reconnect_grace_s=0.0)
+        try:
+            assert len(h.fakes) == 1
+            assert h.node._mqtt is h.fakes[0]
+            h.fakes[0].connected = False  # tether yanked; paho reports down
+
+            h.node._connection_watchdog()
+
+            # A fresh client was built and is now the bridge's live client.
+            assert len(h.fakes) == 2, "a wedged-disconnected link must rebuild"
+            assert h.node._mqtt is h.fakes[1]
+
+            # Its on_connect (fired by paho on a real reconnect; driven here)
+            # re-subscribes to every ingress topic and republishes online.
+            new = h.fakes[1]
+            new.connected = True
+            h.node._on_connect(new, None, None, 0)
+            subscribed = {t for t, _ in new.subscribed}
+            for m in INGRESS_MAP:
+                assert m.mqtt_topic in subscribed, f"missing resubscribe {m.mqtt_topic}"
+            assert LIFEGUARD_CMD_TOPIC in subscribed
+            assert LIFEGUARD_HEARTBEAT_TOPIC in subscribed
+            online = [
+                p for p in new.publishes_on(STATUS_TOPIC) if p.payload == STATUS_ONLINE
+            ]
+            assert online, "reconnect must republish online"
+            assert online[-1].retain is True
+        finally:
+            h.shutdown()
+
+    def test_stale_connected_link_rebuilds_then_does_not_thrash(self):
+        # rx_silence 0: an inbound message followed by silence while paho still
+        # claims 'connected' is the half-open / stale-socket wedge.
+        h = MqttBridgeHarness(rx_silence_s=0.0)
+        try:
+            h.receive_mqtt(LIFEGUARD_HEARTBEAT_TOPIC, {})  # sets _last_rx
+            assert h.node._last_rx_monotonic is not None
+            assert h.fakes[0].connected is True  # paho still claims a link
+
+            h.node._connection_watchdog()
+            assert len(h.fakes) == 2, "stale-connected link must rebuild"
+            assert h.node._mqtt is h.fakes[1]
+            # rx clock cleared on rebuild, so a healthy-but-quiet fresh client
+            # (no operator beats) does not get rebuilt again next tick.
+            assert h.node._last_rx_monotonic is None
+
+            h.node._connection_watchdog()
+            assert len(h.fakes) == 2, "must not thrash after a rebuild"
+        finally:
+            h.shutdown()
+
+    def test_healthy_link_does_not_rebuild(self):
+        # Default windows (grace 12 s, rx_silence 20 s). Connected with a fresh
+        # inbound beat: the watchdog must leave the client alone.
+        h = MqttBridgeHarness()
+        try:
+            h.receive_mqtt(LIFEGUARD_HEARTBEAT_TOPIC, {})
+            assert h.fakes[0].connected is True
+            for _ in range(5):
+                h.node._connection_watchdog()
+            assert len(h.fakes) == 1, "a healthy link must never rebuild"
+            assert h.node._mqtt is h.fakes[0]
+        finally:
+            h.shutdown()
