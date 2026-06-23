@@ -6,10 +6,11 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
 from std_msgs.msg import Bool, Int16, UInt8
 
-from py_pkg.math_utils import deadband_snap, span_band_guards
+from py_pkg.math_utils import deadband_snap
 from py_pkg.physics import q_to_rpm
 from py_pkg.pid import depth_control_system as ControlSystem
 from py_pkg.pid.bcu_command_gate import BcuCommandGate
+from py_pkg.pid.tank_limit_guard import TankLimitGuard
 from py_pkg.robot_specs import (
     BCU_DEEP_THRESHOLD_PA,
     BCU_FREE_VALVE_MASK,
@@ -59,46 +60,9 @@ def select_pump_and_valves(
     return pump_rpm, 0, 0
 
 
-def clamp_to_tank_limits(
-    pump_rpm: int,
-    motor_open: int,
-    free_open: int,
-    tank_pa: float | None,
-    tank_empty_pa: float | None,
-    tank_full_pa: float | None,
-    band: float = 0.10,
-) -> tuple[int, int, int]:
-    """Stop commanding oil flow once the tank is within ``band`` of an endpoint.
-
-    The tank runs inverse to the bladder: positive bus RPM inflates the
-    bladder and drains the tank toward ``tank_empty_pa``; negative RPM --
-    -- fills it toward ``tank_full_pa``. The last stretch of
-    travel is just dead-heads the pump against a tank that's effectively full/empty,
-    so we quit early.
-
-    The limits come from the pre-dive Initialize (DIVE_INIT).
-    """
-    if tank_pa is None or tank_empty_pa is None or tank_full_pa is None:
-        return pump_rpm, motor_open, free_open
-    if tank_empty_pa <= 0.0 or tank_full_pa <= 0.0 or tank_empty_pa >= tank_full_pa:
-        return pump_rpm, motor_open, free_open
-
-    low_guard, high_guard = span_band_guards(tank_empty_pa, tank_full_pa, band)
-    draining_tank = pump_rpm > 0
-    filling_tank = pump_rpm < 0 or bool(free_open)
-    if draining_tank and tank_pa <= low_guard:
-        return 0, 0, 0
-    if filling_tank and tank_pa >= high_guard:
-        return 0, 0, 0
-    return pump_rpm, motor_open, free_open
-
-
 def solve_bcu_command(
     q: float,
     current_pressure_pa: float,
-    tank_pa: float | None,
-    tank_empty_pa: float | None,
-    tank_full_pa: float | None,
     *,
     bladder_volume_m3: float,
     pump_efficiency: float,
@@ -107,19 +71,20 @@ def solve_bcu_command(
     max_rpm: int,
     deep_threshold_pa: float = BCU_DEEP_THRESHOLD_PA,
 ) -> tuple[int, int, int]:
-    """Turn a controller flow demand ``q`` into a BCU wire command.
+    """Turn a controller flow demand ``q`` into a raw BCU wire command.
 
-    The whole bladder-actuation path as one functional chain:
+    The bladder-actuation path as one functional chain:
 
         q  --q_to_rpm-->            motor RPM (sign carries the fill direction)
            --deadband_snap-->       motor RPM, snapped out of the dead pump band
            --negate-->              pump bus RPM (the bus runs inverse to fill)
            --select_pump_and_valves--> (pump_rpm, motor_open, free_open)
-           --clamp_to_tank_limits-->   same triple, zeroed near a tank endpoint
 
     ``q`` is the fraction of bladder volume to move per second; positive fills
     the bladder (sink). Returns ``(pump_rpm, motor_open, free_open)`` ready for
-    the wire -- motor_open is valve 2 (bit0), free_open is valve 1 (bit1).
+    the wire -- motor_open is valve 2 (bit0), free_open is valve 1 (bit1). The
+    tank-endpoint cutoff is applied downstream by ``TankLimitGuard``, which
+    needs the raw direction this returns, so it is not folded in here.
     """
     motor_rpm = deadband_snap(
         q_to_rpm(q, bladder_volume_m3, pump_efficiency),
@@ -128,11 +93,8 @@ def solve_bcu_command(
         max_rpm,
     )
     pump_rpm = int(-motor_rpm)
-    pump_rpm, motor_open, free_open = select_pump_and_valves(
+    return select_pump_and_valves(
         current_pressure_pa, q, pump_rpm, deep_threshold_pa
-    )
-    return clamp_to_tank_limits(
-        pump_rpm, motor_open, free_open, tank_pa, tank_empty_pa, tank_full_pa
     )
 
 
@@ -153,6 +115,14 @@ class BCUNode(Node):
         self._min_operating_rpm = cfg.plant_model.min_operating_rpm
         self._max_rpm = cfg.plant_model.max_rpm
         self._pump_efficiency = cfg.plant_model.pump_efficiency
+
+        # Latching tank-endpoint cutoff: holds the pump/valves stopped once the
+        # tank is parked at a limit, with release hysteresis so sensor noise on
+        # the guard threshold can't chatter the valves (the bench-test bug).
+        self._tank_guard = TankLimitGuard(
+            stop_band=cfg.tank_stop_band,
+            release_band=cfg.tank_release_band,
+        )
 
         # Anti-chatter gate between solve_bcu_command and the wire: error
         # deadband + arm/disarm hysteresis + minimum valve dwell.
@@ -270,6 +240,8 @@ class BCUNode(Node):
         # reference moved to attitude_node, which publishes already-gauged depth.
         self._tank_empty_pa = float(msg.tank_empty_pa)
         self._tank_full_pa = float(msg.tank_full_pa)
+        # Fresh endpoints invalidate any latch held against the old ones.
+        self._tank_guard.reset()
         # Mirrors the clamp's own sanity check.
         limits_ok = 0.0 < self._tank_empty_pa < self._tank_full_pa
         log = self.get_logger().info if limits_ok else self.get_logger().error
@@ -299,6 +271,7 @@ class BCUNode(Node):
             return
         self.control_system.reset()
         self._gate.reset()
+        self._tank_guard.reset()
         self.current_bladder_level = self._initial_proportion_full
         self.target_pressure_pa = None
         self._begin_safe_stop()
@@ -325,14 +298,23 @@ class BCUNode(Node):
         pump_rpm, motor_open, free_open = solve_bcu_command(
             q,
             self.current_pressure_pa,
-            self._tank_pa,
-            self._tank_empty_pa,
-            self._tank_full_pa,
             bladder_volume_m3=self.bladder_volume,
             pump_efficiency=self._pump_efficiency,
             min_rpm=self._min_rpm,
             min_operating_rpm=self._min_operating_rpm,
             max_rpm=self._max_rpm,
+        )
+
+        # Tank-endpoint cutoff: stop (and latch) the command once the tank is
+        # parked at a registered limit, so it can't dead-head the pump or
+        # chatter the valves on noise that straddles the guard.
+        pump_rpm, motor_open, free_open = self._tank_guard.apply(
+            pump_rpm,
+            motor_open,
+            free_open,
+            self._tank_pa,
+            self._tank_empty_pa,
+            self._tank_full_pa,
         )
 
         # Anti-chatter conditioning: deadband + hysteresis on the depth error,

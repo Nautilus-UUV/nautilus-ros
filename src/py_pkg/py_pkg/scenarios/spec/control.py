@@ -95,8 +95,18 @@ class DepthSpec(StrictModel):
     error_arm_pa: float = 4000.0  # ~0.4 m: re-arm the pump past this
     min_valve_dwell_s: float = 0.5  # hold each valve state at least this long
 
+    # Latching tank-endpoint cutoff (TankLimitGuard). Sister anti-chatter for
+    # the other case that broke a bench test: with the vehicle on the bench it
+    # can't dive, so the loop drives the tank onto the stop guard and parks
+    # there -- and a bare threshold sitting on noise chatters the valves. The
+    # guard latches the stop and only releases once the tank retreats past the
+    # wider `tank_release_band` guard (hysteresis), or the command reverses.
+    # Both are fractions of the empty->full span; release >= stop.
+    tank_stop_band: float = 0.10  # latch the stop within this of an endpoint
+    tank_release_band: float = 0.12  # release only once back outside this
+
     @model_validator(mode="after")
-    def _check_gate(self) -> DepthSpec:
+    def _check_depth_params(self) -> DepthSpec:
         if self.error_disarm_pa < 0.0 or self.error_arm_pa < 0.0:
             raise ValueError("error_arm_pa and error_disarm_pa must be >= 0")
         if self.error_disarm_pa > self.error_arm_pa:
@@ -107,6 +117,16 @@ class DepthSpec(StrictModel):
             )
         if self.min_valve_dwell_s < 0.0:
             raise ValueError("min_valve_dwell_s must be >= 0")
+        if not 0.0 <= self.tank_stop_band < 0.5:
+            raise ValueError("tank_stop_band must be in [0, 0.5)")
+        if not 0.0 <= self.tank_release_band < 0.5:
+            raise ValueError("tank_release_band must be in [0, 0.5)")
+        if self.tank_release_band < self.tank_stop_band:
+            raise ValueError(
+                "tank_release_band must be >= tank_stop_band "
+                f"(got {self.tank_release_band} < {self.tank_stop_band}); the "
+                "release guard sits at or inside the stop guard"
+            )
         return self
 
 
