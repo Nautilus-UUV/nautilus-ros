@@ -15,7 +15,7 @@ to study controller-model-vs-actual-plant mismatch.
 
 from __future__ import annotations
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from py_pkg.robot_specs import (
     ACU_ROLL_MAX_ANGLE_DEG,
@@ -81,6 +81,33 @@ class DepthSpec(StrictModel):
     frequency_hz: int = 10
     pid_pressure: PIDPressureSpec = Field(default_factory=PIDPressureSpec)
     plant_model: DepthPlantModel = Field(default_factory=DepthPlantModel)
+
+    # Near-setpoint command gate (BcuCommandGate). Anti-chatter for the
+    # case that broke a bench test: a depth target ~= current depth, where
+    # sensor noise dither would otherwise flip the pump and valves every
+    # tick. The pump is held idle inside `error_disarm_pa` of the target and
+    # only re-arms past the wider `error_arm_pa` (hysteresis); the valve
+    # bitmask is rate-limited to one change per `min_valve_dwell_s` to
+    # protect the solenoids in every regime. Defaults are ON -- the chatter
+    # is a real hardware hazard, not a per-scenario choice -- but a sweep can
+    # zero all three to recover the raw pre-gate command.
+    error_disarm_pa: float = 2000.0  # ~0.2 m: hold idle within this of target
+    error_arm_pa: float = 4000.0  # ~0.4 m: re-arm the pump past this
+    min_valve_dwell_s: float = 0.5  # hold each valve state at least this long
+
+    @model_validator(mode="after")
+    def _check_gate(self) -> DepthSpec:
+        if self.error_disarm_pa < 0.0 or self.error_arm_pa < 0.0:
+            raise ValueError("error_arm_pa and error_disarm_pa must be >= 0")
+        if self.error_disarm_pa > self.error_arm_pa:
+            raise ValueError(
+                "error_disarm_pa must be <= error_arm_pa "
+                f"(got {self.error_disarm_pa} > {self.error_arm_pa}); the "
+                "disarm band is the inner edge of the arm hysteresis"
+            )
+        if self.min_valve_dwell_s < 0.0:
+            raise ValueError("min_valve_dwell_s must be >= 0")
+        return self
 
 
 class AcuPitchSpec(StrictModel):

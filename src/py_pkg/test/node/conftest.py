@@ -368,6 +368,9 @@ class _PathfindingTesterNode(Node):
     def __init__(self):
         super().__init__("pathfinding_node_tester")
         self.received_targets: list = []
+        # Every /command we see -- our own start/stop plus any the node emits
+        # itself (it drives /command=false on mission completion).
+        self.received_commands: list[bool] = []
 
         self.estimation_pub = create_publisher_for_topic(
             self, UUVTopics.POSITION_ESTIMATION
@@ -377,9 +380,15 @@ class _PathfindingTesterNode(Node):
         self.target_sub = create_subscription_for_topic(
             self, UUVTopics.POSITION_TARGET, self._on_target
         )
+        self.command_sub = create_subscription_for_topic(
+            self, UUVTopics.COMMAND, self._on_command_capture
+        )
 
     def _on_target(self, msg: Pose) -> None:
         self.received_targets.append(msg)
+
+    def _on_command_capture(self, msg: Bool) -> None:
+        self.received_commands.append(bool(msg.data))
 
     def publish_pose_estimation(self, x: float, y: float, z: float) -> None:
         # position.z is gauge depth (Pa); pathfinding reads it straight off the
@@ -428,6 +437,10 @@ class PathfindingNodeHarness(NodeHarness):
     @property
     def received_targets(self) -> list:
         return self.tester.received_targets
+
+    @property
+    def received_commands(self) -> list:
+        return self.tester.received_commands
 
     def publish_pose_estimation(self, x: float, y: float, z: float) -> None:
         self.tester.publish_pose_estimation(x, y, z)

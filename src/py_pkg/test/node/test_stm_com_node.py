@@ -300,14 +300,63 @@ class TestSTMImu:
         h.spin_until(lambda: len(h.tester.received_imu) > 0, timeout=2.0)
         sent = _decode_frames(bytes(h.fake.tx))
         setpoint_ids = {BCU_RPM_VAR_ID, VALVES_TARGET_VAR_ID}
-        assert not [vid for vid, _ in sent if vid in setpoint_ids], (
-            "IMU frames must not cue a setpoint send"
-        )
+        assert not [
+            vid for vid, _ in sent if vid in setpoint_ids
+        ], "IMU frames must not cue a setpoint send"
 
         # A subsequent housekeeping/status frame DOES flush the setpoints.
         h.fake.inject(_frame(VALVES_STATUS_VAR_ID, struct.pack("<B", 0)))
         h.spin_for(0.1)
         sent = _decode_frames(bytes(h.fake.tx))
-        assert [vid for vid, _ in sent if vid in setpoint_ids], (
-            "a status frame should still cue a setpoint send"
-        )
+        assert [
+            vid for vid, _ in sent if vid in setpoint_ids
+        ], "a status frame should still cue a setpoint send"
+
+
+class TestSTMHeartbeatAndWatchdog:
+    """The independent TX heartbeat re-ships the cached setpoints with no
+    inbound cue, and the command-staleness watchdog fails the actuator safe
+    (0 rpm, valves closed) once /bcu/rpm goes quiet -- the Pi-side dead-man
+    for the bench bug where a latched setpoint kept the pump running."""
+
+    def _last_wire_rpm(self, h) -> int:
+        sent = _decode_frames(bytes(h.fake.tx))
+        rpm = [p for vid, p in sent if vid == BCU_RPM_VAR_ID]
+        assert rpm, "no rpm frame on the wire"
+        return struct.unpack("<h", rpm[-1])[0]
+
+    def test_heartbeat_ships_without_inbound_frame(self, stm_harness):
+        h = stm_harness
+        h.tester.command_rpm(250)
+        h.spin_for(0.1)
+        # No inbound frame is ever injected, so the parasitic send can't fire;
+        # crossing a heartbeat period is the only way bytes reach the wire.
+        h.spin_for(1.2)
+        assert self._last_wire_rpm(h) == STM_BCU_RPM_SIGN * 250
+
+    def test_staleness_watchdog_fails_safe(self, stm_harness):
+        h = stm_harness
+        h.node._command_timeout_s = 0.3  # shorten the dead-man for the test
+        h.tester.command_rpm(800)
+        h.tester.command_valves(0b01)
+        h.spin_for(0.1)
+        assert h.node._latest_rpm == 800
+        # No fresh /bcu/rpm: past the timeout, the next heartbeat fails safe.
+        h.spin_for(1.3)
+        assert h.node._cmd_stale is True
+        assert h.node._latest_rpm == 0
+        assert h.node._latest_valves == 0
+        assert self._last_wire_rpm(h) == 0
+
+    def test_fresh_command_clears_watchdog(self, stm_harness):
+        h = stm_harness
+        h.node._command_timeout_s = 0.3
+        h.tester.command_rpm(800)
+        h.spin_for(0.1)
+        h.spin_for(1.3)  # drive into failsafe
+        assert h.node._cmd_stale is True
+        # A fresh command pets the watchdog and revives the setpoint.
+        h.tester.command_rpm(640)
+        h.spin_for(0.1)
+        assert h.node._cmd_stale is False
+        assert h.node._latest_rpm == 640

@@ -12,7 +12,30 @@ import pytest
 from geometry_msgs.msg import Pose
 
 from py_pkg.path.missions.profile import MissionState
-from py_pkg.path.missions.trim_and_neutral import TrimAndNeutralBuoyancyMission
+from py_pkg.path.missions.trim_and_neutral import (
+    NEAR_GOAL_PA,
+    SETTLING_WINDOW_S,
+    STATIONARY_RANGE_PA,
+    TrimAndNeutralBuoyancyMission,
+)
+
+
+def _drive(m, samples):
+    """Replay the executor loop -- update(pressure) then is_done(t) per tick.
+
+    Returns the first mission_t at which is_done latches True, else None.
+    """
+    for t, p in samples:
+        m.update(p)
+        if m.is_done(t):
+            return t
+    return None
+
+
+def _series(value_fn, duration_s, dt=0.1):
+    """(t, pressure) samples over [0, duration_s) at dt spacing."""
+    n = int(duration_s / dt)
+    return [(i * dt, value_fn(i)) for i in range(n)]
 
 
 def _pose(x=0.0, y=0.0, z=0.0):
@@ -44,7 +67,11 @@ class TestStartCapturesHorizontalPosition:
 
     def test_pose_xy_captured(self):
         m = TrimAndNeutralBuoyancyMission()
-        m.start(MissionState(pose=_pose(x=10.0, y=-5.0, z=99.0), target_pressure_pa=80_000.0))
+        m.start(
+            MissionState(
+                pose=_pose(x=10.0, y=-5.0, z=99.0), target_pressure_pa=80_000.0
+            )
+        )
         ref = m.reference(0.0)
         assert ref.position.x == pytest.approx(10.0)
         assert ref.position.y == pytest.approx(-5.0)
@@ -84,9 +111,9 @@ class TestOrientationIsIdentity:
         assert norm == pytest.approx(1.0)
 
 
-class TestUpdateIsNoop:
-    """Open-loop hold: `update` never mutates state, so `reference` must
-    return the same Pose regardless of pressure samples in between."""
+class TestUpdateDoesNotChangeSetpoint:
+    """`update` feeds the settling window but never moves the reference: the
+    hold setpoint stays put regardless of the pressure samples in between."""
 
     def test_pressure_samples_do_not_change_setpoint(self):
         m = TrimAndNeutralBuoyancyMission()
@@ -113,20 +140,54 @@ class TestReferenceIsTimeInvariant:
             assert ref.orientation.w == pytest.approx(1.0)
 
 
-class TestNeverDone:
-    """The mission ends only on operator stop/abort — `is_done` is
-    permanently False so the executor never auto-terminates the hold."""
+class TestSettlingTermination:
+    """The mission self-terminates once it has settled at the goal: within
+    NEAR_GOAL of the target AND stationary (peak-to-peak <= STATIONARY_RANGE)
+    over a full SETTLING_WINDOW. Both must hold; either alone keeps running."""
 
-    def test_is_done_false_at_t_zero(self):
+    TARGET = 75_000.0
+
+    def _mission(self):
         m = TrimAndNeutralBuoyancyMission()
-        m.start(MissionState(target_pressure_pa=80_000.0))
+        m.start(MissionState(target_pressure_pa=self.TARGET))
+        return m
+
+    def test_not_done_before_any_pressure(self):
+        # is_done is called by the executor before update only if pressure is
+        # missing; with no sample observed it must stay running.
+        m = self._mission()
         assert m.is_done(0.0) is False
 
-    @pytest.mark.parametrize("t", [0.0, 60.0, 3600.0, 86_400.0, 1e9])
-    def test_is_done_false_for_all_t(self, t):
-        m = TrimAndNeutralBuoyancyMission()
-        m.start(MissionState(target_pressure_pa=80_000.0))
-        assert m.is_done(t) is False
+    def test_settles_when_near_goal_and_stationary(self):
+        m = self._mission()
+        # Hold exactly at target past the settling window.
+        done_t = _drive(m, _series(lambda i: self.TARGET, SETTLING_WINDOW_S + 2.0))
+        assert done_t is not None
+        assert done_t >= SETTLING_WINDOW_S
+
+    def test_not_done_while_moving_near_goal(self):
+        m = self._mission()
+        # Oscillate within the near-goal band but with a peak-to-peak that
+        # exceeds the stationary range -> never settles.
+        swing = STATIONARY_RANGE_PA + 1000.0  # < NEAR_GOAL_PA, so still "near"
+        assert swing < NEAR_GOAL_PA
+        done_t = _drive(
+            m, _series(lambda i: self.TARGET + (swing if i % 2 else 0.0), 20.0)
+        )
+        assert done_t is None
+
+    def test_not_done_when_stationary_but_off_target(self):
+        m = self._mission()
+        # Dead still, but parked well outside the near-goal band.
+        off = self.TARGET + 2.0 * NEAR_GOAL_PA
+        done_t = _drive(m, _series(lambda i: off, SETTLING_WINDOW_S + 2.0))
+        assert done_t is None
+
+    def test_not_done_before_window_fills(self):
+        m = self._mission()
+        # Perfectly settled, but only half a window of history.
+        done_t = _drive(m, _series(lambda i: self.TARGET, SETTLING_WINDOW_S / 2.0))
+        assert done_t is None
 
 
 class TestRestartUpdatesSetpoint:

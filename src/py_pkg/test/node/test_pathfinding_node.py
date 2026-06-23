@@ -387,6 +387,42 @@ class TestSurfaceMission:
         assert len(h.received_targets) >= 5
 
 
+class TestCompletionSafeStop:
+    """On mission completion the node drives /command=false itself so the
+    controllers run their safe-stop -- completion is not otherwise a stop
+    signal, and without it the BCU would hold the last target forever.
+    Exercised through SURFACE, which self-terminates on a (shrunk) dwell."""
+
+    def test_completion_emits_command_false(
+        self, pathfinding_node_harness, monkeypatch
+    ):
+        monkeypatch.setattr(surface_mod, "DWELL_AT_SURFACE_S", 0.3)
+
+        h = pathfinding_node_harness
+        h.publish_mission_command(SURFACE)
+        h.publish_depth_gauge(GAUGE_AT_SURFACE_PA)
+        h.spin_until(
+            lambda: (
+                h.node._mission is not None and h.node._current_pressure_pa is not None
+            ),
+            timeout=1.0,
+        )
+        # The only /command WE publish is this start.
+        h.publish_command(True)
+        h.spin_until(lambda: h.node._mission_t0_s is not None, timeout=1.0)
+        # Feed "at surface" across the dwell so the mission completes.
+        deadline = time.monotonic() + 1.5
+        while time.monotonic() < deadline and h.node._mission is not None:
+            h.publish_depth_gauge(GAUGE_AT_SURFACE_PA)
+            h.spin_for(0.05)
+        h.spin_until(lambda: h.node._mission is None, timeout=1.0)
+        h.spin_for(0.2)  # let the completion /command=false reach the tester
+
+        # We never published a stop, so a False in the stream came from the
+        # node's completion safe-stop.
+        assert False in h.received_commands, h.received_commands
+
+
 class TestTickGating:
     def test_loaded_does_not_emit(self, pathfinding_node_harness):
         h = pathfinding_node_harness

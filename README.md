@@ -2,12 +2,7 @@
 
 ROS2 navigation and control system for Nautilus's autonomous underwater vehicle, designed to run on RaspberryPie.
 
-## [Getting Started](docs/getting-started.md)Mission Laptop
-cd ~/dave_ws/nautilus-command-bridge-frontend
-mosquitto -c ./mosquitto/mosquitto.conf -v
-cd ~/dave_ws/nautilus-command-bridge-frontend
-npm run dev
-
+## [Getting Started](docs/getting-started.md)
 All about prerequisites, setup, development, package's architecture, testing and debugging.
 
 ## Running the simulation

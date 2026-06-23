@@ -417,12 +417,12 @@ class TestTankLimitClamp:
 
 
 class TestStopResetsAndSilences:
-    """/command=false drops the held target, wipes controller state, emits ONE
-    safe-stop (0 RPM + valves closed), then goes silent -- exactly as the node
-    sat at boot before any mission. Silence frees the BCU wire for a debug
-    node without contention."""
+    """/command=false drops the held target, wipes controller state, and
+    re-asserts the safe-stop (0 RPM + valves closed) for a bounded burst
+    (~STOP_REASSERT_S) so the STM latches the zero even if a single message
+    is dropped -- then goes silent so a debug node can own the wire."""
 
-    def test_stop_emits_one_safe_stop_then_silent(self, bcu_node_harness):
+    def test_stop_reasserts_zero_burst_then_silent(self, bcu_node_harness):
         h = bcu_node_harness
         # Drive a real descent command first.
         h.publish_target_pressure(TARGET_PA_70M)
@@ -430,21 +430,63 @@ class TestStopResetsAndSilences:
         h.spin_until(lambda: len(h.received_rpm) >= 4, timeout=1.5)
         assert h.received_rpm[-1] != 0, "precondition: pump actively commanded"
 
-        # Stop -> target back to None, controller state wiped, one safe-stop.
+        # Stop -> target cleared, controller state wiped.
         h.publish_command(False)
         h.spin_until(lambda: h.node.target_pressure_pa is None, timeout=1.0)
         assert h.node.target_pressure_pa is None
-        h.spin_for(0.2)  # let the one-shot safe-stop land
-        assert (
-            h.received_rpm and h.received_rpm[-1] == 0
-        ), f"stop must emit a 0-RPM safe-stop, got {h.received_rpm[-5:]}"
-        assert h.received_valves and h.received_valves[-1] == 0
 
-        # After the safe stop the loop stays silent -- no periodic zero-hold.
+        # The safe-stop is re-asserted as a burst: several 0-RPM / closed-valve
+        # emissions land, and every one is zero (no stray command after stop).
         h.received_rpm.clear()
         h.received_valves.clear()
-        h.spin_for(0.5)  # 5+ control ticks at 10 Hz
+        h.spin_for(0.5)  # inside the ~1 s burst window
+        assert (
+            len(h.received_rpm) >= 2
+        ), f"stop must re-assert the safe-stop for a burst, got {h.received_rpm}"
+        assert all(r == 0 for r in h.received_rpm), h.received_rpm
+        assert all(v == 0 for v in h.received_valves), h.received_valves
+
+        # Once the burst is spent the loop goes silent -- no perpetual zero-hold.
+        h.spin_for(1.2)  # let the rest of the burst drain
+        h.received_rpm.clear()
+        h.received_valves.clear()
+        h.spin_for(0.5)
         assert (
             h.received_rpm == []
-        ), f"bcu_node must stay silent after the safe stop, got {h.received_rpm}"
+        ), f"bcu_node must go silent after the burst, got {h.received_rpm}"
         assert h.received_valves == []
+
+
+class TestCommandGate:
+    """The near-setpoint command gate is wired in: configured from the spec,
+    and its deadband holds the pump idle even for a command that the rpm
+    deadband alone would let through."""
+
+    def test_gate_configured_from_spec_defaults(self, bcu_node_harness):
+        from py_pkg.scenarios.spec.control import DepthSpec
+
+        d = DepthSpec()
+        g = bcu_node_harness.node._gate
+        # Proves the inverse param mapping (bcu_spec_from_node) carried the
+        # three new gate fields into the node.
+        assert g.error_arm_pa == pytest.approx(d.error_arm_pa)
+        assert g.error_disarm_pa == pytest.approx(d.error_disarm_pa)
+        assert g.min_valve_dwell_s == pytest.approx(d.min_valve_dwell_s)
+
+    def test_disarm_band_holds_pump_idle(self, bcu_node_harness):
+        from py_pkg.pid.bcu_command_gate import BcuCommandGate
+
+        h = bcu_node_harness
+        # Widen the deadband so a normally-active descent sits inside it: a
+        # 30 m error would drive a big rpm, but the gate must suppress it.
+        h.node._gate = BcuCommandGate(
+            error_arm_pa=400_000.0, error_disarm_pa=400_000.0, min_valve_dwell_s=0.0
+        )
+        h.publish_target_pressure(TARGET_PA_30M)
+        h.publish_depth_gauge(GAUGE_AT_SURFACE_PA)
+        h.spin_for(0.6)
+        assert len(h.received_rpm) >= 3
+        assert all(
+            r == 0 for r in h.received_rpm
+        ), f"gate disarm band must hold the pump idle, got {h.received_rpm}"
+        assert all(v == 0 for v in h.received_valves), h.received_valves

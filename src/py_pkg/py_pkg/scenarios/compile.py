@@ -61,6 +61,9 @@ def params_for_bcu_node(scen: ControlScenario) -> dict[str, Any]:
         "plant_model.min_operating_rpm": d.plant_model.min_operating_rpm,
         "plant_model.max_rpm": d.plant_model.max_rpm,
         "plant_model.pump_efficiency": d.plant_model.pump_efficiency,
+        "error_disarm_pa": d.error_disarm_pa,
+        "error_arm_pa": d.error_arm_pa,
+        "min_valve_dwell_s": d.min_valve_dwell_s,
     }
 
 
@@ -96,9 +99,16 @@ def bcu_spec_from_node(node: Node) -> DepthSpec:
     node.declare_parameter("plant_model.max_rpm", pm.max_rpm)
     node.declare_parameter("plant_model.pump_efficiency", pm.pump_efficiency)
 
+    node.declare_parameter("error_disarm_pa", default.error_disarm_pa)
+    node.declare_parameter("error_arm_pa", default.error_arm_pa)
+    node.declare_parameter("min_valve_dwell_s", default.min_valve_dwell_s)
+
     g = node.get_parameter
     return DepthSpec(
         frequency_hz=g("frequency_hz").value,
+        error_disarm_pa=g("error_disarm_pa").value,
+        error_arm_pa=g("error_arm_pa").value,
+        min_valve_dwell_s=g("min_valve_dwell_s").value,
         pid_pressure=PIDPressureSpec(
             kp=g("pid_pressure.kp").value,
             ki=g("pid_pressure.ki").value,
@@ -544,9 +554,9 @@ def _calibration() -> tuple[dict[str, float], dict[str, float]]:
 
     # A slot added to the physics but not the registry (or vice versa) is
     # caught here rather than producing a silently wrong SDF.
-    assert set(f_nom) == _ALL_SLOTS, (
-        f"closed-form/registry slot mismatch: {set(f_nom) ^ _ALL_SLOTS}"
-    )
+    assert (
+        set(f_nom) == _ALL_SLOTS
+    ), f"closed-form/registry slot mismatch: {set(f_nom) ^ _ALL_SLOTS}"
 
     scalars: dict[str, float] = {}
     for k, can_val in canonical.items():

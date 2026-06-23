@@ -9,6 +9,7 @@ from std_msgs.msg import Bool, Int16, UInt8
 from py_pkg.math_utils import deadband_snap, span_band_guards
 from py_pkg.physics import q_to_rpm
 from py_pkg.pid import depth_control_system as ControlSystem
+from py_pkg.pid.bcu_command_gate import BcuCommandGate
 from py_pkg.robot_specs import (
     BCU_DEEP_THRESHOLD_PA,
     BCU_FREE_VALVE_MASK,
@@ -21,6 +22,10 @@ from py_pkg.uuv_ros_core import (
     create_subscription_for_topic,
     spin_node,
 )
+
+# How long to keep re-asserting the safe-stop after a stop (or at boot)
+# before the loop goes silent.
+STOP_REASSERT_S = 1.0
 
 
 def select_pump_and_valves(
@@ -149,6 +154,20 @@ class BCUNode(Node):
         self._max_rpm = cfg.plant_model.max_rpm
         self._pump_efficiency = cfg.plant_model.pump_efficiency
 
+        # Anti-chatter gate between solve_bcu_command and the wire: error
+        # deadband + arm/disarm hysteresis + minimum valve dwell.
+        self._gate = BcuCommandGate(
+            error_arm_pa=cfg.error_arm_pa,
+            error_disarm_pa=cfg.error_disarm_pa,
+            min_valve_dwell_s=cfg.min_valve_dwell_s,
+        )
+
+        # Safe-stop re-assert burst: how many idle ticks still publish 0 RPM
+        # + valves closed before the loop goes silent. Decremented in
+        # control_loop while target is None; topped up by _begin_safe_stop.
+        self._stop_reassert_count = max(1, round(cfg.frequency_hz * STOP_REASSERT_S))
+        self._stop_reassert_remaining = 0
+
         # Held None until the first POSITION_TARGET arrives
         self.target_pressure_pa: float | None = None
         self.current_pressure_pa = 0.0
@@ -222,7 +241,7 @@ class BCUNode(Node):
         )
 
         # Leave the BCU wire unambiguously at 0/closed at boot.
-        self._publish_bcu_stop()
+        self._begin_safe_stop()
 
         self.get_logger().info("Depth control node started.")
 
@@ -268,27 +287,33 @@ class BCUNode(Node):
         valves_off.data = 0
         self.bcu_valves_publisher.publish(valves_off)
 
+    def _begin_safe_stop(self) -> None:
+        # Emit one safe-stop now and arm the re-assert burst so control_loop
+        # keeps publishing 0/closed for ~STOP_REASSERT_S.
+        self._publish_bcu_stop()
+        self._stop_reassert_remaining = self._stop_reassert_count
+
     def _on_command(self, msg: Bool) -> None:
-        # /command=true (start) is a no-op for the controller -- it just waits
-        # for pathfinding's next POSITION_TARGET. /command=false (stop) wipes
-        # controller state, drops the target, and publishes ONE safe-stop
-        # (0 RPM + valves closed) before control_loop goes silent. That single
-        # safe-stop is mandatory: the STM has no staleness watchdog and re-ships
-        # the last value forever..
+        # /command=true (start) is a no-op for the controller
         if bool(msg.data):
             return
         self.control_system.reset()
+        self._gate.reset()
         self.current_bladder_level = self._initial_proportion_full
         self.target_pressure_pa = None
-        self._publish_bcu_stop()
+        self._begin_safe_stop()
         self.get_logger().info(
-            "stop -> safe-stop emitted, BCU going silent (fresh state)."
+            "stop -> safe-stop burst emitted, BCU going silent (fresh state)."
         )
 
     def control_loop(self):
         if self.target_pressure_pa is None:
-            # No target -> go silent. Lets a debug node own the
-            # BCU with no contention.
+            # No target. Keep re-asserting the safe-stop for the burst window
+            # so the STM latches the zero, then go silent so a debug node can
+            # own the BCU wire with no contention.
+            if self._stop_reassert_remaining > 0:
+                self._publish_bcu_stop()
+                self._stop_reassert_remaining -= 1
             return
 
         # The PID is the only stateful step: it integrates over time to turn the
@@ -310,6 +335,14 @@ class BCUNode(Node):
             max_rpm=self._max_rpm,
         )
 
+        # Anti-chatter conditioning: deadband + hysteresis on the depth error,
+        # and a minimum valve dwell. Holds the pump idle near the setpoint and
+        # stops the valves toggling every tick.
+        error_pa = self.target_pressure_pa - self.current_pressure_pa
+        pump_rpm, motor_open, free_open = self._gate.apply(
+            error_pa, pump_rpm, motor_open, free_open, now_s=now
+        )
+
         rpm_msg = Int16()
         rpm_msg.data = pump_rpm
         valves_msg = UInt8()
@@ -325,6 +358,15 @@ class BCUNode(Node):
             f"q={q:.4f} Hz -> pump {pump_rpm} rpm, "
             f"valves {valves_msg.data:#04b} (bit0=motor/valve2, bit1=free/valve1)"
         )
+
+    def destroy_node(self) -> bool:
+        # Best-effort safe-stop on teardown so a clean shutdown leaves the
+        # pump at 0 / valves closed rather than whatever it last commanded.
+        try:
+            self._publish_bcu_stop()
+        except Exception:
+            pass
+        return super().destroy_node()
 
 
 def main(args=None):
