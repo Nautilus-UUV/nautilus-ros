@@ -17,7 +17,7 @@ jobs:
       
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Install the tools
       - name: Install build/CLI bits
