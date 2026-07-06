@@ -8,6 +8,7 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*venv*
 
 # === CMake and colcon metadata ===
 CMakeFiles/
@@ -38,3 +39,10 @@ pip-wheel-metadata/
 # === Misc ===
 .colcon/
 .colcon_install_layout
+CLAUDE.md
+flake.lock
+flake.nix
+
+# === Coding Agents ===
+.claude/
+

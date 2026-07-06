@@ -1,0 +1,67 @@
+# Nominal scenario: perturbation-free reference for Monte Carlo sweeps.
+#
+# Identical to baseline.yaml except BCU fault injection is disabled
+# (`mttf_sec: 0.0`). Use this as the deterministic baseline
+# every MC run differs from.
+
+seed: 0
+
+control:
+  controllers:
+    depth:
+      frequency_hz: 10
+      pid_pressure:
+        kp: 5.119127756253602e-07
+        ki: 1.210444124384171e-08
+        kd: 1.7448840717788575e-05
+        integral_limits:
+        - -0.0025
+        - 0.0025
+        output_limits:
+        - -0.01
+        - 0.01
+        derivative_filter: 0.3
+      plant_model:
+        bladder_nominal_m3: 0.0025
+        initial_proportion_full: 1.0
+        min_rpm: 500
+        min_operating_rpm: 1000
+        max_rpm: 3000
+        pump_efficiency: 0.93
+    acu_pitch:
+      name: pitch
+      output_limits: [-0.11, -0.01]
+    acu_roll:
+      frequency_hz: 10
+      name: roll
+      kp: 0.5
+      ki: 0.005
+      kd: 0.05
+      command_tolerance: 0.5
+      integral_limits: [-30.0, 30.0]
+      output_limits: [-30.0, 30.0]
+      derivative_filter: 0.2
+
+rig:
+  sim:
+    model_name: glider_nautilus
+    world_name: oceans_waves
+  plant:
+    volume_per_rev_m3: 0.32e-6
+    bladder_min_m3: 0.0004969875585183712
+    bladder_max_m3: 0.0017114339203579084
+    bladder_nominal_m3: 0.0025
+    bcu_motor_min_rpm: 0
+    bcu_motor_max_rpm: 3000
+  faults:
+    bcu_rpm:
+      # Fault injection disabled — mttf_sec <= 0 means the degradation
+      # ladder never steps. num_levels is kept at the baseline value so a
+      # sweep flipping just mttf_sec back on is a one-line edit.
+      mttf_sec: 0.0
+      num_levels: 5
+  bridges:
+    bcu:
+      publish_rate_hz: 10
+    external_sensor:
+      publish_rate_hz: 10

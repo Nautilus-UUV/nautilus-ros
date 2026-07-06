@@ -1,0 +1,20 @@
+# Sampled perturbation: draggier hull.
+#
+# Linear drag diagonals on the body scaled to 140% of nominal -- the
+# controller fights more damping in surge and heave, so a sawtooth should
+# settle more slowly but still complete. The high end of the standard
+# uncertainty band for the closed-loop test.
+
+seed: 0
+
+rig:
+  faults:
+    bcu_rpm:
+      mttf_sec: 0.0
+  hydrodynamics:
+    drag_xU: -151.2
+    drag_yV: -11.2
+    drag_zW: -226.8
+    drag_kP: -18.2
+    drag_mQ: -44.8
+    drag_nR: -28.0

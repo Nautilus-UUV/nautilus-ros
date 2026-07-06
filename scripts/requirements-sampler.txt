@@ -1,0 +1,15 @@
+# Host-side deps for lhs_sample.py + run_sweep.py.
+#
+# These run *outside* the SIF (the sampler generates files, the
+# orchestrator calls apptainer exec), so they don't need to be baked
+# into the container image. On Ubuntu hosts where you already have
+# /usr/bin/python3 with apt-installed python3-numpy / python3-yaml /
+# python3-scipy, you can skip this entirely.
+#
+#     pip install -r requirements-sampler.txt
+#     # or, for a system-managed Python on Ubuntu:
+#     sudo apt install python3-numpy python3-yaml python3-scipy
+
+numpy
+pyyaml
+scipy>=1.10  # scipy.stats.qmc.LatinHypercube

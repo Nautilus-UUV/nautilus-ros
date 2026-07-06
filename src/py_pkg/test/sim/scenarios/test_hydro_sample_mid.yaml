@@ -1,0 +1,22 @@
+# Sampled perturbation: defaults, rendered through the Jinja path.
+#
+# Carries an explicit `rig.hydrodynamics:` block with default values, so
+# `description_file_for_scenario` exercises the render branch instead of
+# returning the canonical model.sdf path. This is the "rendering itself
+# doesn't perturb at nominal values" test: with the Jinja path on but
+# nothing changed, the sawtooth should behave the same as a
+# canonical-SDF run.
+
+seed: 0
+
+rig:
+  faults:
+    bcu_rpm:
+      mttf_sec: 0.0
+  hydrodynamics:
+    drag_xU: -108.0
+    drag_yV: -8.0
+    drag_zW: -162.0
+    drag_kP: -13.0
+    drag_mQ: -32.0
+    drag_nR: -20.0

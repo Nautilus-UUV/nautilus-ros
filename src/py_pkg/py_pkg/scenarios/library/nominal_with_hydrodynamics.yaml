@@ -1,0 +1,129 @@
+# Nominal scenario with the `rig.hydrodynamics:` block listed explicitly.
+#
+# Same plant, controllers, faults, and bridges as `nominal.yaml`. The
+# difference is the `rig.hydrodynamics:` block: every coefficient is
+# present and pinned to its current canonical-SDF value. That means
+# this YAML exercises the Jinja render path (the launch sees a non-None
+# `rig.hydrodynamics` and renders `model.sdf.jinja` to a temp file)
+# while producing an SDF byte-identical to the canonical `model.sdf` —
+# `nominal.yaml` skips the render entirely; this one renders, but the
+# render is a no-op.
+#
+# Uses:
+#  - Smoke-test the rendering pipeline end-to-end without changing plant
+#    behaviour.
+#  - Reference for what's perturbable: copy this file, tweak the
+#    coefficients you care about, point a sampled run at it.
+#
+# Sampling strategy (LHS / Sobol / Halton / plain Monte Carlo /
+# hand-picked corners) is the orchestrator's call — the spec shape is
+# the same regardless.
+
+seed: 0
+
+control:
+  controllers:
+    depth:
+      frequency_hz: 10
+      pid_pressure:
+        kp: 5.119127756253602e-07
+        ki: 1.210444124384171e-08
+        kd: 1.7448840717788575e-05
+        integral_limits:
+        - -0.0025
+        - 0.0025
+        output_limits:
+        - -0.01
+        - 0.01
+        derivative_filter: 0.3
+      plant_model:
+        bladder_nominal_m3: 0.0025
+        initial_proportion_full: 1.0
+        min_rpm: 500
+        min_operating_rpm: 1000
+        max_rpm: 3000
+        pump_efficiency: 0.93
+    acu_pitch:
+      name: pitch
+      output_limits: [-0.11, -0.01]
+    acu_roll:
+      frequency_hz: 10
+      name: roll
+      kp: 0.5
+      ki: 0.005
+      kd: 0.05
+      command_tolerance: 0.5
+      integral_limits: [-30.0, 30.0]
+      output_limits: [-30.0, 30.0]
+      derivative_filter: 0.2
+
+rig:
+  sim:
+    model_name: glider_nautilus
+    world_name: oceans_waves
+  plant:
+    volume_per_rev_m3: 0.32e-6
+    bladder_min_m3: 0.0004969875585183712
+    bladder_max_m3: 0.0017114339203579084
+    bladder_nominal_m3: 0.0025
+    bcu_motor_min_rpm: 0
+    bcu_motor_max_rpm: 3000
+  faults:
+    bcu_rpm:
+      # Fault injection disabled (mttf_sec <= 0 never steps the ladder).
+      mttf_sec: 0.0
+      num_levels: 5
+  bridges:
+    bcu:
+      publish_rate_hz: 10
+    external_sensor:
+      publish_rate_hz: 10
+
+  # Hydrodynamic plant — every field at its canonical-SDF value. Render
+  # path fires (since the block is present), but the rendered SDF
+  # equals `model.sdf` byte-for-byte. The Tier 3 parity test in
+  # nautilus_hal locks that equivalence in.
+  hydrodynamics:
+    # Body <fluid_added_mass> (model.sdf lines 39-46).
+    added_mass_xx: 5.30023995
+    added_mass_yy: 98.529516
+    added_mass_zz: 110.543023
+    added_mass_pp: 1.46943124
+    added_mass_qq: 20.2676439
+    added_mass_rr: 16.1139805
+
+    # Hydrodynamics plugin linear-drag diagonals (model.sdf lines 135-140).
+    drag_xU: -108.0
+    drag_yV: -8.0
+    drag_zW: -162.0
+    drag_kP: -13.0
+    drag_mQ: -32.0
+    drag_nR: -20.0
+
+    # Per-fin lift/drag (model.sdf lines 289 / 353 / 462). Fins share
+    # area (0.0725 m^2); the top rudder is smaller (0.0244 m^2). All
+    # three plug into the same FinAeroSpec schema.
+    left_fin:
+      cla: 4.13
+      cla_stall: -1.1
+      cda: 0.2
+      cda_stall: 0.03
+      alpha_stall: 0.17
+      a0: 0.0
+      area: 0.0725
+    right_fin:
+      cla: 4.13
+      cla_stall: -1.1
+      cda: 0.2
+      cda_stall: 0.03
+      alpha_stall: 0.17
+      a0: 0.0
+      area: 0.0725
+    top_rudder:
+      cla: 4.13
+      cla_stall: -1.1
+      cda: 0.2
+      cda_stall: 0.03
+      alpha_stall: 0.17
+      a0: 0.0
+      area: 0.0244

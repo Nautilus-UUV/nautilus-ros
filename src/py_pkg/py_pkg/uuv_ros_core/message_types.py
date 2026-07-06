@@ -10,12 +10,27 @@ Example:
 
 """
 
-from sensor_msgs.msg import Temperature, Imu
-from std_msgs.msg import Int32, Float32, String, UInt8MultiArray, Float32MultiArray
-from geometry_msgs.msg import Pose
 from can_msgs.msg import Frame
-from .topics import UUVTopics
+from diagnostic_msgs.msg import DiagnosticArray
+from geometry_msgs.msg import Pose
+from nautilus_msgs.msg import (
+    BcuPumpCommand,
+    BcuPumpUntilPressureCommand,
+    DiveInit,
+    MissionCommand,
+)
+from sensor_msgs.msg import Imu, Temperature
+from std_msgs.msg import (
+    Bool,
+    Empty,
+    Float32,
+    Int16,
+    Int32,
+    UInt8,
+    UInt8MultiArray,
+)
 
+from .topics import UUVTopics
 
 TOPIC_MESSAGE_MAP = {
     UUVTopics.INTERNAL_TEMPERATURE: Temperature,
@@ -25,21 +40,34 @@ TOPIC_MESSAGE_MAP = {
     UUVTopics.EXTERNAL_TEMPERATURE: Temperature,
     UUVTopics.EXTERNAL_PRESSURE: Int32,
     UUVTopics.BCU_PRESSURE: Int32,
+    UUVTopics.BCU_VOLUME: Int32,
     UUVTopics.BCU_FLOW_RATE: Float32,
-    UUVTopics.BCU_RPM: Int32,
-    UUVTopics.ACU_TILT: Float32,
-    UUVTopics.ACU_ROLL: Float32,
-    UUVTopics.ACU_TILT_STEPS: Int32,
-    UUVTopics.ACU_ROLL_STEPS: Int32,
+    UUVTopics.BCU_RPM: Int16,
+    # Bit 0 = valve 2 (motor way), bit 1 = valve 1 (free way); 1 = open, 0 = closed.
+    UUVTopics.BCU_VALVES: UInt8,
+    UUVTopics.BCU_FEEDBACK_RPM: Int16,
+    UUVTopics.BCU_FEEDBACK_VALVES: UInt8,
+    UUVTopics.ACU_PITCH: Int16,
+    UUVTopics.ACU_ROLL: Int16,
     UUVTopics.ACU_FEEDBACK_OFFSET: Float32,
     UUVTopics.ACU_FEEDBACK_ANGLE: Float32,
-    UUVTopics.IMU_LEFT: Imu,
-    UUVTopics.IMU_RIGHT: Imu,
-    UUVTopics.IMU_FILTERED_LEFT: Imu,
-    UUVTopics.IMU_FILTERED_RIGHT: Imu,
+    UUVTopics.IMU: Imu,
+    UUVTopics.IMU_FILTERED: Imu,
     UUVTopics.POSITION_TARGET: Pose,
     UUVTopics.POSITION_ESTIMATION: Pose,
-    UUVTopics.PATH: Float32MultiArray,
-    UUVTopics.COMMAND: String,
+    UUVTopics.PATH: MissionCommand,
+    # Mission run/stop: true = start the loaded mission, false = stop and reset
+    # the stack to its clean initial state.
+    UUVTopics.COMMAND: Bool,
+    UUVTopics.DIVE_INIT: DiveInit,
     UUVTopics.CAN_OUT: Frame,
+    UUVTopics.DEBUG_BCU_RPM: BcuPumpCommand,
+    UUVTopics.DEBUG_BCU_RPM_UNTIL_PRESSURE: BcuPumpUntilPressureCommand,
+    # Same wire types as the actuator topics these debug injection points feed.
+    UUVTopics.DEBUG_BCU_VALVES: UInt8,
+    UUVTopics.DEBUG_ACU_PITCH: Int16,
+    UUVTopics.DEBUG_ACU_ROLL: Int16,
+    UUVTopics.DEBUG_EMERGENCY_SURFACE: Bool,
+    UUVTopics.DEBUG_RESET: Empty,
+    UUVTopics.STATUS_LIVENESS: DiagnosticArray,
 }
