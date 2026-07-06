@@ -11,6 +11,17 @@ from py_pkg.uuv_ros_core.node_runtime import spin_node
 from py_pkg.uuv_ros_core.topics import UUVTopics
 
 
+def ema(alpha: float, x_new: float, x_prev: float | None) -> float:
+    """One EMA step: ``alpha*x_new + (1-alpha)*x_prev``.
+
+    On the first sample (``x_prev`` is None) the input passes through —
+    the filter must not wind up from an implicit zero.
+    """
+    if x_prev is None:
+        return x_new
+    return alpha * x_new + (1.0 - alpha) * x_prev
+
+
 class ImuPrefilter(Node):
     """
     Exponential Moving Average (EMA) prefilter for the IMU stream.
@@ -30,13 +41,9 @@ class ImuPrefilter(Node):
         # Filter coefficient: 0 = very smooth, 1 = no filtering
         self.alpha = 0.5
 
-        # Previous filtered values (initialized on first message)
-        self.prev_ax = None
-        self.prev_ay = None
-        self.prev_az = None
-        self.prev_wx = None
-        self.prev_wy = None
-        self.prev_wz = None
+        # Previous filtered (x, y, z) tuples, initialized on first message.
+        self._prev_accel = None
+        self._prev_gyro = None
 
         self.sub = create_subscription_for_topic(
             self, UUVTopics.IMU, self.imu_callback
@@ -45,49 +52,26 @@ class ImuPrefilter(Node):
 
         self.get_logger().info(f"IMU prefilter started (alpha={self.alpha})")
 
-    def ema(self, x_new, x_prev):
-        """Exponential Moving Average step; on first sample return x_new directly."""
-        if x_prev is None:
-            return x_new
-        a = self.alpha
-        return a * x_new + (1.0 - a) * x_prev
+    def _ema3(self, vec, prev):
+        """EMA-filter a Vector3 in place; on first sample it passes through.
 
-    def imu_callback(self, msg_in: Imu):
-        # Filter linear acceleration
-        fax = self.ema(msg_in.linear_acceleration.x, self.prev_ax)
-        fay = self.ema(msg_in.linear_acceleration.y, self.prev_ay)
-        faz = self.ema(msg_in.linear_acceleration.z, self.prev_az)
+        Returns the new (x, y, z) tuple to store as the next `prev`.
+        """
+        if prev is None:
+            return (vec.x, vec.y, vec.z)
+        vec.x, vec.y, vec.z = new = tuple(
+            ema(self.alpha, n, p) for n, p in zip((vec.x, vec.y, vec.z), prev)
+        )
+        return new
 
-        # Filter angular velocity
-        fwx = self.ema(msg_in.angular_velocity.x, self.prev_wx)
-        fwy = self.ema(msg_in.angular_velocity.y, self.prev_wy)
-        fwz = self.ema(msg_in.angular_velocity.z, self.prev_wz)
-
-        # Update previous values for next iteration
-        self.prev_ax, self.prev_ay, self.prev_az = fax, fay, faz
-        self.prev_wx, self.prev_wy, self.prev_wz = fwx, fwy, fwz
-
-        # Prepare output message
-        msg_out = Imu()
-        msg_out.header = msg_in.header
-
-        # Pass orientation through from the raw IMU (not filtered — already computed by sensor)
-        msg_out.orientation = msg_in.orientation
-        msg_out.orientation_covariance = msg_in.orientation_covariance
-
-        # Copy covariance and fill filtered data
-        msg_out.angular_velocity.x = fwx
-        msg_out.angular_velocity.y = fwy
-        msg_out.angular_velocity.z = fwz
-        msg_out.angular_velocity_covariance = msg_in.angular_velocity_covariance
-
-        msg_out.linear_acceleration.x = fax
-        msg_out.linear_acceleration.y = fay
-        msg_out.linear_acceleration.z = faz
-        msg_out.linear_acceleration_covariance = msg_in.linear_acceleration_covariance
-
-        # Publish the filtered IMU message
-        self.pub.publish(msg_out)
+    def imu_callback(self, msg: Imu):
+        # Header, orientation, and all covariances pass through untouched; only
+        # the six accel/gyro components are filtered — in place on the incoming
+        # message (the callback owns it), so no per-sample Imu rebuild at the
+        # raw IMU rate.
+        self._prev_accel = self._ema3(msg.linear_acceleration, self._prev_accel)
+        self._prev_gyro = self._ema3(msg.angular_velocity, self._prev_gyro)
+        self.pub.publish(msg)
 
 
 def main():

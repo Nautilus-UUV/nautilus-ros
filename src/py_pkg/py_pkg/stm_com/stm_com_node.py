@@ -101,12 +101,9 @@ IMU_VAR_IDS = (
 # estimator reads accel/gyro directly), but kept descriptive and stable.
 IMU_FRAME_ID = "imu"
 
-PAYLOAD_FMT = "<h"  # little-endian signed 16-bit
-BCU_RPM_PAYLOAD_LEN = struct.calcsize(PAYLOAD_FMT)
-
-# Inbound payload shapes -- size-checked before each unpack.
+# Payload shapes, shared by TX and RX -- size-checked before each unpack.
 UINT16_FMT = "<H"
-INT16_FMT = "<h"
+INT16_FMT = "<h"  # little-endian signed 16-bit (also the BCU RPM TX payload)
 UINT8_FMT = "<B"
 UINT16_LEN = struct.calcsize(UINT16_FMT)
 INT16_LEN = struct.calcsize(INT16_FMT)
@@ -208,7 +205,8 @@ class STMComNode(Node):
 
             if len(self._rx_buf) < 1 + HEADER_LEN:
                 return  # wait for the rest of the header
-            var_id, length = struct.unpack(HEADER_FMT, self._rx_buf[1 : 1 + HEADER_LEN])
+            # unpack_from parses in place -- no header slice per frame.
+            var_id, length = struct.unpack_from(HEADER_FMT, self._rx_buf, 1)
 
             frame_len = 1 + HEADER_LEN + length
             if len(self._rx_buf) < frame_len:
@@ -348,8 +346,8 @@ class STMComNode(Node):
         wire_rpm = STM_BCU_RPM_SIGN * self._latest_rpm
         packet = (
             SYNC_BYTE
-            + struct.pack(HEADER_FMT, BCU_RPM_VAR_ID, BCU_RPM_PAYLOAD_LEN)
-            + struct.pack(PAYLOAD_FMT, wire_rpm)
+            + struct.pack(HEADER_FMT, BCU_RPM_VAR_ID, INT16_LEN)
+            + struct.pack(INT16_FMT, wire_rpm)
         )
         self._ser.write(packet)
         self.get_logger().debug(f"tx bcu rpm: {wire_rpm} (ros {self._latest_rpm})")

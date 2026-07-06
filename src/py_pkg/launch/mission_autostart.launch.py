@@ -45,8 +45,8 @@ def generate_launch_description() -> LaunchDescription:
                 "angle_rad": ParameterValue(
                     LaunchConfiguration("angle_rad"), value_type=float
                 ),
-                "n_resurfaces": ParameterValue(
-                    LaunchConfiguration("n_resurfaces"), value_type=int
+                "n_oscillations": ParameterValue(
+                    LaunchConfiguration("n_oscillations"), value_type=int
                 ),
                 "start_delay_s": ParameterValue(
                     LaunchConfiguration("start_delay_s"), value_type=float
@@ -61,7 +61,7 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("mission_id", default_value="1"),
             DeclareLaunchArgument("target_pressure_pa", default_value="0.0"),
             DeclareLaunchArgument("angle_rad", default_value="0.0"),
-            DeclareLaunchArgument("n_resurfaces", default_value="0"),
+            DeclareLaunchArgument("n_oscillations", default_value="0"),
             DeclareLaunchArgument("start_delay_s", default_value="2.0"),
             TimerAction(period=_BRINGUP_DELAY_S, actions=[autostart_node]),
         ]

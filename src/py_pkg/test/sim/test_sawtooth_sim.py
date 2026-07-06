@@ -64,7 +64,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import Imu
 from std_msgs.msg import Bool, Int16
 
-from ._sim_helpers import reap_lingering_gz, sim_gui_enabled
+from ._sim_helpers import reap_lingering_gz, sim_gui_enabled, spin_for, spin_until
 
 TARGET_PRESSURE_PA = 73575.0  # ~7.5 m of seawater (gauge); spawn is ~5 m
 # TARGET_PRESSURE_PA = 703575.0
@@ -208,19 +208,6 @@ class SawtoothSimTest(unittest.TestCase):
         self.driver.destroy_node()
         self.executor.shutdown()
 
-    def _spin_for(self, duration_s: float, slice_s: float = 0.05) -> None:
-        deadline = time.monotonic() + duration_s
-        while time.monotonic() < deadline:
-            self.executor.spin_once(timeout_sec=slice_s)
-
-    def _spin_until(self, predicate, timeout_s: float, slice_s: float = 0.05):
-        deadline = time.monotonic() + timeout_s
-        while time.monotonic() < deadline:
-            if predicate():
-                return True
-            self.executor.spin_once(timeout_sec=slice_s)
-        return predicate()
-
     def test_sawtooth_pitch_endpoints_per_leg(self):
         startup_timeout_s = 60.0
         post_ready_settle_s = 2.0
@@ -233,7 +220,8 @@ class SawtoothSimTest(unittest.TestCase):
         mission_duration_s = 300.0
         drain_s = 2.0
 
-        sim_ready = self._spin_until(
+        sim_ready = spin_until(
+            self.executor,
             lambda: self.driver.imu_msg_count >= 1,
             timeout_s=startup_timeout_s,
         )
@@ -243,15 +231,15 @@ class SawtoothSimTest(unittest.TestCase):
             "is Gazebo up and is the model spawned with its IMU plugin?",
         )
 
-        self._spin_for(post_ready_settle_s)
+        spin_for(self.executor, post_ready_settle_s)
 
         self.driver.publish_mission()
-        self._spin_for(0.5)
+        spin_for(self.executor, 0.5)
         self.driver.publish_start()
 
         mission_start_t = time.monotonic()
-        self._spin_for(mission_duration_s)
-        self._spin_for(drain_s)
+        spin_for(self.executor, mission_duration_s)
+        spin_for(self.executor, drain_s)
         mission_end_t = time.monotonic() - drain_s
 
         # 1) Setpoint stream alive across the mission window. ~10 Hz

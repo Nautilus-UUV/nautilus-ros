@@ -1,10 +1,6 @@
+from py_pkg.math_utils import clamp
 from py_pkg.utils_controls import PIDController
 
-
-"""
-
-DEPRECATED; It is not implemented, ingore for now
-"""
 
 class AxisController:
     """Controls a single axis (roll or pitch) of the vehicle.
@@ -15,12 +11,9 @@ class AxisController:
     if the motor-frame target hasn't moved by more than `command_tolerance`
     since we last published, we just don't republish.
 
-    By default (used for Roll), both the vehicle's angle and the motor's
-    position are measured in degrees. Therefore, the controller
-    calculates an *incremental* adjustment: it adds the required
-    correction to the motor's current position. `MassShifterController`
-    overrides this for the pitch axis, where the motor frame (m) is
-    different from the sensor frame (deg).
+    Both the vehicle's angle and the motor's position are measured in
+    degrees, so the controller calculates an *incremental* adjustment:
+    it adds the required correction to the motor's current position.
 
     Time is passed in externally in seconds. This ensures the control
     math (ki/kd values) remains consistent regardless of how fast the
@@ -29,7 +22,6 @@ class AxisController:
 
     def __init__(
         self,
-        name,
         kp,
         command_tolerance,
         ki=0.0,
@@ -38,10 +30,6 @@ class AxisController:
         output_limits=(-1000.0, 1000.0),
         derivative_filter=0.0,
     ):
-        self.name = name
-        self.kp = kp
-        self.ki = ki
-        self.kd = kd
         self.command_tolerance = command_tolerance
         self.output_limits = output_limits
 
@@ -80,32 +68,13 @@ class AxisController:
     def update_sensor(self, measured_pos):
         self.current_pos = measured_pos
 
-    def _pid_correction(self, desired_value, time):
-        return self.pid.update(desired_value, self.current_pos, time)
-
-    def _clamp_motor(self, val):
-        lo, hi = self.output_limits
-        if val > hi:
-            return hi
-        if val < lo:
-            return lo
-        return val
-
-    def _compute_new_target(self, desired_value, time):
-        # By default, the motor and the target angle use the same unit (degrees).
-        # We calculate the relative correction and add it to our current position.
-        return self.current_pos + self._pid_correction(desired_value, time)
-
-    def compute_control(self, desired_value, time):
-        """Calculates the raw target position before safety limits are applied."""
-        return self._compute_new_target(desired_value, time)
-
     def update(self, desired_value, time):
         """Returns a motor-frame command, or None if the redundant-publish
         guard determines the bus has nothing new to hear."""
-        self.target_pos = self._clamp_motor(
-            self._compute_new_target(desired_value, time)
-        )
+        # Motor and target angle share a unit (degrees): apply the PID
+        # correction relative to where the motor currently sits.
+        correction = self.pid.update(desired_value, self.current_pos, time)
+        self.target_pos = clamp(self.current_pos + correction, *self.output_limits)
 
         # Prime: PID's first call returns 0 to seed prev_time, which would
         # show up as a phantom "go to zero" command. Swallow it.
@@ -121,19 +90,3 @@ class AxisController:
             return self.target_pos
 
         return None
-
-
-class MassShifterController(AxisController):
-    """Controls the pitch axis by linearly moving a weight (a mass-shifter).
-
-    Unlike the roll axis, this motor moves in meters (linear stroke) to change
-    an angle measured in degrees. The tuning parameter (kp) acts as the conversion
-    factor between meters and degrees.
-
-    Because of this physical difference, the mathematical output is the *exact
-    absolute position* (in meters) the weight needs to move to. We do not add
-    this to the current position, as that would apply the correction twice.
-    """
-
-    def _compute_new_target(self, desired_value, time):
-        return self._pid_correction(desired_value, time)

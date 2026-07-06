@@ -62,7 +62,15 @@ from rclpy.node import Node
 from sensor_msgs.msg import Imu
 from std_msgs.msg import Bool, Int32
 
-from ._sim_helpers import reap_lingering_gz, sim_gui_enabled
+from ._sim_helpers import (
+    omega,
+    reap_lingering_gz,
+    sim_gui_enabled,
+    speed,
+    spin_for,
+    spin_until,
+    window,
+)
 
 GROUND_TRUTH_TOPIC = "/model/glider_nautilus/odometry"
 
@@ -157,13 +165,6 @@ class _SurfaceTestDriver(Node):
         self.command_pub.publish(msg)
 
 
-def _window(
-    samples: list[tuple[float, object]],
-    window_start_t: float,
-) -> list[object]:
-    return [s for (t, s) in samples if t >= window_start_t]
-
-
 @pytest.mark.sim
 class SurfaceSimTest(unittest.TestCase):
     """Behavior: SURFACE mission ascends to gauge ~0 and self-terminates."""
@@ -185,19 +186,6 @@ class SurfaceSimTest(unittest.TestCase):
         self.executor.remove_node(self.driver)
         self.driver.destroy_node()
         self.executor.shutdown()
-
-    def _spin_for(self, duration_s: float, slice_s: float = 0.05) -> None:
-        deadline = time.monotonic() + duration_s
-        while time.monotonic() < deadline:
-            self.executor.spin_once(timeout_sec=slice_s)
-
-    def _spin_until(self, predicate, timeout_s: float, slice_s: float = 0.05):
-        deadline = time.monotonic() + timeout_s
-        while time.monotonic() < deadline:
-            if predicate():
-                return True
-            self.executor.spin_once(timeout_sec=slice_s)
-        return predicate()
 
     def test_surface_mission_ascends_and_self_terminates(self):
         """SURFACE mission -> gauge pressure ~0, then mission completes."""
@@ -225,7 +213,8 @@ class SurfaceSimTest(unittest.TestCase):
         omega_max = 0.15  # rad/s
 
         # 1) Wait for sim. IMU is the readiness signal.
-        sim_ready = self._spin_until(
+        sim_ready = spin_until(
+            self.executor,
             lambda: self.driver.imu_msg_count >= 1,
             timeout_s=startup_timeout_s,
         )
@@ -236,28 +225,28 @@ class SurfaceSimTest(unittest.TestCase):
         )
 
         # 2) Let subscriptions handshake.
-        self._spin_for(post_ready_settle_s)
+        spin_for(self.executor, post_ready_settle_s)
 
         # 3) Kick the mission.
         self.driver.publish_mission()
-        self._spin_for(0.5)
+        spin_for(self.executor, 0.5)
         self.driver.publish_start()
 
         # 4) Run the closed loop. Don't early-exit on ascent: we want the
         #    full duration so we can assert the no-emission window after
         #    self-termination.
         mission_start_t = time.monotonic()
-        self._spin_for(mission_duration_s)
-        self._spin_for(drain_s)
+        spin_for(self.executor, mission_duration_s)
+        spin_for(self.executor, drain_s)
 
         # 5) Take the last `assert_window_s` of each stream.
         window_start_t = time.monotonic() - drain_s - assert_window_s
-        window_pressure = _window(self.driver.gauge_pressure_pa, window_start_t)
-        window_odom = _window(self.driver.odom_samples, window_start_t)
+        window_pressure = window(self.driver.gauge_pressure_pa, window_start_t)
+        window_odom = window(self.driver.odom_samples, window_start_t)
 
         # 6a) Pathfinding broadcast at ~10 Hz across the early portion of
         #     the mission (before self-termination).
-        targets_during = _window(self.driver.target_samples, mission_start_t)
+        targets_during = window(self.driver.target_samples, mission_start_t)
         self.assertGreaterEqual(
             len(targets_during),
             50,
@@ -284,7 +273,7 @@ class SurfaceSimTest(unittest.TestCase):
         #     pathfinding_node clears its mission and the 10 Hz tick
         #     becomes a no-op.
         no_target_start = time.monotonic() - drain_s - no_target_window_s
-        late_targets = _window(self.driver.target_samples, no_target_start)
+        late_targets = window(self.driver.target_samples, no_target_start)
         self.assertEqual(
             len(late_targets),
             0,
@@ -321,8 +310,8 @@ class SurfaceSimTest(unittest.TestCase):
             f"only {len(window_odom)} odometry samples in last "
             f"{assert_window_s}s — sim ground-truth bridge stalled.",
         )
-        mean_v = sum(_speed(o) for o in window_odom) / len(window_odom)
-        mean_w = sum(_omega(o) for o in window_odom) / len(window_odom)
+        mean_v = sum(speed(o) for o in window_odom) / len(window_odom)
+        mean_w = sum(omega(o) for o in window_odom) / len(window_odom)
         self.assertLess(
             mean_v,
             v_linear_max,
@@ -353,16 +342,6 @@ class SurfaceSimTest(unittest.TestCase):
                 delta=0.02,
                 msg=f"odom[{i}].orientation |q|^2 = {norm_sq:.6f}",
             )
-
-
-def _speed(odom: Odometry) -> float:
-    v = odom.twist.twist.linear
-    return math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z)
-
-
-def _omega(odom: Odometry) -> float:
-    w = odom.twist.twist.angular
-    return math.sqrt(w.x * w.x + w.y * w.y + w.z * w.z)
 
 
 @launch_testing.post_shutdown_test()

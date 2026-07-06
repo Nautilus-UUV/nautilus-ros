@@ -117,23 +117,6 @@ class SurfaceReference:
         self._surface_pa = float(surface_pa)
         return True
 
-    def register_logged(self, surface_pa: float, logger) -> bool:
-        """:meth:`register` plus the standard accept/reject log lines.
-
-        Every DIVE_INIT consumer wants the same outcome logging; keeping
-        the wording here means a policy or message change lands in one
-        place. ``logger`` is any object with ``info``/``error`` (a node
-        logger) so this module stays ROS-free.
-        """
-        if self.register(surface_pa):
-            logger.info(f"dive init: gauge reference = {self.reference_pa:.0f} Pa")
-            return True
-        logger.error(
-            f"dive init: surface pressure {surface_pa:.0f} Pa "
-            "rejected -- keeping previous reference"
-        )
-        return False
-
     @property
     def reference_pa(self) -> float:
         """Current reference: registered surface, else standard atmosphere."""

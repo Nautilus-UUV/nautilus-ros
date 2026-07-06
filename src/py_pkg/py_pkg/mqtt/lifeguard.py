@@ -15,7 +15,7 @@ clears the latch.
 
 from __future__ import annotations
 
-from py_pkg.math_utils import span_band_guards
+from py_pkg.math_utils import span_band_guards, tank_limits_valid
 
 
 class Lifeguard:
@@ -72,12 +72,10 @@ def tank_blow_exhausted(
     endpoint the bladder is as full as it's going to get.
 
     Both endpoints come from the pre-dive initialization (DIVE_INIT).
-    A missing or non-positive empty endpoint, an absent full endpoint, or a
-    non-positive span all return False.
+    A missing tank reading or unusable endpoints (see ``tank_limits_valid``)
+    return False.
     """
-    if tank_pa is None or tank_empty_pa is None or tank_full_pa is None:
-        return False
-    if not tank_empty_pa > 0.0 or tank_full_pa <= tank_empty_pa:
+    if tank_pa is None or not tank_limits_valid(tank_empty_pa, tank_full_pa):
         return False
     low_guard, _ = span_band_guards(tank_empty_pa, tank_full_pa, band)
     return tank_pa <= low_guard

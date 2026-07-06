@@ -41,6 +41,7 @@ from ..uuv_ros_core import (
     UUVTopics,
     create_publisher_for_topic,
     create_subscription_for_topic,
+    now_s,
     spin_node,
 )
 from .missions import MissionProfile, MissionState, create_mission
@@ -133,12 +134,12 @@ class PathfindingNode(Node):
                     n_resurfaces=int(self._mission_cmd.n_resurfaces),
                 )
             )
-            self._mission_t0_s = self.get_clock().now().nanoseconds / 1e9
+            self._mission_t0_s = now_s(self)
             self.get_logger().info("Mission running.")
 
         if self._mission_t0_s is None or self._current_pressure_pa is None:
             return
-        mission_t = self.get_clock().now().nanoseconds / 1e9 - self._mission_t0_s
+        mission_t = now_s(self) - self._mission_t0_s
         self._mission.update(self._current_pressure_pa)
         if self._mission.is_done(mission_t):
             self.get_logger().info("Mission complete.")

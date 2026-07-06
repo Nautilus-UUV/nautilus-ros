@@ -23,7 +23,7 @@
 #         --scenarios-dir ./scenarios --cpus 0-3 nautilus_sim.sif \
 #         ros2 launch nautilus_hal sawtooth_sim.launch.py \
 #             headless:=true mission_autostart:=true \
-#             target_pressure_pa:=147150.0 angle_rad:=0.6109 n_resurfaces:=5 \
+#             target_pressure_pa:=147150.0 angle_rad:=0.6109 n_oscillations:=5 \
 #             record:=true sampler_id:=my_run run_id:=baseline \
 #             scenario:=/ros2_ws/scenarios/baseline.yaml
 

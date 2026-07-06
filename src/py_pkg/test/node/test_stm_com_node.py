@@ -11,10 +11,8 @@ with no args, so we monkeypatch ``serial.Serial`` to hand back a fake instead.
 """
 
 import struct
-import time
 
 import pytest
-from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from sensor_msgs.msg import Imu
 from std_msgs.msg import Int16, UInt8
@@ -44,6 +42,8 @@ from py_pkg.uuv_ros_core import (
     create_publisher_for_topic,
     create_subscription_for_topic,
 )
+
+from conftest import NodeHarness
 
 
 def _imu_frames(ax, ay, az, gx, gy, gz) -> bytes:
@@ -146,37 +146,12 @@ class _STMTesterNode(Node):
         self.rpm_cmd_pub.publish(Int16(data=rpm))
 
 
-class STMComHarness:
+class STMComHarness(NodeHarness):
+    """NodeHarness that keeps a handle on the fake serial port."""
+
     def __init__(self, fake: _FakeSerial):
         self.fake = fake
-        self.node = STMComNode()
-        self.tester = _STMTesterNode()
-        self.executor = SingleThreadedExecutor()
-        self.executor.add_node(self.node)
-        self.executor.add_node(self.tester)
-
-    def spin_for(self, duration_s: float, slice_s: float = 0.02) -> None:
-        deadline = time.monotonic() + duration_s
-        while time.monotonic() < deadline:
-            self.executor.spin_once(timeout_sec=slice_s)
-
-    def spin_until(self, predicate, timeout: float = 2.0, slice_s: float = 0.02):
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if predicate():
-                return
-            self.executor.spin_once(timeout_sec=slice_s)
-        if not predicate():
-            raise TimeoutError(f"predicate did not become true within {timeout}s")
-
-    def shutdown(self) -> None:
-        try:
-            self.executor.remove_node(self.node)
-            self.executor.remove_node(self.tester)
-        finally:
-            self.node.destroy_node()
-            self.tester.destroy_node()
-            self.executor.shutdown()
+        super().__init__(STMComNode, _STMTesterNode)
 
 
 @pytest.fixture

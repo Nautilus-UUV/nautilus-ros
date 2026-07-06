@@ -32,7 +32,6 @@ def _prime(axis: AxisController, current_pos: float = 0.0) -> None:
 
 def make_axis(kp=0.5, command_tolerance=0.0, output_limits=(-1000.0, 1000.0)):
     return AxisController(
-        name="test_axis",
         kp=kp,
         command_tolerance=command_tolerance,
         output_limits=output_limits,
@@ -95,7 +94,6 @@ class TestOutputClamp:
 
     def _make(self):
         return AxisController(
-            name="roll",
             kp=0.5,
             command_tolerance=0.0,
             output_limits=(-25.0, 25.0),
@@ -163,7 +161,6 @@ class TestRedundantPublishGuard:
         # producing the same clamped target, so the guard suppresses
         # everything after the first emission.
         axis = AxisController(
-            name="roll",
             kp=0.5,
             command_tolerance=0.0,
             output_limits=(-25.0, 25.0),
@@ -187,7 +184,6 @@ class TestPIDPathWired:
 
     def test_integral_accumulates_under_persistent_error(self):
         axis = AxisController(
-            name="roll",
             kp=0.0,
             ki=0.5,
             kd=0.0,

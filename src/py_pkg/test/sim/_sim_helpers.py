@@ -10,11 +10,17 @@ reap the gz-sim-server child of the Ruby ``gz sim`` wrapper.
 every sim test needs, and ``sim_gui_enabled`` reads the single shared
 ``SIM_GUI`` switch — defined once here so the polling slice and the
 env vocabulary can't drift between tests.
+
+``window`` / ``speed`` / ``omega`` are the timeseries-analysis helpers
+the trim/surface convergence assertions share.
 """
 
+import math
 import os
 import subprocess
 import time
+
+from nav_msgs.msg import Odometry
 
 
 def spin_for(executor, duration_s: float, slice_s: float = 0.05) -> None:
@@ -38,6 +44,26 @@ def spin_until(executor, predicate, timeout_s: float, slice_s: float = 0.05) -> 
 def sim_gui_enabled() -> bool:
     """``SIM_GUI=1`` (or true/yes/on) shows the Gazebo GUI."""
     return os.environ.get("SIM_GUI", "").lower() in ("1", "true", "yes", "on")
+
+
+def window(
+    samples: list[tuple[float, object]],
+    window_start_t: float,
+) -> list[object]:
+    """Samples at or after ``window_start_t`` from a (t, sample) series."""
+    return [s for (t, s) in samples if t >= window_start_t]
+
+
+def speed(odom: Odometry) -> float:
+    """Ground-truth linear speed |v| of one odometry sample."""
+    v = odom.twist.twist.linear
+    return math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z)
+
+
+def omega(odom: Odometry) -> float:
+    """Ground-truth angular rate |w| of one odometry sample."""
+    w = odom.twist.twist.angular
+    return math.sqrt(w.x * w.x + w.y * w.y + w.z * w.z)
 
 
 # Catches the Ruby wrapper for our world, and the "gz sim server" child

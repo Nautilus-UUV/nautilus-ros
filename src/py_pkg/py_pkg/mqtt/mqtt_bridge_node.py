@@ -71,15 +71,20 @@ from py_pkg.uuv_ros_core import (
     UUVTopics,
     create_publisher_for_topic,
     create_subscription_for_topic,
+    now_s,
     spin_node,
 )
+
+
+# All ingress subscriptions use MQTT QoS 1: commands are at-least-once
+# by policy, not per-topic.
+INGRESS_MQTT_QOS = 1
 
 
 @dataclass(frozen=True)
 class IngressMapping:
     ros_topic: str  # always a UUVTopics.* constant
     mqtt_topic: str
-    mqtt_qos: int  # 1 = at-least-once (commands)
 
 
 @dataclass(frozen=True)
@@ -109,24 +114,23 @@ DEBUG_RESET_CMD_TOPIC = "nautilus/cmd/debug/reset"
 # What the UI is allowed to send into ROS. Both ROS topics are registered
 # in uuv_ros_core (topics.py + message_types.py + qos_profiles.py).
 INGRESS_MAP: tuple[IngressMapping, ...] = (
-    IngressMapping(UUVTopics.COMMAND, COMMAND_CMD_TOPIC, 1),
-    IngressMapping(UUVTopics.PATH, PATH_CMD_TOPIC, 1),
-    IngressMapping(UUVTopics.DEBUG_BCU_RPM, "nautilus/cmd/debug/bcu/rpm", 1),
+    IngressMapping(UUVTopics.COMMAND, COMMAND_CMD_TOPIC),
+    IngressMapping(UUVTopics.PATH, PATH_CMD_TOPIC),
+    IngressMapping(UUVTopics.DEBUG_BCU_RPM, "nautilus/cmd/debug/bcu/rpm"),
     IngressMapping(
         UUVTopics.DEBUG_BCU_RPM_UNTIL_PRESSURE,
         "nautilus/cmd/debug/bcu/rpm_until_pressure",
-        1,
     ),
-    IngressMapping(UUVTopics.DEBUG_BCU_VALVES, "nautilus/cmd/debug/bcu/valves", 1),
-    IngressMapping(UUVTopics.DEBUG_ACU_PITCH, "nautilus/cmd/debug/acu/pitch", 1),
-    IngressMapping(UUVTopics.DEBUG_ACU_ROLL, "nautilus/cmd/debug/acu/roll", 1),
-    IngressMapping(UUVTopics.DEBUG_EMERGENCY_SURFACE, EMERGENCY_SURFACE_CMD_TOPIC, 1),
-    IngressMapping(UUVTopics.DEBUG_RESET, DEBUG_RESET_CMD_TOPIC, 1),
+    IngressMapping(UUVTopics.DEBUG_BCU_VALVES, "nautilus/cmd/debug/bcu/valves"),
+    IngressMapping(UUVTopics.DEBUG_ACU_PITCH, "nautilus/cmd/debug/acu/pitch"),
+    IngressMapping(UUVTopics.DEBUG_ACU_ROLL, "nautilus/cmd/debug/acu/roll"),
+    IngressMapping(UUVTopics.DEBUG_EMERGENCY_SURFACE, EMERGENCY_SURFACE_CMD_TOPIC),
+    IngressMapping(UUVTopics.DEBUG_RESET, DEBUG_RESET_CMD_TOPIC),
     # Pre-dive registration (surface pressure + tank endpoints). The UI
     # publishes it retained, so the broker replays it to a restarted
     # bridge -- that replay, plus the TRANSIENT_LOCAL latch on the ROS
     # side, is what makes the registration persistent.
-    IngressMapping(UUVTopics.DIVE_INIT, INIT_CMD_TOPIC, 1),
+    IngressMapping(UUVTopics.DIVE_INIT, INIT_CMD_TOPIC),
 )
 
 
@@ -279,12 +283,10 @@ class MqttBridge(Node):
         # JSON-encoded payload (on-change dedup + retained semantics).
         self._last_emit: dict[str, float] = {}
         self._last_payload: dict[str, str] = {}
-        self._egress_subs: list = []
         for em in EGRESS_MAP:
-            sub = create_subscription_for_topic(
+            create_subscription_for_topic(
                 self, em.ros_topic, self._make_egress_callback(em)
             )
-            self._egress_subs.append(sub)
 
         # --- mission-active mirror --------------------------------------
         # Cached MissionCommand JSON dict from the most recent
@@ -374,10 +376,21 @@ class MqttBridge(Node):
         state via ``mapping.mqtt_topic`` as the key into _last_emit /
         _last_payload."""
 
+        # Precomputed once: the throttle runs BEFORE the JSON encode so a
+        # rate-capped topic (e.g. the 200 Hz prefilter IMU capped to 10 Hz)
+        # doesn't pay for ~95% of encodes it then throws away. On-change
+        # topics must encode first — the payload bytes are the dedup key.
+        period_s = 1.0 / mapping.max_rate_hz if mapping.max_rate_hz > 0.0 else 0.0
+
         def _callback(msg) -> None:
+            if not mapping.on_change and period_s > 0.0:
+                now = now_s(self)
+                if now - self._last_emit.get(mapping.mqtt_topic, 0.0) < period_s:
+                    return
+                self._last_emit[mapping.mqtt_topic] = now
+
             try:
-                payload_dict = message_to_ordereddict(msg)
-                payload_str = _safe_json(payload_dict)
+                payload_str = _safe_json(message_to_ordereddict(msg))
             except Exception as exc:
                 # Don't kill the subscription on one bad message; log and
                 # drop.
@@ -394,14 +407,6 @@ class MqttBridge(Node):
                     mapping.mqtt_topic, payload=payload_str, qos=0, retain=True
                 )
                 return
-
-            if mapping.max_rate_hz > 0.0:
-                period_s = 1.0 / mapping.max_rate_hz
-                now = self.get_clock().now().nanoseconds * 1e-9
-                last = self._last_emit.get(mapping.mqtt_topic, 0.0)
-                if now - last < period_s:
-                    return
-                self._last_emit[mapping.mqtt_topic] = now
 
             self._mqtt.publish(mapping.mqtt_topic, payload=payload_str, qos=0)
 
@@ -681,7 +686,7 @@ class MqttBridge(Node):
             return
 
         for m in INGRESS_MAP:
-            client.subscribe(m.mqtt_topic, qos=m.mqtt_qos)
+            client.subscribe(m.mqtt_topic, qos=INGRESS_MQTT_QOS)
         client.subscribe(LIFEGUARD_CMD_TOPIC, qos=1)
         client.subscribe(LIFEGUARD_HEARTBEAT_TOPIC, qos=0)
         client.publish(STATUS_TOPIC, payload=STATUS_ONLINE, qos=1, retain=True)

@@ -2,23 +2,23 @@
 
 import rclpy
 from geometry_msgs.msg import Pose
-from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
 from std_msgs.msg import Bool, Int16, UInt8
 
-from py_pkg.math_utils import deadband_snap, span_band_guards
+from py_pkg.math_utils import deadband_snap, span_band_guards, tank_limits_valid
 from py_pkg.physics import q_to_rpm
-from py_pkg.pid import depth_control_system as ControlSystem
 from py_pkg.robot_specs import (
     BCU_DEEP_THRESHOLD_PA,
     BCU_FREE_VALVE_MASK,
     BCU_MOTOR_VALVE_MASK,
 )
 from py_pkg.scenarios.compile import bcu_spec_from_node
+from py_pkg.utils_controls import PIDController
 from py_pkg.uuv_ros_core import (
     UUVTopics,
     create_publisher_for_topic,
     create_subscription_for_topic,
+    now_s,
     spin_node,
 )
 
@@ -73,9 +73,7 @@ def clamp_to_tank_limits(
 
     The limits come from the pre-dive Initialize (DIVE_INIT).
     """
-    if tank_pa is None or tank_empty_pa is None or tank_full_pa is None:
-        return pump_rpm, motor_open, free_open
-    if tank_empty_pa <= 0.0 or tank_full_pa <= 0.0 or tank_empty_pa >= tank_full_pa:
+    if tank_pa is None or not tank_limits_valid(tank_empty_pa, tank_full_pa):
         return pump_rpm, motor_open, free_open
 
     low_guard, high_guard = span_band_guards(tank_empty_pa, tank_full_pa, band)
@@ -135,14 +133,22 @@ class BCUNode(Node):
     def __init__(self):
         super().__init__("bcu_node")
 
-        # Reentrant callback group so subscriptions and the control timer
-        # can run concurrently.
-        self.callback_group = ReentrantCallbackGroup()
-
         cfg = bcu_spec_from_node(self)
-        self.control_system = ControlSystem.DepthControlSystem(cfg)
-        self._initial_proportion_full = cfg.plant_model.initial_proportion_full
-        self.current_bladder_level = self._initial_proportion_full
+        # Outer depth loop: a single PID tracks pressure entirely in gauge Pa
+        # and outputs a bladder flow ratio q in 1/s. Positive q = deflate the
+        # bladder, sink; negative q = inflate, rise. A single PID is enough
+        # because flow -> volume -> buoyancy -> depth behaves like a damped
+        # double integrator. The q -> pump RPM wire conversion (with its sign
+        # flip: positive bus RPM inflates) lives in solve_bcu_command.
+        pp = cfg.pid_pressure
+        self.pid_pressure = PIDController(
+            kp=pp.kp,
+            ki=pp.ki,
+            kd=pp.kd,
+            integral_limits=pp.integral_limits,
+            output_limits=pp.output_limits,
+            derivative_filter=pp.derivative_filter,
+        )
         self.bladder_volume = cfg.plant_model.bladder_nominal_m3
         self._min_rpm = cfg.plant_model.min_rpm
         self._min_operating_rpm = cfg.plant_model.min_operating_rpm
@@ -163,62 +169,41 @@ class BCUNode(Node):
         self._target_cb_count = 0
 
         self.bcu_controller_rpm_publisher = create_publisher_for_topic(
-            self, UUVTopics.BCU_RPM, callback_group=self.callback_group
+            self, UUVTopics.BCU_RPM
         )
 
         self.bcu_valves_publisher = create_publisher_for_topic(
-            self, UUVTopics.BCU_VALVES, callback_group=self.callback_group
+            self, UUVTopics.BCU_VALVES
         )
 
         # Pressure setpoint is `position.z` of POSITION_TARGET, in gauge
         # Pa (Z-positive-down: deeper = higher gauge pressure).
-        self.target_pose_subscriber = create_subscription_for_topic(
-            self,
-            UUVTopics.POSITION_TARGET,
-            self.target_pose_callback,
-            callback_group=self.callback_group,
+        create_subscription_for_topic(
+            self, UUVTopics.POSITION_TARGET, self.target_pose_callback
         )
 
         # Depth measurement rides POSITION_ESTIMATION.position.z (gauge Pa,
         # Z-positive-down), already gauged by attitude_node.
-        self.position_estimation_subscriber = create_subscription_for_topic(
-            self,
-            UUVTopics.POSITION_ESTIMATION,
-            self.current_pose_callback,
-            callback_group=self.callback_group,
+        create_subscription_for_topic(
+            self, UUVTopics.POSITION_ESTIMATION, self.current_pose_callback
         )
 
         # Tank pressure feeds the output clamp; the dive registration
         # carries the limits it compares against (plus the surface
         # pressure for the gauge reference).
-        self.tank_pressure_subscriber = create_subscription_for_topic(
-            self,
-            UUVTopics.BCU_PRESSURE,
-            self._on_tank_pressure,
-            callback_group=self.callback_group,
+        create_subscription_for_topic(
+            self, UUVTopics.BCU_PRESSURE, self._on_tank_pressure
         )
 
-        self.dive_init_subscriber = create_subscription_for_topic(
-            self,
-            UUVTopics.DIVE_INIT,
-            self._on_dive_init,
-            callback_group=self.callback_group,
-        )
+        create_subscription_for_topic(self, UUVTopics.DIVE_INIT, self._on_dive_init)
 
         # The mission run/stop signal. On /command=false the controller drops
         # its target, emits one safe-stop and goes silent (freeing the BCU wire
         # for a debug node).
-        self.command_subscriber = create_subscription_for_topic(
-            self,
-            UUVTopics.COMMAND,
-            self._on_command,
-            callback_group=self.callback_group,
-        )
+        create_subscription_for_topic(self, UUVTopics.COMMAND, self._on_command)
 
         self.control_timer = self.create_timer(
-            1.0 / cfg.frequency_hz,
-            self.control_loop,
-            callback_group=self.callback_group,
+            1.0 / cfg.frequency_hz, self.control_loop
         )
 
         # Leave the BCU wire unambiguously at 0/closed at boot.
@@ -228,7 +213,6 @@ class BCUNode(Node):
 
     def target_pose_callback(self, msg: Pose):
         self.target_pressure_pa = float(msg.position.z)
-        self.control_system.target_pressure_pa = self.target_pressure_pa
         self._target_cb_count += 1
         if self._target_cb_count % self._target_log_every_n == 0:
             self.get_logger().info(
@@ -238,9 +222,6 @@ class BCUNode(Node):
     def current_pose_callback(self, msg: Pose):
         # position.z is the depth measurement in gauge Pa.
         self.current_pressure_pa = float(msg.position.z)
-        self.get_logger().debug(
-            f"Received current pressure: {self.current_pressure_pa} Pa"
-        )
 
     def _on_tank_pressure(self, msg):
         # Tank pressure in the sensor's own frame (tank relative to hull).
@@ -251,8 +232,8 @@ class BCUNode(Node):
         # reference moved to attitude_node, which publishes already-gauged depth.
         self._tank_empty_pa = float(msg.tank_empty_pa)
         self._tank_full_pa = float(msg.tank_full_pa)
-        # Mirrors the clamp's own sanity check.
-        limits_ok = 0.0 < self._tank_empty_pa < self._tank_full_pa
+        # Same predicate the clamp itself gates on.
+        limits_ok = tank_limits_valid(self._tank_empty_pa, self._tank_full_pa)
         log = self.get_logger().info if limits_ok else self.get_logger().error
         log(
             "dive init: "
@@ -277,8 +258,7 @@ class BCUNode(Node):
         # the last value forever..
         if bool(msg.data):
             return
-        self.control_system.reset()
-        self.current_bladder_level = self._initial_proportion_full
+        self.pid_pressure.reset()
         self.target_pressure_pa = None
         self._publish_bcu_stop()
         self.get_logger().info(
@@ -294,8 +274,9 @@ class BCUNode(Node):
         # The PID is the only stateful step: it integrates over time to turn the
         # current pressure into a flow demand q. Everything downstream is the
         # pure solve_bcu_command pipeline.
-        now = self.get_clock().now().nanoseconds / 1e9
-        q = self.control_system.calc_acc(self.current_pressure_pa, now)
+        q = self.pid_pressure.update(
+            self.target_pressure_pa, self.current_pressure_pa, now_s(self)
+        )
 
         pump_rpm, motor_open, free_open = solve_bcu_command(
             q,

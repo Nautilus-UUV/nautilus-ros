@@ -100,7 +100,6 @@ class AcuPitchSpec(StrictModel):
     ACU node's timer, set by AcuRollSpec.
     """
 
-    name: str = "pitch"
     output_limits: tuple[float, float] = (-0.11, -0.01)
 
 
@@ -118,7 +117,6 @@ class AcuRollSpec(StrictModel):
     """
 
     frequency_hz: int = 10
-    name: str = "roll"
     kp: float = 0.5
     ki: float = 0.005
     kd: float = 0.05

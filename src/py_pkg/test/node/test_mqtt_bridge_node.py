@@ -32,7 +32,6 @@ from typing import Any
 
 import pytest
 from geometry_msgs.msg import Pose
-from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from sensor_msgs.msg import Imu
@@ -57,6 +56,8 @@ from py_pkg.uuv_ros_core import (
     create_publisher_for_topic,
     create_subscription_for_topic,
 )
+
+from conftest import NodeHarness
 
 
 @dataclass
@@ -209,8 +210,8 @@ class _BridgeTesterNode(Node):
 TICK_PERIOD_S = 0.1
 
 
-class MqttBridgeHarness:
-    """Spins MqttBridge + a tester node behind a SingleThreadedExecutor."""
+class MqttBridgeHarness(NodeHarness):
+    """NodeHarness specialised for MqttBridge (fake MQTT client injected)."""
 
     def __init__(self, lifeguard_timeout_s: float | None = None):
         self.fake = FakeMqttClient()
@@ -225,28 +226,13 @@ class MqttBridgeHarness:
                     lifeguard_timeout_s,
                 )
             )
-        self.node = MqttBridge(
-            mqtt_client_factory=lambda client_id: self.fake,
-            parameter_overrides=overrides,
+        super().__init__(
+            lambda: MqttBridge(
+                mqtt_client_factory=lambda client_id: self.fake,
+                parameter_overrides=overrides,
+            ),
+            _BridgeTesterNode,
         )
-        self.tester = _BridgeTesterNode()
-        self.executor = SingleThreadedExecutor()
-        self.executor.add_node(self.node)
-        self.executor.add_node(self.tester)
-
-    def spin_for(self, duration_s: float, slice_s: float = 0.02) -> None:
-        deadline = time.monotonic() + duration_s
-        while time.monotonic() < deadline:
-            self.executor.spin_once(timeout_sec=slice_s)
-
-    def spin_until(self, predicate, timeout: float = 2.0, slice_s: float = 0.02):
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if predicate():
-                return
-            self.executor.spin_once(timeout_sec=slice_s)
-        if not predicate():
-            raise TimeoutError(f"predicate did not become true within {timeout}s")
 
     def receive_mqtt(self, topic: str, payload: dict) -> None:
         """Simulate a broker -> bridge message arrival."""
@@ -258,15 +244,6 @@ class MqttBridgeHarness:
         msg.topic = topic
         msg.payload = json.dumps(payload).encode("utf-8")
         self.node._on_mqtt_message(self.fake, None, msg)
-
-    def shutdown(self) -> None:
-        try:
-            self.executor.remove_node(self.node)
-            self.executor.remove_node(self.tester)
-        finally:
-            self.node.destroy_node()
-            self.tester.destroy_node()
-            self.executor.shutdown()
 
 
 @pytest.fixture

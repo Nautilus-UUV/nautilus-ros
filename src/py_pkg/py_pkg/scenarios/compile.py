@@ -43,6 +43,11 @@ from .spec.rig import FinAeroSpec, HydrodynamicsSpec, PhysicsKnobs, RigScenario
 # ---------------------------------------------------------------------------
 
 
+def _param(node: Node, name: str, default: Any) -> Any:
+    """Declare one ROS parameter and return its override-resolved value."""
+    return node.declare_parameter(name, default).value
+
+
 def params_for_bcu_node(scen: ControlScenario) -> dict[str, Any]:
     d = scen.controllers.depth
     return {
@@ -76,50 +81,39 @@ def bcu_spec_from_node(node: Node) -> DepthSpec:
     pp = default.pid_pressure
     pm = default.plant_model
 
-    node.declare_parameter("frequency_hz", default.frequency_hz)
-
-    node.declare_parameter("pid_pressure.kp", pp.kp)
-    node.declare_parameter("pid_pressure.ki", pp.ki)
-    node.declare_parameter("pid_pressure.kd", pp.kd)
-    node.declare_parameter("pid_pressure.integral_limit_low", pp.integral_limits[0])
-    node.declare_parameter("pid_pressure.integral_limit_high", pp.integral_limits[1])
-    node.declare_parameter("pid_pressure.output_limit_low", pp.output_limits[0])
-    node.declare_parameter("pid_pressure.output_limit_high", pp.output_limits[1])
-    node.declare_parameter("pid_pressure.derivative_filter", pp.derivative_filter)
-
-    node.declare_parameter("plant_model.bladder_nominal_m3", pm.bladder_nominal_m3)
-    node.declare_parameter(
-        "plant_model.initial_proportion_full", pm.initial_proportion_full
-    )
-    node.declare_parameter("plant_model.min_rpm", pm.min_rpm)
-    node.declare_parameter("plant_model.min_operating_rpm", pm.min_operating_rpm)
-    node.declare_parameter("plant_model.max_rpm", pm.max_rpm)
-    node.declare_parameter("plant_model.pump_efficiency", pm.pump_efficiency)
-
-    g = node.get_parameter
     return DepthSpec(
-        frequency_hz=g("frequency_hz").value,
+        frequency_hz=_param(node, "frequency_hz", default.frequency_hz),
         pid_pressure=PIDPressureSpec(
-            kp=g("pid_pressure.kp").value,
-            ki=g("pid_pressure.ki").value,
-            kd=g("pid_pressure.kd").value,
+            kp=_param(node, "pid_pressure.kp", pp.kp),
+            ki=_param(node, "pid_pressure.ki", pp.ki),
+            kd=_param(node, "pid_pressure.kd", pp.kd),
             integral_limits=(
-                g("pid_pressure.integral_limit_low").value,
-                g("pid_pressure.integral_limit_high").value,
+                _param(node, "pid_pressure.integral_limit_low", pp.integral_limits[0]),
+                _param(node, "pid_pressure.integral_limit_high", pp.integral_limits[1]),
             ),
             output_limits=(
-                g("pid_pressure.output_limit_low").value,
-                g("pid_pressure.output_limit_high").value,
+                _param(node, "pid_pressure.output_limit_low", pp.output_limits[0]),
+                _param(node, "pid_pressure.output_limit_high", pp.output_limits[1]),
             ),
-            derivative_filter=g("pid_pressure.derivative_filter").value,
+            derivative_filter=_param(
+                node, "pid_pressure.derivative_filter", pp.derivative_filter
+            ),
         ),
         plant_model=DepthPlantModel(
-            bladder_nominal_m3=g("plant_model.bladder_nominal_m3").value,
-            initial_proportion_full=g("plant_model.initial_proportion_full").value,
-            min_rpm=g("plant_model.min_rpm").value,
-            min_operating_rpm=g("plant_model.min_operating_rpm").value,
-            max_rpm=g("plant_model.max_rpm").value,
-            pump_efficiency=g("plant_model.pump_efficiency").value,
+            bladder_nominal_m3=_param(
+                node, "plant_model.bladder_nominal_m3", pm.bladder_nominal_m3
+            ),
+            initial_proportion_full=_param(
+                node, "plant_model.initial_proportion_full", pm.initial_proportion_full
+            ),
+            min_rpm=_param(node, "plant_model.min_rpm", pm.min_rpm),
+            min_operating_rpm=_param(
+                node, "plant_model.min_operating_rpm", pm.min_operating_rpm
+            ),
+            max_rpm=_param(node, "plant_model.max_rpm", pm.max_rpm),
+            pump_efficiency=_param(
+                node, "plant_model.pump_efficiency", pm.pump_efficiency
+            ),
         ),
     )
 
@@ -128,11 +122,9 @@ def params_for_acu_node(scen: ControlScenario) -> dict[str, Any]:
     p = scen.controllers.acu_pitch
     r = scen.controllers.acu_roll
     return {
-        "acu_pitch.name": p.name,
         "acu_pitch.output_limit_low": p.output_limits[0],
         "acu_pitch.output_limit_high": p.output_limits[1],
         "acu_roll.frequency_hz": r.frequency_hz,
-        "acu_roll.name": r.name,
         "acu_roll.kp": r.kp,
         "acu_roll.ki": r.ki,
         "acu_roll.kd": r.kd,
@@ -154,16 +146,10 @@ def acu_pitch_spec_from_node(node: Node) -> AcuPitchSpec:
 
     default = AcuPitchSpec()
 
-    node.declare_parameter("acu_pitch.name", default.name)
-    node.declare_parameter("acu_pitch.output_limit_low", default.output_limits[0])
-    node.declare_parameter("acu_pitch.output_limit_high", default.output_limits[1])
-
-    g = node.get_parameter
     return AcuPitchSpec(
-        name=g("acu_pitch.name").value,
         output_limits=(
-            g("acu_pitch.output_limit_low").value,
-            g("acu_pitch.output_limit_high").value,
+            _param(node, "acu_pitch.output_limit_low", default.output_limits[0]),
+            _param(node, "acu_pitch.output_limit_high", default.output_limits[1]),
         ),
     )
 
@@ -177,35 +163,25 @@ def acu_roll_spec_from_node(node: Node) -> AcuRollSpec:
 
     default = AcuRollSpec()
 
-    node.declare_parameter("acu_roll.frequency_hz", default.frequency_hz)
-    node.declare_parameter("acu_roll.name", default.name)
-    node.declare_parameter("acu_roll.kp", default.kp)
-    node.declare_parameter("acu_roll.ki", default.ki)
-    node.declare_parameter("acu_roll.kd", default.kd)
-    node.declare_parameter("acu_roll.command_tolerance", default.command_tolerance)
-    node.declare_parameter("acu_roll.integral_limit_low", default.integral_limits[0])
-    node.declare_parameter("acu_roll.integral_limit_high", default.integral_limits[1])
-    node.declare_parameter("acu_roll.output_limit_low", default.output_limits[0])
-    node.declare_parameter("acu_roll.output_limit_high", default.output_limits[1])
-    node.declare_parameter("acu_roll.derivative_filter", default.derivative_filter)
-
-    g = node.get_parameter
     return AcuRollSpec(
-        frequency_hz=g("acu_roll.frequency_hz").value,
-        name=g("acu_roll.name").value,
-        kp=g("acu_roll.kp").value,
-        ki=g("acu_roll.ki").value,
-        kd=g("acu_roll.kd").value,
-        command_tolerance=g("acu_roll.command_tolerance").value,
+        frequency_hz=_param(node, "acu_roll.frequency_hz", default.frequency_hz),
+        kp=_param(node, "acu_roll.kp", default.kp),
+        ki=_param(node, "acu_roll.ki", default.ki),
+        kd=_param(node, "acu_roll.kd", default.kd),
+        command_tolerance=_param(
+            node, "acu_roll.command_tolerance", default.command_tolerance
+        ),
         integral_limits=(
-            g("acu_roll.integral_limit_low").value,
-            g("acu_roll.integral_limit_high").value,
+            _param(node, "acu_roll.integral_limit_low", default.integral_limits[0]),
+            _param(node, "acu_roll.integral_limit_high", default.integral_limits[1]),
         ),
         output_limits=(
-            g("acu_roll.output_limit_low").value,
-            g("acu_roll.output_limit_high").value,
+            _param(node, "acu_roll.output_limit_low", default.output_limits[0]),
+            _param(node, "acu_roll.output_limit_high", default.output_limits[1]),
         ),
-        derivative_filter=g("acu_roll.derivative_filter").value,
+        derivative_filter=_param(
+            node, "acu_roll.derivative_filter", default.derivative_filter
+        ),
     )
 
 
@@ -372,6 +348,11 @@ def _canonical_values(spec: HydrodynamicsSpec) -> dict[str, float]:
 # Closed-form strip theory (§3-§8): one small pure helper per doc section.
 
 
+def _ittc_cf(Re: float) -> float:
+    """ITTC-57 flat-plate friction line, floored for degenerate Reynolds."""
+    return 0.075 / (math.log10(Re) - 2) ** 2 if Re > 100 else 0.01
+
+
 def _lamb_factors(L: float, D: float) -> tuple[float, float, float]:
     """Imlay 1961 added-mass k-factors (axial k1, transverse k2, pitch/yaw k')."""
     if L <= D:
@@ -423,7 +404,7 @@ def _hull_damping(g: PhysicsKnobs, c: _Constants) -> dict[str, float]:
     M_q_q = -(1.0 / 24.0) * g.C_d_c * c.rho * g.L**3 * g.D * sqrt_Cp
 
     Re = c.u_ref * g.L / c.nu
-    C_F = 0.075 / (math.log10(Re) - 2) ** 2 if Re > 100 else 0.01
+    C_F = _ittc_cf(Re)
     C_D = C_F * g.one_plus_k + g.C_p_base
     X_u_u = -(math.pi / 8.0) * c.rho * g.D**2 * C_D
 
@@ -486,10 +467,8 @@ def _fin_lift_slope(g: PhysicsKnobs) -> tuple[float, float]:
 def _fin_profile_drag(g: PhysicsKnobs, c: _Constants) -> tuple[float, float]:
     """§8 Hoerner profile drag at fin Reynolds (horiz, vert) — wires in t/c."""
     hoerner = 1 + 2 * g.t_over_c + 60 * g.t_over_c**4
-    Re_f = c.u_ref * g.c_f / c.nu
-    Re_r = c.u_ref * g.c_r / c.nu
-    C_F_f = 0.075 / (math.log10(Re_f) - 2) ** 2 if Re_f > 100 else 0.01
-    C_F_r = 0.075 / (math.log10(Re_r) - 2) ** 2 if Re_r > 100 else 0.01
+    C_F_f = _ittc_cf(c.u_ref * g.c_f / c.nu)
+    C_F_r = _ittc_cf(c.u_ref * g.c_r / c.nu)
     return 2 * C_F_f * hoerner, 2 * C_F_r * hoerner
 
 

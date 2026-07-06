@@ -21,19 +21,13 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Empty, Int16
 
+from py_pkg.debug import FLUSH_TICKS, PUBLISH_PERIOD_S
 from py_pkg.uuv_ros_core import (
     UUVTopics,
     create_publisher_for_topic,
     create_subscription_for_topic,
     spin_node,
 )
-
-
-PUBLISH_PERIOD_S = 0.1
-
-# Ticks to carry the neutral 0/0 out after a reset before going silent (0.5 s
-# @ 10 Hz, above the MQTT egress throttle).
-FLUSH_TICKS = 5
 
 
 class AcuDebugNode(Node):

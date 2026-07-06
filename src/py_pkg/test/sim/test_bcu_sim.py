@@ -36,7 +36,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import Imu
 from std_msgs.msg import Float32, Int16, Int32
 
-from ._sim_helpers import reap_lingering_gz, sim_gui_enabled
+from ._sim_helpers import reap_lingering_gz, sim_gui_enabled, spin_for, spin_until
 
 # ---------------------------------------------------------------------------
 # Launch description — composed, NOT a wholesale include of an end-to-end
@@ -172,21 +172,6 @@ class BCUSimTest(unittest.TestCase):
         self.driver.destroy_node()
         self.executor.shutdown()
 
-    # ---- helpers ----------------------------------------------------------
-
-    def _spin_for(self, duration_s: float, slice_s: float = 0.05) -> None:
-        deadline = time.monotonic() + duration_s
-        while time.monotonic() < deadline:
-            self.executor.spin_once(timeout_sec=slice_s)
-
-    def _spin_until(self, predicate, timeout_s: float, slice_s: float = 0.05):
-        deadline = time.monotonic() + timeout_s
-        while time.monotonic() < deadline:
-            if predicate():
-                return True
-            self.executor.spin_once(timeout_sec=slice_s)
-        return predicate()
-
     # ---- the test ---------------------------------------------------------
 
     def test_positive_rpm_fills_bladder(self):
@@ -210,7 +195,8 @@ class BCUSimTest(unittest.TestCase):
 
         # 1) Wait for sim. IMU is the readiness signal — BCU_VOLUME
         # isn't (its timer publishes 0 immediately).
-        sim_ready = self._spin_until(
+        sim_ready = spin_until(
+            self.executor,
             lambda: self.driver.imu_msg_count >= 1,
             timeout_s=startup_timeout_s,
         )
@@ -221,14 +207,14 @@ class BCUSimTest(unittest.TestCase):
         )
 
         # 2) Let the buoyancy plugin finish loading.
-        self._spin_for(post_ready_settle_s)
+        spin_for(self.executor, post_ready_settle_s)
 
         # 3) Fire the bridge's startup clamp to rig.plant.bladder_min_m3 by
         #    publishing RPM=0, then let the volume roundtrip settle.
         for _ in range(3):
             self.driver.publish_rpm(0)
             self.executor.spin_once(timeout_sec=0.05)
-        self._spin_for(sync_settle_s)
+        spin_for(self.executor, sync_settle_s)
 
         self.assertGreater(
             len(self.driver.received_volume_ml),
@@ -253,7 +239,7 @@ class BCUSimTest(unittest.TestCase):
 
         # 6) Stop the pump and let queues drain.
         self.driver.publish_rpm(0)
-        self._spin_for(settle_s)
+        spin_for(self.executor, settle_s)
 
         # 7a) Need >=1 positive flow sample (not all — the first can land
         # before the subscription handshake completes).

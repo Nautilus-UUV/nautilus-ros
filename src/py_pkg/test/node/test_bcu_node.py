@@ -70,22 +70,14 @@ class TestWiringSmoke:
 
 
 class TestTargetPressureIngress:
-    """POSITION_TARGET.position.z (gauge Pa) flows into node.target_pressure_pa
-    and the inner control system."""
+    """POSITION_TARGET.position.z (gauge Pa) flows into node.target_pressure_pa,
+    which the control loop feeds straight to the depth PID."""
 
     def test_target_pressure_updates_node_state(self, bcu_node_harness):
         h = bcu_node_harness
         h.publish_target_pressure(42.0)
         h.spin_until(lambda: h.node.target_pressure_pa == 42.0, timeout=1.0)
         assert h.node.target_pressure_pa == pytest.approx(42.0)
-
-    def test_target_pressure_propagates_to_control_system(self, bcu_node_harness):
-        h = bcu_node_harness
-        h.publish_target_pressure(15.5)
-        h.spin_until(
-            lambda: h.node.control_system.target_pressure_pa == 15.5, timeout=1.0
-        )
-        assert h.node.control_system.target_pressure_pa == pytest.approx(15.5)
 
 
 class TestPressureIngress:

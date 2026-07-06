@@ -64,7 +64,15 @@ from rclpy.node import Node
 from sensor_msgs.msg import Imu
 from std_msgs.msg import Bool, Int32
 
-from ._sim_helpers import reap_lingering_gz, sim_gui_enabled
+from ._sim_helpers import (
+    omega,
+    reap_lingering_gz,
+    sim_gui_enabled,
+    speed,
+    spin_for,
+    spin_until,
+    window,
+)
 
 TARGET_PRESSURE_PA = 65332.0  # ~6.5 m of seawater (gauge); spawn is ~5 m
 GROUND_TRUTH_TOPIC = "/model/glider_nautilus/odometry"
@@ -172,13 +180,6 @@ class _TrimNeutralTestDriver(Node):
         self.command_pub.publish(msg)
 
 
-def _window(
-    samples: list[tuple[float, object]],
-    window_start_t: float,
-) -> list[object]:
-    return [s for (t, s) in samples if t >= window_start_t]
-
-
 @pytest.mark.sim
 class TrimNeutralSimTest(unittest.TestCase):
     """Behavior: TRIM mission holds depth + the glider comes to rest."""
@@ -201,19 +202,6 @@ class TrimNeutralSimTest(unittest.TestCase):
         self.driver.destroy_node()
         self.executor.shutdown()
 
-    def _spin_for(self, duration_s: float, slice_s: float = 0.05) -> None:
-        deadline = time.monotonic() + duration_s
-        while time.monotonic() < deadline:
-            self.executor.spin_once(timeout_sec=slice_s)
-
-    def _spin_until(self, predicate, timeout_s: float, slice_s: float = 0.05):
-        deadline = time.monotonic() + timeout_s
-        while time.monotonic() < deadline:
-            if predicate():
-                return True
-            self.executor.spin_once(timeout_sec=slice_s)
-        return predicate()
-
     def test_trim_and_neutral_buoyancy_holds_at_target(self):
         """TRIM mission -> pressure converges to target, glider stops moving."""
         startup_timeout_s = 60.0
@@ -234,7 +222,8 @@ class TrimNeutralSimTest(unittest.TestCase):
         omega_max = 0.15  # rad/s
 
         # 1) Wait for sim. IMU is the readiness signal.
-        sim_ready = self._spin_until(
+        sim_ready = spin_until(
+            self.executor,
             lambda: self.driver.imu_msg_count >= 1,
             timeout_s=startup_timeout_s,
         )
@@ -246,7 +235,7 @@ class TrimNeutralSimTest(unittest.TestCase):
 
         # 2) Let subscriptions handshake (PATH/COMMAND are TRANSIENT_LOCAL,
         #    but pathfinding must be up first or pose ingress lags).
-        self._spin_for(post_ready_settle_s)
+        spin_for(self.executor, post_ready_settle_s)
 
         # 3) Kick the mission. Two publishes; the start handler in
         #    pathfinding requires at least one EXTERNAL_PRESSURE message
@@ -255,21 +244,21 @@ class TrimNeutralSimTest(unittest.TestCase):
         # Tiny gap so PATH lands before COMMAND (both reliable, but the
         # state machine flips LOADED -> RUNNING only on `start` + a loaded
         # mission).
-        self._spin_for(0.5)
+        spin_for(self.executor, 0.5)
         self.driver.publish_start()
 
         # 4) Run the closed loop.
         mission_start_t = time.monotonic()
-        self._spin_for(mission_duration_s)
-        self._spin_for(drain_s)
+        spin_for(self.executor, mission_duration_s)
+        spin_for(self.executor, drain_s)
 
         # 5) Take the last `assert_window_s` of each stream.
         window_start_t = time.monotonic() - drain_s - assert_window_s
-        window_pressure = _window(self.driver.gauge_pressure_pa, window_start_t)
-        window_odom = _window(self.driver.odom_samples, window_start_t)
+        window_pressure = window(self.driver.gauge_pressure_pa, window_start_t)
+        window_odom = window(self.driver.odom_samples, window_start_t)
 
         # 6a) Setpoint actually broadcast at ~10 Hz across the full mission.
-        targets_during = _window(self.driver.target_samples, mission_start_t)
+        targets_during = window(self.driver.target_samples, mission_start_t)
         self.assertGreaterEqual(
             len(targets_during),
             100,
@@ -312,8 +301,8 @@ class TrimNeutralSimTest(unittest.TestCase):
             f"only {len(window_odom)} odometry samples in last "
             f"{assert_window_s}s — sim ground-truth bridge stalled.",
         )
-        mean_v = sum(_speed(o) for o in window_odom) / len(window_odom)
-        mean_w = sum(_omega(o) for o in window_odom) / len(window_odom)
+        mean_v = sum(speed(o) for o in window_odom) / len(window_odom)
+        mean_w = sum(omega(o) for o in window_odom) / len(window_odom)
         self.assertLess(
             mean_v,
             v_linear_max,
@@ -344,16 +333,6 @@ class TrimNeutralSimTest(unittest.TestCase):
                 delta=0.02,
                 msg=f"odom[{i}].orientation |q|^2 = {norm_sq:.6f}",
             )
-
-
-def _speed(odom: Odometry) -> float:
-    v = odom.twist.twist.linear
-    return math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z)
-
-
-def _omega(odom: Odometry) -> float:
-    w = odom.twist.twist.angular
-    return math.sqrt(w.x * w.x + w.y * w.y + w.z * w.z)
 
 
 @launch_testing.post_shutdown_test()

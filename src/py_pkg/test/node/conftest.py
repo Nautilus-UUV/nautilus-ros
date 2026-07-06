@@ -30,6 +30,7 @@ from nautilus_msgs.msg import (
 )
 from py_pkg.debug.acu_debug_node import AcuDebugNode
 from py_pkg.debug.bcu_debug_node import BcuDebugNode
+from py_pkg.math_utils import rpy_to_quaternion
 from py_pkg.path.pathfinding import PathfindingNode
 from py_pkg.pid.acu_node import ACUControlNode
 from py_pkg.pid.bcu_node import BCUNode
@@ -69,11 +70,33 @@ class NodeHarness:
     """
 
     def __init__(self, node_under_test_cls, tester_cls):
+        # Both arguments are zero-arg callables: a Node subclass, or a
+        # factory lambda when the node needs constructor arguments.
         self.node = node_under_test_cls()
         self.tester = tester_cls()
         self.executor = SingleThreadedExecutor()
         self.executor.add_node(self.node)
         self.executor.add_node(self.tester)
+
+    def __getattr__(self, name):
+        """Delegate unknown attribute lookups to the tester node.
+
+        Only consulted for names not found normally, so members defined
+        on a subclass (e.g. transforming properties) still win. Private
+        and dunder names are refused so pickling and pytest introspection
+        get a clean AttributeError instead of recursing into a
+        half-constructed harness.
+        """
+        if name.startswith("_"):
+            raise AttributeError(
+                f"{type(self).__name__!r} object has no attribute {name!r}"
+            )
+        tester = self.__dict__.get("tester")
+        if tester is None:
+            raise AttributeError(
+                f"{type(self).__name__!r} object has no attribute {name!r}"
+            )
+        return getattr(tester, name)
 
     def spin_for(self, duration_s: float, slice_s: float = 0.02) -> None:
         """Spin the executor for at least ``duration_s`` of wall time."""
@@ -182,49 +205,10 @@ class _BCUTesterNode(Node):
         self.command_pub.publish(msg)
 
 
-class BCUNodeHarness(NodeHarness):
-    """NodeHarness specialised for BCUNode + _BCUTesterNode."""
-
-    def __init__(self):
-        super().__init__(BCUNode, _BCUTesterNode)
-
-    @property
-    def received_rpm(self) -> list[int]:
-        return self.tester.received_rpm
-
-    @property
-    def received_valves(self) -> list[int]:
-        return self.tester.received_valves
-
-    def publish_target_pressure(self, value_pa: float) -> None:
-        self.tester.publish_target_pressure(value_pa)
-
-    def publish_depth_gauge(self, gauge_pa: float) -> None:
-        self.tester.publish_depth_gauge(gauge_pa)
-
-    def publish_tank_pressure(self, value_pa: int) -> None:
-        self.tester.publish_tank_pressure(value_pa)
-
-    def publish_dive_init(
-        self,
-        surface_pressure_pa: float = 0.0,
-        tank_empty_pa: float = 0.0,
-        tank_full_pa: float = 0.0,
-    ) -> None:
-        self.tester.publish_dive_init(
-            surface_pressure_pa=surface_pressure_pa,
-            tank_empty_pa=tank_empty_pa,
-            tank_full_pa=tank_full_pa,
-        )
-
-    def publish_command(self, start: bool) -> None:
-        self.tester.publish_command(start)
-
-
 @pytest.fixture
 def bcu_node_harness():
     """Function-scoped harness. Tears both nodes down on exit."""
-    harness = BCUNodeHarness()
+    harness = NodeHarness(BCUNode, _BCUTesterNode)
     try:
         yield harness
     finally:
@@ -234,17 +218,6 @@ def bcu_node_harness():
 # ---------------------------------------------------------------------------
 # ACU node harness
 # ---------------------------------------------------------------------------
-
-
-def _quat_from_roll_deg(roll_deg: float):
-    """Roll-only quaternion (pitch=yaw=0). Inverse of
-    math_utils.quaternion_to_roll_pitch — pitch isn't part of the ACU
-    target/estimation surface anymore now that pitch is driven by
-    pressure error rather than a target attitude."""
-    r = math.radians(roll_deg) / 2.0
-    qw = math.cos(r)
-    qx = math.sin(r)
-    return qx, 0.0, 0.0, qw
 
 
 class _ACUTesterNode(Node):
@@ -288,7 +261,10 @@ class _ACUTesterNode(Node):
     def _pose(roll_deg: float, pressure_pa: float = 0.0) -> Pose:
         # position.z doubles as the pressure channel: a target gauge pressure
         # on POSITION_TARGET, a current gauge depth on POSITION_ESTIMATION.
-        qx, qy, qz, qw = _quat_from_roll_deg(roll_deg)
+        # Roll-only quaternion (pitch=yaw=0) — pitch isn't part of the ACU
+        # target/estimation surface anymore now that pitch is driven by
+        # pressure error rather than a target attitude.
+        qx, qy, qz, qw = rpy_to_quaternion(math.radians(roll_deg), 0.0, 0.0)
         msg = Pose()
         msg.position.z = float(pressure_pa)
         msg.orientation.x = float(qx)
@@ -317,40 +293,10 @@ class _ACUTesterNode(Node):
         self.command_pub.publish(msg)
 
 
-class ACUNodeHarness(NodeHarness):
-    """NodeHarness specialised for ACUControlNode + _ACUTesterNode."""
-
-    def __init__(self):
-        super().__init__(ACUControlNode, _ACUTesterNode)
-
-    @property
-    def received_pitch_mm(self) -> list[int]:
-        return self.tester.received_pitch_mm
-
-    @property
-    def received_roll_cdeg(self) -> list[int]:
-        return self.tester.received_roll_cdeg
-
-    def publish_target(
-        self, roll_deg: float = 0.0, target_pressure_pa: float = 0.0
-    ) -> None:
-        self.tester.publish_target(
-            roll_deg=roll_deg, target_pressure_pa=target_pressure_pa
-        )
-
-    def publish_current_attitude(
-        self, roll_deg: float = 0.0, gauge_pa: float = 0.0
-    ) -> None:
-        self.tester.publish_current_attitude(roll_deg=roll_deg, gauge_pa=gauge_pa)
-
-    def publish_command(self, start: bool) -> None:
-        self.tester.publish_command(start)
-
-
 @pytest.fixture
 def acu_node_harness():
     """Function-scoped harness. Tears both nodes down on exit."""
-    harness = ACUNodeHarness()
+    harness = NodeHarness(ACUControlNode, _ACUTesterNode)
     try:
         yield harness
     finally:
@@ -417,44 +363,10 @@ class _PathfindingTesterNode(Node):
         self.path_pub.publish(msg)
 
 
-class PathfindingNodeHarness(NodeHarness):
-    """NodeHarness specialised for PathfindingNode + _PathfindingTesterNode."""
-
-    def __init__(self):
-        super().__init__(PathfindingNode, _PathfindingTesterNode)
-
-    @property
-    def received_targets(self) -> list:
-        return self.tester.received_targets
-
-    def publish_pose_estimation(self, x: float, y: float, z: float) -> None:
-        self.tester.publish_pose_estimation(x, y, z)
-
-    def publish_depth_gauge(self, gauge_pa: float) -> None:
-        self.tester.publish_depth_gauge(gauge_pa)
-
-    def publish_command(self, start: bool) -> None:
-        self.tester.publish_command(start)
-
-    def publish_mission_command(
-        self,
-        mission_id: int,
-        target_pressure_pa: float = 0.0,
-        angle_rad: float = 0.0,
-        n_resurfaces: int = 0,
-    ) -> None:
-        self.tester.publish_mission_command(
-            mission_id,
-            target_pressure_pa=target_pressure_pa,
-            angle_rad=angle_rad,
-            n_resurfaces=n_resurfaces,
-        )
-
-
 @pytest.fixture
 def pathfinding_node_harness():
     """Function-scoped harness. Tears both nodes down on exit."""
-    harness = PathfindingNodeHarness()
+    harness = NodeHarness(PathfindingNode, _PathfindingTesterNode)
     try:
         yield harness
     finally:
@@ -541,40 +453,19 @@ class _BcuDebugTesterNode(Node):
 
 
 class BcuDebugNodeHarness(NodeHarness):
-    """NodeHarness specialised for BcuDebugNode + _BcuDebugTesterNode."""
+    """NodeHarness specialised for BcuDebugNode + _BcuDebugTesterNode.
+
+    ``received_rpm`` transforms rather than forwards -- it strips the
+    timestamps off the tester's ``received`` samples -- so it stays a
+    real member instead of riding the base ``__getattr__`` delegation.
+    """
 
     def __init__(self):
         super().__init__(BcuDebugNode, _BcuDebugTesterNode)
 
     @property
-    def received(self) -> list[tuple[float, int]]:
-        return self.tester.received
-
-    @property
     def received_rpm(self) -> list[int]:
         return [rpm for _, rpm in self.tester.received]
-
-    @property
-    def received_valves(self) -> list[int]:
-        return self.tester.received_valves
-
-    def publish_pump(self, rpm: int, duration_s: float) -> None:
-        self.tester.publish_pump(rpm, duration_s)
-
-    def publish_pump_until_pressure(self, rpm: int, target_pressure_pa: int) -> None:
-        self.tester.publish_pump_until_pressure(rpm, target_pressure_pa)
-
-    def publish_tank_pressure(self, value_pa: int) -> None:
-        self.tester.publish_tank_pressure(value_pa)
-
-    def publish_valves(self, mask: int) -> None:
-        self.tester.publish_valves(mask)
-
-    def publish_emergency(self, active: bool) -> None:
-        self.tester.publish_emergency(active)
-
-    def publish_reset(self) -> None:
-        self.tester.publish_reset()
 
 
 @pytest.fixture
@@ -634,34 +525,10 @@ class _AcuDebugTesterNode(Node):
         self.reset_pub.publish(Empty())
 
 
-class AcuDebugNodeHarness(NodeHarness):
-    """NodeHarness specialised for AcuDebugNode + _AcuDebugTesterNode."""
-
-    def __init__(self):
-        super().__init__(AcuDebugNode, _AcuDebugTesterNode)
-
-    @property
-    def received_pitch_mm(self) -> list[int]:
-        return self.tester.received_pitch_mm
-
-    @property
-    def received_roll_cdeg(self) -> list[int]:
-        return self.tester.received_roll_cdeg
-
-    def publish_pitch(self, mm: int) -> None:
-        self.tester.publish_pitch(mm)
-
-    def publish_roll(self, cdeg: int) -> None:
-        self.tester.publish_roll(cdeg)
-
-    def publish_reset(self) -> None:
-        self.tester.publish_reset()
-
-
 @pytest.fixture
 def acu_debug_node_harness():
     """Function-scoped harness. Tears both nodes down on exit."""
-    harness = AcuDebugNodeHarness()
+    harness = NodeHarness(AcuDebugNode, _AcuDebugTesterNode)
     try:
         yield harness
     finally:

@@ -5,7 +5,7 @@ saturating clamp. Everything else has been retired with the divetest
 heritage code that originally consumed it.
 """
 
-import numpy as np
+import math
 
 
 def quaternion_to_roll_pitch(qx: float, qy: float, qz: float, qw: float) -> tuple:
@@ -15,13 +15,13 @@ def quaternion_to_roll_pitch(qx: float, qy: float, qz: float, qw: float) -> tupl
     """
     sinr_cosp = 2.0 * (qw * qx + qy * qz)
     cosr_cosp = 1.0 - 2.0 * (qx * qx + qy * qy)
-    roll = np.arctan2(sinr_cosp, cosr_cosp)
+    roll = math.atan2(sinr_cosp, cosr_cosp)
 
     sinp = 2.0 * (qw * qy - qz * qx)
     if abs(sinp) >= 1:
-        pitch = np.copysign(np.pi / 2, sinp)
+        pitch = math.copysign(math.pi / 2, sinp)
     else:
-        pitch = np.arcsin(sinp)
+        pitch = math.asin(sinp)
     return roll, pitch
 
 
@@ -32,7 +32,7 @@ def quaternion_to_yaw(qx: float, qy: float, qz: float, qw: float) -> float:
     """
     siny_cosp = 2.0 * (qw * qz + qx * qy)
     cosy_cosp = 1.0 - 2.0 * (qy * qy + qz * qz)
-    return float(np.arctan2(siny_cosp, cosy_cosp))
+    return math.atan2(siny_cosp, cosy_cosp)
 
 
 def rpy_to_quaternion(roll: float, pitch: float, yaw: float) -> tuple:
@@ -41,18 +41,18 @@ def rpy_to_quaternion(roll: float, pitch: float, yaw: float) -> tuple:
     ZYX Tait-Bryan convention; round-trips through
     ``quaternion_to_roll_pitch`` + ``quaternion_to_yaw``.
     """
-    cy = np.cos(yaw * 0.5)
-    sy = np.sin(yaw * 0.5)
-    cp = np.cos(pitch * 0.5)
-    sp = np.sin(pitch * 0.5)
-    cr = np.cos(roll * 0.5)
-    sr = np.sin(roll * 0.5)
+    cy = math.cos(yaw * 0.5)
+    sy = math.sin(yaw * 0.5)
+    cp = math.cos(pitch * 0.5)
+    sp = math.sin(pitch * 0.5)
+    cr = math.cos(roll * 0.5)
+    sr = math.sin(roll * 0.5)
 
     qw = cr * cp * cy + sr * sp * sy
     qx = sr * cp * cy - cr * sp * sy
     qy = cr * sp * cy + sr * cp * sy
     qz = cr * cp * sy - sr * sp * cy
-    return float(qx), float(qy), float(qz), float(qw)
+    return qx, qy, qz, qw
 
 
 def gravity_to_roll_pitch(ax: float, ay: float, az: float) -> tuple:
@@ -74,8 +74,8 @@ def gravity_to_roll_pitch(ax: float, ay: float, az: float) -> tuple:
     ratios make the result independent of the vector's magnitude, so no
     normalization (or knowledge of g) is needed.
     """
-    roll = float(np.arctan2(-ay, -az))
-    pitch = float(np.arctan2(ax, np.hypot(ay, az)))
+    roll = math.atan2(-ay, -az)
+    pitch = math.atan2(ax, math.hypot(ay, az))
     return roll, pitch
 
 
@@ -121,3 +121,15 @@ def span_band_guards(
     """
     span = hi_endpoint - lo_endpoint
     return lo_endpoint + band * span, hi_endpoint - band * span
+
+
+def tank_limits_valid(empty_pa, full_pa) -> bool:
+    """True when both tank endpoints are registered and usable.
+
+    "Usable" means present (not None) and ``0 < empty < full`` -- a
+    partially-decoded DiveInit reads 0.0, which must not count as registered.
+    Shared by the BCU clamp and the lifeguard so the safety gate cannot drift.
+    """
+    if empty_pa is None or full_pa is None:
+        return False
+    return 0.0 < empty_pa < full_pa

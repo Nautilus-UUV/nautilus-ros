@@ -10,7 +10,6 @@ Example:
 
 """
 
-from can_msgs.msg import Frame
 from diagnostic_msgs.msg import DiagnosticArray
 from geometry_msgs.msg import Pose
 from nautilus_msgs.msg import (
@@ -36,7 +35,6 @@ TOPIC_MESSAGE_MAP = {
     UUVTopics.INTERNAL_TEMPERATURE: Temperature,
     UUVTopics.INTERNAL_PRESSURE: Int32,
     UUVTopics.INTERNAL_LEAK: UInt8MultiArray,
-    UUVTopics.INTERNAL_HUMIDITY: Float32,
     UUVTopics.EXTERNAL_TEMPERATURE: Temperature,
     UUVTopics.EXTERNAL_PRESSURE: Int32,
     UUVTopics.BCU_PRESSURE: Int32,
@@ -60,7 +58,6 @@ TOPIC_MESSAGE_MAP = {
     # the stack to its clean initial state.
     UUVTopics.COMMAND: Bool,
     UUVTopics.DIVE_INIT: DiveInit,
-    UUVTopics.CAN_OUT: Frame,
     UUVTopics.DEBUG_BCU_RPM: BcuPumpCommand,
     UUVTopics.DEBUG_BCU_RPM_UNTIL_PRESSURE: BcuPumpUntilPressureCommand,
     # Same wire types as the actuator topics these debug injection points feed.

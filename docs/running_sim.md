@@ -56,7 +56,7 @@ ros2 launch nautilus_hal sawtooth_sim.launch.py \
     mission_autostart:=true \
     target_pressure_pa:=147150.0 \
     angle_rad:=0.6109 \
-    n_resurfaces:=1
+    n_oscillations:=1
 ```
 
 #### Re-firing mid-run

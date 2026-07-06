@@ -1,14 +1,10 @@
 #!/usr/bin/env python3
-"""
-
-DEPRECATED; It is not implemented, ingore for now
-"""
+"""Attitude Control Unit node: bang-bang pitch + PID roll."""
 
 import math
 
 import rclpy
 from geometry_msgs.msg import Pose
-from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
 from std_msgs.msg import Bool, Int16
 
@@ -20,6 +16,7 @@ from py_pkg.uuv_ros_core import (
     UUVTopics,
     create_publisher_for_topic,
     create_subscription_for_topic,
+    now_s,
     spin_node,
 )
 
@@ -27,8 +24,6 @@ from py_pkg.uuv_ros_core import (
 class ACUControlNode(Node):
     def __init__(self):
         super().__init__("acu_control_node")
-
-        self.callback_group = ReentrantCallbackGroup()
 
         # Bang-bang extremes on the wire. The pitch spec gives us the
         # operational soft-saturation in metres; the wire format is mm.
@@ -40,7 +35,6 @@ class ACUControlNode(Node):
 
         roll_cfg = acu_roll_spec_from_node(self)
         self.roll_axis = AxisController(
-            name=roll_cfg.name,
             kp=roll_cfg.kp,
             ki=roll_cfg.ki,
             kd=roll_cfg.kd,
@@ -61,42 +55,25 @@ class ACUControlNode(Node):
         self.target_roll_deg = 0.0
         self.current_roll_deg = 0.0
 
-        self.pitch_pub = create_publisher_for_topic(
-            self, UUVTopics.ACU_PITCH, callback_group=self.callback_group
-        )
-        self.roll_pub = create_publisher_for_topic(
-            self, UUVTopics.ACU_ROLL, callback_group=self.callback_group
-        )
+        self.pitch_pub = create_publisher_for_topic(self, UUVTopics.ACU_PITCH)
+        self.roll_pub = create_publisher_for_topic(self, UUVTopics.ACU_ROLL)
 
         create_subscription_for_topic(
-            self,
-            UUVTopics.POSITION_TARGET,
-            self.target_pose_callback,
-            callback_group=self.callback_group,
+            self, UUVTopics.POSITION_TARGET, self.target_pose_callback
         )
         # Single vehicle-state input: roll (off the quaternion) for the roll PID
         # and gauge depth (position.z) for the bang-bang pitch leg select.
         create_subscription_for_topic(
-            self,
-            UUVTopics.POSITION_ESTIMATION,
-            self.current_pose_callback,
-            callback_group=self.callback_group,
+            self, UUVTopics.POSITION_ESTIMATION, self.current_pose_callback
         )
 
         # Mission run/stop. /command=false drops the target, neutralizes the
         # ACU once, and gates control_loop off (silent) so acu_debug can own
         # the wire; /command=true is a no-op (we wait for POSITION_TARGET).
-        create_subscription_for_topic(
-            self,
-            UUVTopics.COMMAND,
-            self._on_command,
-            callback_group=self.callback_group,
-        )
+        create_subscription_for_topic(self, UUVTopics.COMMAND, self._on_command)
 
         self.control_timer = self.create_timer(
-            1.0 / roll_cfg.frequency_hz,
-            self.control_loop,
-            callback_group=self.callback_group,
+            1.0 / roll_cfg.frequency_hz, self.control_loop
         )
 
         # Leave the ACU wire at neutral at boot, before any target arrives.
@@ -167,8 +144,7 @@ class ACUControlNode(Node):
 
     def _update_roll(self):
         self.roll_axis.update_sensor(self.current_roll_deg)
-        now = self.get_clock().now().nanoseconds / 1e9
-        roll_cmd = self.roll_axis.update(self.target_roll_deg, now)
+        roll_cmd = self.roll_axis.update(self.target_roll_deg, now_s(self))
         if roll_cmd is not None:
             msg = Int16()
             msg.data = int(round(roll_cmd * ACU_ROLL_CDEG_PER_DEG))

@@ -44,11 +44,9 @@ control:
         max_rpm: 3000
         pump_efficiency: 0.93
     acu_pitch:
-      name: pitch
       output_limits: [-0.11, -0.01]
     acu_roll:
       frequency_hz: 10
-      name: roll
       kp: 0.5
       ki: 0.005
       kd: 0.05

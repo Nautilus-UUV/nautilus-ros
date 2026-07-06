@@ -33,6 +33,7 @@ import struct
 import rclpy
 from rclpy.node import Node
 
+from py_pkg.math_utils import clamp
 from py_pkg.uuv_ros_core import UUVTopics, create_subscription_for_topic, spin_node
 from py_pkg.robot_specs import STM_BCU_RPM_SIGN
 
@@ -104,7 +105,7 @@ class CANComNode(Node):
     # --- tx ------------------------------------------------------------
 
     def _send_pdo(self) -> None:
-        pitch = max(PITCH_MIN, min(PITCH_MAX, self._pitch_mm))
+        pitch = clamp(self._pitch_mm, PITCH_MIN, PITCH_MAX)
         # Same physical pump-wiring polarity flip as stm_com (STM_BCU_RPM_SIGN).
         # NOTE: this CAN/CU path was not part of the bench test that found the
         # reversal -- verify against the CU board firmware (it may already

@@ -90,9 +90,16 @@ class AttitudeNode(Node):
         self._have_pressure = True
 
     def _on_dive_init(self, msg):
-        self._surface_ref.register_logged(
-            float(msg.surface_pressure_pa), self.get_logger()
-        )
+        surface_pa = float(msg.surface_pressure_pa)
+        if self._surface_ref.register(surface_pa):
+            self.get_logger().info(
+                f"dive init: gauge reference = {self._surface_ref.reference_pa:.0f} Pa"
+            )
+        else:
+            self.get_logger().error(
+                f"dive init: surface pressure {surface_pa:.0f} Pa "
+                "rejected -- keeping previous reference"
+            )
 
     def _publish(self):
         # Gate: never emit a fabricated z=0 before the first real pressure -- a

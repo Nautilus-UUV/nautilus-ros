@@ -23,9 +23,8 @@ from .qos_profiles import UUVQoS, TOPIC_QOS_MAP
 from .message_types import TOPIC_MESSAGE_MAP
 
 # Optional utilities
-from .namespaces import add_namespace, remove_namespace
 from .node_factory import create_publisher_for_topic, create_subscription_for_topic
-from .node_runtime import spin_node
+from .node_runtime import now_s, spin_node
 
 __version__ = "1.0.0"
 
@@ -36,9 +35,8 @@ __all__ = [
     "TOPIC_QOS_MAP",
     "TOPIC_MESSAGE_MAP",
     # Optional utilities
-    "add_namespace",
-    "remove_namespace",
     "create_publisher_for_topic",
     "create_subscription_for_topic",
+    "now_s",
     "spin_node",
 ]

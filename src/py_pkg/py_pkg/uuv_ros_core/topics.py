@@ -21,7 +21,6 @@ class UUVTopics:
     INTERNAL_TEMPERATURE = "/internal/temperature"
     INTERNAL_PRESSURE = "/internal/pressure"
     INTERNAL_LEAK = "/internal/leak"
-    INTERNAL_HUMIDITY = "/internal/humidity"
 
     # External sensors
     EXTERNAL_TEMPERATURE = "/external/temperature"
@@ -57,9 +56,6 @@ class UUVTopics:
     # single topic because the UI registers all three atomically with one
     # button, so consumers can never see a torn empty/full pair.
     DIVE_INIT = "/init/dive"
-
-    # CAN communication
-    CAN_OUT = "/can/out"
 
     # Debug / bench overrides
     DEBUG_BCU_RPM = "/debug/bcu/rpm"
