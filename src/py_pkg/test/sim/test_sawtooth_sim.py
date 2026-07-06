@@ -69,7 +69,10 @@ from ._sim_helpers import reap_lingering_gz, sim_gui_enabled
 TARGET_PRESSURE_PA = 73575.0  # ~7.5 m of seawater (gauge); spawn is ~5 m
 # TARGET_PRESSURE_PA = 703575.0
 PITCH_RAD = math.radians(30.0)  # SAWTOOTH glide magnitude
-N_RESURFACES = 1
+N_OSCILLATIONS = 1
+# Legacy single-dive profile: shallow extremum 0 => the climb goes to the
+# surface, exactly as before the two-pressure field landed.
+SHALLOW_PRESSURE_PA = 0.0
 
 # Bang-bang ACU pitch endpoints on the wire (Int16 mm). Same derivation
 # as in ``pid/acu_node.py``: the soft-saturation tuple is ordered
@@ -148,8 +151,9 @@ class _SawtoothTestDriver(Node):
         cmd = MissionCommand()
         cmd.mission_id = int(MissionId.SAWTOOTH)
         cmd.target_pressure_pa = float(TARGET_PRESSURE_PA)
+        cmd.shallow_pressure_pa = float(SHALLOW_PRESSURE_PA)
         cmd.angle_rad = float(PITCH_RAD)
-        cmd.n_resurfaces = int(N_RESURFACES)
+        cmd.n_oscillations = int(N_OSCILLATIONS)
         self.path_pub.publish(cmd)
 
     def publish_start(self) -> None:

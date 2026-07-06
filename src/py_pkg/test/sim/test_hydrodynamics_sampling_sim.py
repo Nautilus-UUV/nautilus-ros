@@ -72,7 +72,7 @@ from ._sim_helpers import reap_lingering_gz, sim_gui_enabled
 # the wall budget even with the high-drag plant pushing settling time up.
 TARGET_PRESSURE_PA = 60000.0
 PITCH_RAD = math.radians(20.0)
-N_RESURFACES = 1
+N_OSCILLATIONS = 1
 
 _SCENARIO_DIR = os.path.join(os.path.dirname(__file__), "scenarios")
 _SCENARIO_YAMLS = (
@@ -172,8 +172,9 @@ class _SawtoothSamplingDriver(Node):
         cmd = MissionCommand()
         cmd.mission_id = int(MissionId.SAWTOOTH)
         cmd.target_pressure_pa = float(TARGET_PRESSURE_PA)
+        cmd.shallow_pressure_pa = 0.0  # legacy: climb to the surface each dive
         cmd.angle_rad = float(PITCH_RAD)
-        cmd.n_resurfaces = int(N_RESURFACES)
+        cmd.n_oscillations = int(N_OSCILLATIONS)
         self.path_pub.publish(cmd)
 
     def publish_start(self) -> None:

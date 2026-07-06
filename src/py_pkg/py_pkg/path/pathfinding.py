@@ -6,7 +6,7 @@ setpoints for the controllers downstream.
 
 Inputs (what this node listens to):
   - /path    (MissionCommand) -- which mission to run, plus its parameters
-               (target pressure, glide angle, how many times to resurface).
+               (deep/shallow pressures, glide angle, how many oscillations).
   - /command (Bool)           -- the operator's run intent: true=start,
                false=stop.
   - position estimate (Pose)  -- current vehicle state. position.z is the
@@ -68,6 +68,9 @@ class PathfindingNode(Node):
         create_subscription_for_topic(self, UUVTopics.PATH, self._on_path)
 
         self._target_pub = create_publisher_for_topic(self, UUVTopics.POSITION_TARGET)
+        # On completion we drive /command=false ourselves so the controllers
+        # run their safe-stop -- without it they hold the last target forever.
+        self._command_pub = create_publisher_for_topic(self, UUVTopics.COMMAND)
         self.create_timer(1.0 / REFERENCE_RATE_HZ, self._tick)
 
         self.get_logger().info("pathfinding_node started (mission-id dispatch).")
@@ -102,8 +105,7 @@ class PathfindingNode(Node):
         )
         if not self._run_requested:
             # Stop: forget the mission and go back to the initial state. We
-            # don't publish anything -- the controllers see this same
-            # /command=false themselves and reset, so there's nothing to send.
+            # don't publish anything
             self._reset()
             self.get_logger().info("Mission stopped; stack reset to initial state.")
 
@@ -129,8 +131,9 @@ class PathfindingNode(Node):
                 MissionState(
                     pose=self._current_pose,
                     target_pressure_pa=float(self._mission_cmd.target_pressure_pa),
+                    shallow_pressure_pa=float(self._mission_cmd.shallow_pressure_pa),
                     angle_rad=float(self._mission_cmd.angle_rad),
-                    n_resurfaces=int(self._mission_cmd.n_resurfaces),
+                    n_oscillations=int(self._mission_cmd.n_oscillations),
                 )
             )
             self._mission_t0_s = self.get_clock().now().nanoseconds / 1e9
@@ -139,11 +142,16 @@ class PathfindingNode(Node):
         if self._mission_t0_s is None or self._current_pressure_pa is None:
             return
         mission_t = self.get_clock().now().nanoseconds / 1e9 - self._mission_t0_s
+
         self._mission.update(self._current_pressure_pa)
         if self._mission.is_done(mission_t):
             self.get_logger().info("Mission complete.")
+            # Stop the actuators: completion is not a stop signal on its own,
+            # so emit /command=false
+            self._command_pub.publish(Bool(data=False))
             self._reset()
             return
+
         # A mission can choose not to issue a setpoint this tick (reference
         # returns None) -- e.g. SURFACE/SAWTOOTH while between phases. When that
         # happens we publish nothing, so the controllers just hold their last

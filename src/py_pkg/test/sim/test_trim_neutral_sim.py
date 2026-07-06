@@ -162,8 +162,9 @@ class _TrimNeutralTestDriver(Node):
         cmd = MissionCommand()
         cmd.mission_id = int(MissionId.TRIM_AND_NEUTRAL_BUOYANCY)
         cmd.target_pressure_pa = float(target_pa)
+        cmd.shallow_pressure_pa = 0.0
         cmd.angle_rad = 0.0
-        cmd.n_resurfaces = 0
+        cmd.n_oscillations = 0
         self.path_pub.publish(cmd)
 
     def publish_start(self) -> None:

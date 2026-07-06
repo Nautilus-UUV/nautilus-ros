@@ -6,9 +6,12 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
 from std_msgs.msg import Bool, Int16, UInt8
 
-from py_pkg.math_utils import deadband_snap, span_band_guards
+from py_pkg.math_utils import deadband_snap
 from py_pkg.physics import q_to_rpm
 from py_pkg.pid import depth_control_system as ControlSystem
+from py_pkg.pid.bcu_command_gate import BcuCommandGate
+from py_pkg.pid.bcu_safe_stop_burst import BcuSafeStopBurst
+from py_pkg.pid.tank_limit_guard import TankLimitGuard
 from py_pkg.robot_specs import (
     BCU_DEEP_THRESHOLD_PA,
     BCU_FREE_VALVE_MASK,
@@ -21,6 +24,16 @@ from py_pkg.uuv_ros_core import (
     create_subscription_for_topic,
     spin_node,
 )
+
+# How long to keep re-asserting the safe-stop after a stop (or at boot)
+# before the loop goes silent.
+STOP_REASSERT_S = 1.0
+
+# How long a manual BCU command keeps bcu_node off the wire (no reassert burst).
+# >= STOP_REASSERT_S, and only needs to span the cross-topic delivery skew
+# between the paired /command=false and the manual command; large is safe because
+# bcu_debug owns the wire for the whole manual session anyway.
+MANUAL_HOLD_S = 1.5
 
 
 def select_pump_and_valves(
@@ -54,46 +67,9 @@ def select_pump_and_valves(
     return pump_rpm, 0, 0
 
 
-def clamp_to_tank_limits(
-    pump_rpm: int,
-    motor_open: int,
-    free_open: int,
-    tank_pa: float | None,
-    tank_empty_pa: float | None,
-    tank_full_pa: float | None,
-    band: float = 0.10,
-) -> tuple[int, int, int]:
-    """Stop commanding oil flow once the tank is within ``band`` of an endpoint.
-
-    The tank runs inverse to the bladder: positive bus RPM inflates the
-    bladder and drains the tank toward ``tank_empty_pa``; negative RPM --
-    -- fills it toward ``tank_full_pa``. The last stretch of
-    travel is just dead-heads the pump against a tank that's effectively full/empty,
-    so we quit early.
-
-    The limits come from the pre-dive Initialize (DIVE_INIT).
-    """
-    if tank_pa is None or tank_empty_pa is None or tank_full_pa is None:
-        return pump_rpm, motor_open, free_open
-    if tank_empty_pa <= 0.0 or tank_full_pa <= 0.0 or tank_empty_pa >= tank_full_pa:
-        return pump_rpm, motor_open, free_open
-
-    low_guard, high_guard = span_band_guards(tank_empty_pa, tank_full_pa, band)
-    draining_tank = pump_rpm > 0
-    filling_tank = pump_rpm < 0 or bool(free_open)
-    if draining_tank and tank_pa <= low_guard:
-        return 0, 0, 0
-    if filling_tank and tank_pa >= high_guard:
-        return 0, 0, 0
-    return pump_rpm, motor_open, free_open
-
-
 def solve_bcu_command(
     q: float,
     current_pressure_pa: float,
-    tank_pa: float | None,
-    tank_empty_pa: float | None,
-    tank_full_pa: float | None,
     *,
     bladder_volume_m3: float,
     pump_efficiency: float,
@@ -102,19 +78,20 @@ def solve_bcu_command(
     max_rpm: int,
     deep_threshold_pa: float = BCU_DEEP_THRESHOLD_PA,
 ) -> tuple[int, int, int]:
-    """Turn a controller flow demand ``q`` into a BCU wire command.
+    """Turn a controller flow demand ``q`` into a raw BCU wire command.
 
-    The whole bladder-actuation path as one functional chain:
+    The bladder-actuation path as one functional chain:
 
         q  --q_to_rpm-->            motor RPM (sign carries the fill direction)
            --deadband_snap-->       motor RPM, snapped out of the dead pump band
            --negate-->              pump bus RPM (the bus runs inverse to fill)
            --select_pump_and_valves--> (pump_rpm, motor_open, free_open)
-           --clamp_to_tank_limits-->   same triple, zeroed near a tank endpoint
 
     ``q`` is the fraction of bladder volume to move per second; positive fills
     the bladder (sink). Returns ``(pump_rpm, motor_open, free_open)`` ready for
-    the wire -- motor_open is valve 2 (bit0), free_open is valve 1 (bit1).
+    the wire -- motor_open is valve 2 (bit0), free_open is valve 1 (bit1). The
+    tank-endpoint cutoff is applied downstream by ``TankLimitGuard``, which
+    needs the raw direction this returns, so it is not folded in here.
     """
     motor_rpm = deadband_snap(
         q_to_rpm(q, bladder_volume_m3, pump_efficiency),
@@ -123,11 +100,8 @@ def solve_bcu_command(
         max_rpm,
     )
     pump_rpm = int(-motor_rpm)
-    pump_rpm, motor_open, free_open = select_pump_and_valves(
+    return select_pump_and_valves(
         current_pressure_pa, q, pump_rpm, deep_threshold_pa
-    )
-    return clamp_to_tank_limits(
-        pump_rpm, motor_open, free_open, tank_pa, tank_empty_pa, tank_full_pa
     )
 
 
@@ -148,6 +122,33 @@ class BCUNode(Node):
         self._min_operating_rpm = cfg.plant_model.min_operating_rpm
         self._max_rpm = cfg.plant_model.max_rpm
         self._pump_efficiency = cfg.plant_model.pump_efficiency
+
+        # Latching tank-endpoint cutoff: holds the pump/valves stopped once the
+        # tank is parked at a limit, with release hysteresis so sensor noise on
+        # the guard threshold can't chatter the valves (the bench-test bug).
+        self._tank_guard = TankLimitGuard(
+            stop_band=cfg.tank_stop_band,
+            release_band=cfg.tank_release_band,
+        )
+
+        # Anti-chatter gate between solve_bcu_command and the wire: error
+        # deadband + arm/disarm hysteresis + minimum valve dwell.
+        self._gate = BcuCommandGate(
+            error_arm_pa=cfg.error_arm_pa,
+            error_disarm_pa=cfg.error_disarm_pa,
+            min_valve_dwell_s=cfg.min_valve_dwell_s,
+        )
+
+        # Safe-stop re-assert burst with a manual-yield: republishes 0 RPM +
+        # valves closed for a bounded burst after a stop so the STM latches the
+        # zero, but cancels the burst when the operator drives the BCU by hand
+        # (bcu_debug owns the same wire) so the two can't flicker against each
+        # other. Driven from control_loop (tick) and _begin_safe_stop / the debug
+        # subscriptions below.
+        self._safe_stop = BcuSafeStopBurst(
+            reassert_count=max(1, round(cfg.frequency_hz * STOP_REASSERT_S)),
+            manual_hold_s=MANUAL_HOLD_S,
+        )
 
         # Held None until the first POSITION_TARGET arrives
         self.target_pressure_pa: float | None = None
@@ -215,14 +216,30 @@ class BCUNode(Node):
             callback_group=self.callback_group,
         )
 
+        # Yield the wire whenever a debug/operator path drives the BCU. We don't
+        # act on the payload -- a message on any of the manual-drive surfaces just
+        # means someone (the operator, or the lifeguard's auto emergency-surface)
+        # is driving, so we cancel any pending safe-stop burst rather than flicker
+        # against it. The surface set (which excludes DEBUG_RESET) is owned by the
+        # registry; see UUVTopics.BCU_MANUAL_DRIVE_TOPICS.
+        for manual_topic in UUVTopics.BCU_MANUAL_DRIVE_TOPICS:
+            create_subscription_for_topic(
+                self,
+                manual_topic,
+                self._on_manual_activity,
+                callback_group=self.callback_group,
+            )
+
         self.control_timer = self.create_timer(
             1.0 / cfg.frequency_hz,
             self.control_loop,
             callback_group=self.callback_group,
         )
 
-        # Leave the BCU wire unambiguously at 0/closed at boot.
-        self._publish_bcu_stop()
+        # Leave the BCU wire unambiguously at 0/closed at boot. This runs
+        # synchronously here, before spin_node, so the boot burst arms before any
+        # subscription callback (incl. a latched manual command) can fire.
+        self._begin_safe_stop()
 
         self.get_logger().info("Depth control node started.")
 
@@ -251,6 +268,8 @@ class BCUNode(Node):
         # reference moved to attitude_node, which publishes already-gauged depth.
         self._tank_empty_pa = float(msg.tank_empty_pa)
         self._tank_full_pa = float(msg.tank_full_pa)
+        # Fresh endpoints invalidate any latch held against the old ones.
+        self._tank_guard.reset()
         # Mirrors the clamp's own sanity check.
         limits_ok = 0.0 < self._tank_empty_pa < self._tank_full_pa
         log = self.get_logger().info if limits_ok else self.get_logger().error
@@ -260,6 +279,9 @@ class BCUNode(Node):
             f"({'ok' if limits_ok else 'invalid -- clamp stays inert'})"
         )
 
+    def _now_s(self) -> float:
+        return self.get_clock().now().nanoseconds / 1e9
+
     def _publish_bcu_stop(self) -> None:
         zero_rpm = Int16()
         zero_rpm.data = 0
@@ -268,46 +290,83 @@ class BCUNode(Node):
         valves_off.data = 0
         self.bcu_valves_publisher.publish(valves_off)
 
+    def _begin_safe_stop(self) -> None:
+        # Arm the re-assert burst and emit the first safe-stop now -- unless a
+        # manual command holds the wire, in which case begin_stop yields and we
+        # publish nothing (bcu_debug is driving and we'd only flicker against it).
+        if self._safe_stop.begin_stop(self._now_s()):
+            self._publish_bcu_stop()
+
+    def _on_manual_activity(self, _msg) -> None:
+        # A message on any BCU debug command topic: the operator/lifeguard is
+        # driving the BCU. Cancel any pending safe-stop burst so we don't fight it.
+        self._safe_stop.note_manual(self._now_s())
+
     def _on_command(self, msg: Bool) -> None:
-        # /command=true (start) is a no-op for the controller -- it just waits
-        # for pathfinding's next POSITION_TARGET. /command=false (stop) wipes
-        # controller state, drops the target, and publishes ONE safe-stop
-        # (0 RPM + valves closed) before control_loop goes silent. That single
-        # safe-stop is mandatory: the STM has no staleness watchdog and re-ships
-        # the last value forever..
+        # /command=true (start) is a no-op for the controller.
         if bool(msg.data):
             return
+        # Edge-trigger: only the running->stopped transition does the stop work.
+        # target_pressure_pa is None already means "stopped", so a repeated
+        # /command=false (the UI sends one before every manual command) is a
+        # no-op -- otherwise each one would re-arm the burst and chatter the wire
+        # against the manual command.
+        if self.target_pressure_pa is None:
+            return
         self.control_system.reset()
+        self._gate.reset()
+        self._tank_guard.reset()
         self.current_bladder_level = self._initial_proportion_full
         self.target_pressure_pa = None
-        self._publish_bcu_stop()
+        self._begin_safe_stop()
         self.get_logger().info(
-            "stop -> safe-stop emitted, BCU going silent (fresh state)."
+            "stop -> safe-stop (or yield to manual), BCU going silent (fresh state)."
         )
 
     def control_loop(self):
         if self.target_pressure_pa is None:
-            # No target -> go silent. Lets a debug node own the
-            # BCU with no contention.
+            # No target. Keep re-asserting the safe-stop for the burst window so
+            # the STM latches the zero, then go silent so a debug node can own the
+            # BCU wire with no contention. tick() returns False once the burst is
+            # spent or a manual command has cancelled it.
+            if self._safe_stop.tick():
+                self._publish_bcu_stop()
             return
 
         # The PID is the only stateful step: it integrates over time to turn the
         # current pressure into a flow demand q. Everything downstream is the
         # pure solve_bcu_command pipeline.
-        now = self.get_clock().now().nanoseconds / 1e9
+        now = self._now_s()
         q = self.control_system.calc_acc(self.current_pressure_pa, now)
 
         pump_rpm, motor_open, free_open = solve_bcu_command(
             q,
             self.current_pressure_pa,
-            self._tank_pa,
-            self._tank_empty_pa,
-            self._tank_full_pa,
             bladder_volume_m3=self.bladder_volume,
             pump_efficiency=self._pump_efficiency,
             min_rpm=self._min_rpm,
             min_operating_rpm=self._min_operating_rpm,
             max_rpm=self._max_rpm,
+        )
+
+        # Tank-endpoint cutoff: stop (and latch) the command once the tank is
+        # parked at a registered limit, so it can't dead-head the pump or
+        # chatter the valves on noise that straddles the guard.
+        pump_rpm, motor_open, free_open = self._tank_guard.apply(
+            pump_rpm,
+            motor_open,
+            free_open,
+            self._tank_pa,
+            self._tank_empty_pa,
+            self._tank_full_pa,
+        )
+
+        # Anti-chatter conditioning: deadband + hysteresis on the depth error,
+        # and a minimum valve dwell. Holds the pump idle near the setpoint and
+        # stops the valves toggling every tick.
+        error_pa = self.target_pressure_pa - self.current_pressure_pa
+        pump_rpm, motor_open, free_open = self._gate.apply(
+            error_pa, pump_rpm, motor_open, free_open, now_s=now
         )
 
         rpm_msg = Int16()
@@ -325,6 +384,15 @@ class BCUNode(Node):
             f"q={q:.4f} Hz -> pump {pump_rpm} rpm, "
             f"valves {valves_msg.data:#04b} (bit0=motor/valve2, bit1=free/valve1)"
         )
+
+    def destroy_node(self) -> bool:
+        # Best-effort safe-stop on teardown so a clean shutdown leaves the
+        # pump at 0 / valves closed rather than whatever it last commanded.
+        try:
+            self._publish_bcu_stop()
+        except Exception:
+            pass
+        return super().destroy_node()
 
 
 def main(args=None):

@@ -1,63 +1,54 @@
 #!/usr/bin/env python3
 """ROS 2 <-> MQTT bridge for the Nautilus glider.
 
-Runs on the vehicle alongside the control stack; the broker lives on the
-mission laptop across the tether. That placement matters: the lifeguard
-failsafe below only works because this node keeps running (and keeps its
-local ROS publishers) when the tether -- and with it the broker -- goes away.
+Runs on the vehicle, alongside the control stack. The broker lives on the
+mission laptop, across the tether. The bridge keeps running -- and keeps its
+local ROS publishers -- when the tether drops, which is what lets the
+lifeguard failsafe below fire.
 
 Two directions:
 
 * **Ingress** (MQTT -> ROS): UI commands. ``nautilus/cmd/...`` payloads are
-  JSON, get materialised into the matching ROS message via
-  ``set_message_fields`` and republished into the ROS graph. QoS 1 -- the
-  receiving controllers (depth setpoint, ACU setpoint, pathfinding
-  start/stop) are idempotent on duplicates, but at-least-once is the right
-  floor for command traffic.
+  JSON. The bridge builds the matching ROS message with
+  ``set_message_fields`` and publishes it into the ROS graph. QoS 1
+  (at-least-once); the receiving controllers are idempotent on duplicates.
 
 * **Egress** (ROS -> MQTT): telemetry. The bridge subscribes to the ROS
-  topics the frontend wants to render, JSON-encodes them via
-  ``message_to_ordereddict``, and publishes on ``nautilus/telemetry/...``
-  at MQTT QoS 0. Fire-and-forget: a slow tether/broker must not
-  head-of-line-block ROS callbacks. Per-topic throttles cap the rate so
-  high-frequency streams (IMU at 200 Hz from the prefilter) don't
-  saturate the link.
+  topics the frontend renders, JSON-encodes them with
+  ``message_to_ordereddict``, and publishes on ``nautilus/telemetry/...`` at
+  QoS 0. The publish returns at once, keeping ROS callbacks free of broker
+  backpressure. Per-topic throttles cap the rate to keep high-frequency
+  streams (IMU at 200 Hz) off the link.
 
-Special bridge state that doesn't come from a ROS topic:
+Special bridge state, not from a ROS topic:
 
-* **Lifeguard** -- the deploy-time dead-man failsafe. The UI arms it via
+* **Lifeguard** -- the deploy-time dead-man failsafe. The UI arms it on
   ``nautilus/cmd/lifeguard`` (retained) and heartbeats on
-  ``nautilus/cmd/heartbeat``; both are consumed here, never forwarded to
-  ROS. When armed and the heartbeat has been silent for
-  ``lifeguard_timeout_s``, the bridge stops the mission and latches the
-  emergency-surface command through its existing ingress publishers --
-  bcu_debug then blows ballast continuously. If the operator registered
-  the tank's empty endpoint pre-dive (``nautilus/cmd/init``), the bridge
-  stands the blow down once the tank is within 10% of it -- bladder full,
-  nothing left to pump -- while the latch stays engaged; without a
-  registration the blow is continuous and dumb as ever. The same band
-  check guards the operator's MANUAL emergency surface (the UI slider
-  rides the same ``/debug/emergency_surface`` topic through ingress),
-  minus the latch semantics: stand-down just ends that blow, and a fresh
-  engage is re-evaluated from scratch. Status (armed/engaged/stood_down)
-  is retained on ``nautilus/status/lifeguard``.
+  ``nautilus/cmd/heartbeat``. The bridge consumes both. Once armed, if the
+  heartbeat stays silent for ``lifeguard_timeout_s`` the bridge stops the
+  mission and latches the emergency-surface command, and bcu_debug blows
+  ballast. If the operator registered the tank's empty endpoint pre-dive
+  (``nautilus/cmd/init``), the bridge stops the blow once the tank reaches
+  within 10% of empty, while the latch stays engaged. The same band check
+  guards the operator's manual emergency surface (the UI slider, on the same
+  ``/debug/emergency_surface`` topic). Status (armed/engaged/stood_down) is
+  retained on ``nautilus/status/lifeguard``.
 
-* ``nautilus/telemetry/mission/active`` (retained) -- the bridge mirrors
-  the last ``nautilus/cmd/path`` and ``nautilus/cmd/command`` it forwarded
-  so the UI can read "what mission is loaded and what state is it in"
-  without needing pathfinding_node to publish its own status topic. State
-  vocabulary: IDLE / LOADED / RUNNING.
+* ``nautilus/telemetry/mission/active`` (retained) -- the bridge mirrors the
+  last ``nautilus/cmd/path`` and ``nautilus/cmd/command`` it forwarded, so the
+  UI can read which mission is loaded and its state. States: IDLE / LOADED /
+  RUNNING.
 
-JSON wire format: field names match the ROS message exactly. No unit
-conversion at the bridge -- Pa stays Pa, centidegrees stay centidegrees.
-The UI owns presentation units.
+JSON wire format: field names match the ROS message exactly. Units pass
+through unchanged (Pa stays Pa, centidegrees stay centidegrees). The UI owns
+presentation units.
 """
 
 import json
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 import paho.mqtt.client as mqtt
 import rclpy
@@ -66,6 +57,7 @@ from rosidl_runtime_py.convert import message_to_ordereddict
 from rosidl_runtime_py.set_message import set_message_fields
 
 from py_pkg.mqtt.lifeguard import Lifeguard, tank_blow_exhausted
+from py_pkg.mqtt.reconnect import ReconnectSupervisor
 from py_pkg.uuv_ros_core import (
     TOPIC_MESSAGE_MAP,
     UUVTopics,
@@ -86,28 +78,30 @@ class IngressMapping:
 class EgressMapping:
     ros_topic: str  # always a UUVTopics.* constant
     mqtt_topic: str
-    # Soft rate cap. 0.0 means "publish every message" (use sparingly --
-    # the prefilter IMU runs at 200 Hz). On-change topics ignore this.
+    # Max publish rate. 0.0 publishes every message (the prefilter IMU runs at
+    # 200 Hz, so use sparingly). On-change topics ignore this.
     max_rate_hz: float
-    # On-change topics publish only when the JSON-encoded payload bytes
-    # differ from the last cached value. They also set retain=True so a
-    # fresh UI tab sees the last-known immediately. Use for state-like
-    # signals where the value is stable for long stretches (valves,
-    # setpoint Pose).
+    # On-change topics publish only when the encoded payload differs from the
+    # last one, with retain=True so a fresh UI tab gets the last value. Use for
+    # state-like signals that hold steady (valves, setpoint Pose).
     on_change: bool = False
+    # Custom message -> dict encoder. None falls back to message_to_ordereddict
+    # (the full message). Set it to trim a fat message down to the fields the UI
+    # and DB actually use (see _encode_imu_compact).
+    encoder: Callable[[Any], dict] | None = None
 
 
-# MQTT command topics the bridge also addresses by name OUTSIDE the map
-# (mission mirror, lifeguard failsafe, manual-blow guard). Named once so
-# a rename can't strand an interior comparison or _ingress_pubs lookup.
+# MQTT command topics the bridge references by name (mission mirror, lifeguard,
+# manual-blow guard). Named once, so the constant is the single source for
+# these string comparisons and _ingress_pubs lookups.
 COMMAND_CMD_TOPIC = "nautilus/cmd/command"
 PATH_CMD_TOPIC = "nautilus/cmd/path"
 INIT_CMD_TOPIC = "nautilus/cmd/init"
 EMERGENCY_SURFACE_CMD_TOPIC = "nautilus/cmd/debug/emergency_surface"
 DEBUG_RESET_CMD_TOPIC = "nautilus/cmd/debug/reset"
 
-# What the UI is allowed to send into ROS. Both ROS topics are registered
-# in uuv_ros_core (topics.py + message_types.py + qos_profiles.py).
+# Commands the UI may send into ROS. Each ROS topic is registered in
+# uuv_ros_core (topics.py + message_types.py + qos_profiles.py).
 INGRESS_MAP: tuple[IngressMapping, ...] = (
     IngressMapping(UUVTopics.COMMAND, COMMAND_CMD_TOPIC, 1),
     IngressMapping(UUVTopics.PATH, PATH_CMD_TOPIC, 1),
@@ -123,20 +117,33 @@ INGRESS_MAP: tuple[IngressMapping, ...] = (
     IngressMapping(UUVTopics.DEBUG_EMERGENCY_SURFACE, EMERGENCY_SURFACE_CMD_TOPIC, 1),
     IngressMapping(UUVTopics.DEBUG_RESET, DEBUG_RESET_CMD_TOPIC, 1),
     # Pre-dive registration (surface pressure + tank endpoints). The UI
-    # publishes it retained, so the broker replays it to a restarted
-    # bridge -- that replay, plus the TRANSIENT_LOCAL latch on the ROS
-    # side, is what makes the registration persistent.
+    # publishes it retained, and the ROS side latches it TRANSIENT_LOCAL. Both
+    # replay on reconnect, so the registration survives a bridge restart.
     IngressMapping(UUVTopics.DIVE_INIT, INIT_CMD_TOPIC, 1),
 )
 
 
-# What the bridge mirrors out to the operator UI. 10 Hz across the
-# board for periodic signals -- gives the strip charts enough resolution
-# to see oscillations and short transients without burning serious
-# tether-side bandwidth at JSON scalars. State-like signals (valves,
-# setpoint Pose) stay on-change with retain=True so transitions
-# propagate immediately and a fresh UI tab sees the last-known value
-# without waiting.
+def _encode_imu_compact(msg) -> dict:
+    """Trim the filtered Imu to the two fields the UI and DB actually use.
+
+    The prefilter passes orientation + all three covariance matrices straight
+    through from the raw IMU; nothing past the tether reads them (the 3D
+    attitude model runs off position/estimation, the covariances are unfilled).
+    Sending only the two vectors shrinks the frame (~450 B -> ~95 B) and keeps
+    the DB from logging ~30 dead covariance/orientation channels per sample.
+    """
+    av, la = msg.angular_velocity, msg.linear_acceleration
+    return {
+        "angular_velocity": {"x": av.x, "y": av.y, "z": av.z},
+        "linear_acceleration": {"x": la.x, "y": la.y, "z": la.z},
+    }
+
+
+# Telemetry the bridge mirrors out to the UI. Periodic signals run at 10 Hz --
+# enough resolution for the strip charts to show oscillations and short
+# transients, cheap at JSON-scalar sizes. State-like signals (valves, setpoint
+# Pose) are on-change with retain=True, so transitions propagate at once and a
+# fresh UI tab gets the last value.
 EGRESS_MAP: tuple[EgressMapping, ...] = (
     EgressMapping(
         UUVTopics.POSITION_ESTIMATION, "nautilus/telemetry/position/estimation", 10.0
@@ -147,31 +154,51 @@ EGRESS_MAP: tuple[EgressMapping, ...] = (
         0.0,
         on_change=True,
     ),
-    EgressMapping(UUVTopics.IMU_FILTERED, "nautilus/telemetry/imu", 10.0),
+    EgressMapping(
+        UUVTopics.IMU_FILTERED,
+        "nautilus/telemetry/imu",
+        10.0,
+        encoder=_encode_imu_compact,
+    ),
     EgressMapping(UUVTopics.BCU_PRESSURE, "nautilus/telemetry/bcu/pressure", 10.0),
     EgressMapping(
         UUVTopics.EXTERNAL_PRESSURE, "nautilus/telemetry/external/pressure", 10.0
     ),
+    EgressMapping(
+        UUVTopics.INTERNAL_PRESSURE, "nautilus/telemetry/internal/pressure", 10.0
+    ),
+    # Seawater temperature off the STM. Slowly varying (~1 Hz housekeeping on
+    # hardware), so the 10 Hz cap is just a ceiling -- the native rate passes
+    # through unthrottled, matching the external/pressure sibling above.
+    EgressMapping(
+        UUVTopics.EXTERNAL_TEMPERATURE, "nautilus/telemetry/external/temperature", 10.0
+    ),
     EgressMapping(UUVTopics.BCU_RPM, "nautilus/telemetry/bcu/rpm", 10.0),
+    # Measured pump RPM from the STM (~1 Hz on hardware; the sim HAL matches the
+    # shape). The 10 Hz cap sits above that rate, so it passes through and the
+    # UI can show commanded vs reported.
+    EgressMapping(
+        UUVTopics.BCU_FEEDBACK_RPM, "nautilus/telemetry/bcu/feedback/rpm", 10.0
+    ),
     EgressMapping(
         UUVTopics.BCU_VALVES, "nautilus/telemetry/bcu/valves", 0.0, on_change=True
     ),
     EgressMapping(UUVTopics.ACU_PITCH, "nautilus/telemetry/acu/pitch", 10.0),
     EgressMapping(UUVTopics.ACU_ROLL, "nautilus/telemetry/acu/roll", 10.0),
-    # Per-subsystem health. State-like, so on-change/retained: a payload only
-    # crosses the tether on a real online<->offline transition (the liveness
-    # node leaves header.stamp zero to keep the JSON byte-stable otherwise),
-    # and a fresh UI tab gets the last-known states from the retained message.
+    # Per-subsystem health. On-change/retained: a payload crosses the tether
+    # only on a real online<->offline transition (the liveness node zeroes
+    # header.stamp to keep the JSON byte-stable between transitions). A fresh
+    # UI tab gets the last states from the retained message.
     EgressMapping(
         UUVTopics.STATUS_LIVENESS,
         "nautilus/status/liveness",
         0.0,
         on_change=True,
     ),
-    # ROS-confirmed echo of the dive registration: the bridge's own
-    # egress subscription hears the ingress publisher's DIVE_INIT (rclpy
-    # delivers local publications), so the UI renders registration state
-    # from what actually reached the ROS graph, retained for fresh tabs.
+    # ROS-confirmed echo of the dive registration. The bridge's egress
+    # subscription hears its own ingress DIVE_INIT publish (rclpy delivers local
+    # publications), so the UI renders registration state from what reached the
+    # ROS graph. Retained for fresh tabs.
     EgressMapping(UUVTopics.DIVE_INIT, "nautilus/status/init", 0.0, on_change=True),
 )
 
@@ -180,42 +207,48 @@ STATUS_TOPIC = "nautilus/status/bridge"
 MISSION_ACTIVE_TOPIC = "nautilus/telemetry/mission/active"
 HEARTBEAT_PERIOD_S = 2.0
 
-# Lifeguard surfaces. The cmd/heartbeat pair is consumed by the bridge itself
-# (no ROS forwarding); status is retained so a fresh UI tab -- and the bridge's
-# own reconnect -- always carries the current armed/engaged truth.
+# Reconnect backstop (see reconnect.py). paho's loop_start() handles the normal
+# case; these size the watchdog that rebuilds the client when paho wedges -- a
+# half-open socket or a stuck loop thread after a yanked tether, which otherwise
+# only a reboot clears. Defaults for the matching ROS params.
+CONNECTION_WATCHDOG_PERIOD_S = 5.0  # how often the watchdog checks the link
+RECONNECT_GRACE_S = 12.0  # disconnected this long -> rebuild (paho's backoff first)
+RX_SILENCE_S = 20.0  # "connected" but silent this long -> rebuild (stale-link wedge)
+
+# Lifeguard surfaces. The bridge consumes cmd and heartbeat itself. Status is
+# retained, so a fresh UI tab and the bridge's own reconnect both get the
+# current armed/engaged state.
 LIFEGUARD_CMD_TOPIC = "nautilus/cmd/lifeguard"  # {"data": bool}, QoS 1, retained by UI
 LIFEGUARD_HEARTBEAT_TOPIC = "nautilus/cmd/heartbeat"  # QoS 0, ~1 Hz, payload ignored
 LIFEGUARD_STATUS_TOPIC = "nautilus/status/lifeguard"
 LIFEGUARD_TICK_PERIOD_S = 1.0  # default for the lifeguard_tick_period_s param
 
 # Bridge link-state vocabulary (retained on STATUS_TOPIC):
-#   "online"     -- bridge is connected and ROS<->MQTT plumbing is live.
-#   "offline"    -- bridge shut down cleanly (Ctrl-C, ROS shutdown, etc.).
-#   "link_lost"  -- broker observed an unclean TCP drop (LWT). Means EITHER
-#                   the bridge crashed OR the tether went down -- broker
-#                   cannot tell. Either way, ROS<->cloud plumbing is broken.
+#   "online"     -- connected; ROS<->MQTT plumbing is live.
+#   "offline"    -- clean shutdown (Ctrl-C, ROS shutdown).
+#   "link_lost"  -- unclean TCP drop, seen by the broker as the LWT. The bridge
+#                   crashed or the tether dropped; either way the plumbing is
+#                   broken.
 STATUS_ONLINE = "online"
 STATUS_OFFLINE = "offline"
 STATUS_LINK_LOST = "link_lost"
 
-# Mission state vocabulary mirrored on MISSION_ACTIVE_TOPIC. Roughly
-# parallels pathfinding_node's internal modes, collapsed to what the UI
-# actually needs to render:
+# Mission state mirrored on MISSION_ACTIVE_TOPIC. A UI-facing collapse of
+# pathfinding_node's internal modes:
 #   IDLE     -- no mission cached, or last command was stop.
-#   LOADED   -- a /path was received, no start yet.
-#   RUNNING  -- /command=true (start) observed after a mission was loaded.
+#   LOADED   -- a /path arrived, not yet started.
+#   RUNNING  -- /command=true seen after a mission loaded.
 MISSION_STATE_IDLE = "IDLE"
 MISSION_STATE_LOADED = "LOADED"
 MISSION_STATE_RUNNING = "RUNNING"
 
 
 def _safe_json(payload_dict: Any) -> str:
-    """JSON-encode a ROS message dict, replacing NaN/Inf with null.
+    """JSON-encode a ROS message dict, mapping NaN/Inf to null.
 
-    rosidl_runtime_py emits float fields directly; an unfilled covariance
-    entry in an Imu message can come through as NaN. Default ``json.dumps``
-    would emit ``NaN`` tokens that ``JSON.parse`` rejects, so we sanitise
-    on the way out -- the UI can render "missing" instead of throwing.
+    Float fields can arrive as NaN -- e.g. an unfilled covariance entry in an
+    Imu message. ``allow_nan=False`` turns those into ``null``, which the UI
+    parses cleanly and renders as "missing".
     """
     return json.dumps(payload_dict, allow_nan=False, default=lambda _: None)
 
@@ -226,46 +259,46 @@ class MqttBridge(Node):
     def __init__(self, mqtt_client_factory=None, **kwargs) -> None:
         super().__init__("mqtt_bridge", **kwargs)
 
-        # Broker is parameterised. Default to localhost (mosquitto -v on the
-        # mission laptop); override with the static IP when running against
-        # the real tether broker (e.g. broker_host:=192.168.2.1).
+        # Broker address is a parameter. Defaults to localhost (mosquitto on the
+        # mission laptop); set the static IP for the real tether broker (e.g.
+        # broker_host:=192.168.2.1).
         self.declare_parameter("broker_host", "127.0.0.1")
         self.declare_parameter("broker_port", 1883)
         self.declare_parameter("client_id", "nautilus_bridge")
-        self.declare_parameter("keepalive_s", 30)
-        # Dead-man window for the lifeguard, once armed. The tick period is
-        # how often silence (and the tank-empty band) is re-checked; tests
-        # shorten it so engage latency isn't floored at 1 s.
+        # MQTT keepalive. The broker fires our link_lost will after 1.5x this
+        # with no PINGREQ, so 10 s puts the retained link_lost at ~15 s
+        self.declare_parameter("keepalive_s", 10)
+        # Dead-man window for the lifeguard once armed.
         self.declare_parameter("lifeguard_timeout_s", 15.0)
         self.declare_parameter("lifeguard_tick_period_s", LIFEGUARD_TICK_PERIOD_S)
+        # Reconnect watchdog tuning (see reconnect.py).
+        self.declare_parameter(
+            "connection_watchdog_period_s", CONNECTION_WATCHDOG_PERIOD_S
+        )
+        self.declare_parameter("reconnect_grace_s", RECONNECT_GRACE_S)
+        self.declare_parameter("rx_silence_s", RX_SILENCE_S)
 
-        host = self.get_parameter("broker_host").get_parameter_value().string_value
-        port = self.get_parameter("broker_port").get_parameter_value().integer_value
-        client_id = self.get_parameter("client_id").get_parameter_value().string_value
-        keepalive = (
+        self._broker_host = (
+            self.get_parameter("broker_host").get_parameter_value().string_value
+        )
+        self._broker_port = (
+            self.get_parameter("broker_port").get_parameter_value().integer_value
+        )
+        self._client_id = (
+            self.get_parameter("client_id").get_parameter_value().string_value
+        )
+        self._keepalive = (
             self.get_parameter("keepalive_s").get_parameter_value().integer_value
         )
 
-        # paho v2 callback API; ROS callbacks must never block on the broker.
-        # Tests inject a fake via ``mqtt_client_factory`` so the bridge can
-        # spin without a real broker on the loopback.
-        if mqtt_client_factory is None:
-            self._mqtt = mqtt.Client(
-                mqtt.CallbackAPIVersion.VERSION2,
-                client_id=client_id,
-            )
-        else:
-            self._mqtt = mqtt_client_factory(client_id)
-        # LWT fires only on UNCLEAN disconnect (crash, tether drop, kernel
-        # kills the TCP session). A graceful shutdown sends a DISCONNECT
-        # packet first, which suppresses the will -- so 'offline' (clean)
-        # and 'link_lost' (unclean) stay distinguishable on the UI side.
-        self._mqtt.will_set(STATUS_TOPIC, payload=STATUS_LINK_LOST, qos=1, retain=True)
-        self._mqtt.on_connect = self._on_connect
-        self._mqtt.on_disconnect = self._on_disconnect
-        self._mqtt.on_message = self._on_mqtt_message
-        # Built-in exponential backoff on reconnect.
-        self._mqtt.reconnect_delay_set(min_delay=1, max_delay=30)
+        # paho v2 callback API. Tests inject a fake via ``mqtt_client_factory``
+        # so the bridge spins without a real broker. Kept on self because the
+        # reconnect watchdog rebuilds the client through the same path.
+        self._mqtt_client_factory = mqtt_client_factory
+        # The live client is built at the end of __init__ (below), once the
+        # ingress publishers and bridge state the on_connect callback touches
+        # exist. The watchdog rebuilds it later via the same _build_client().
+        self._mqtt: Any = None
 
         # --- ingress -----------------------------------------------------
         self._ingress_pubs: dict[str, Any] = {}
@@ -274,9 +307,9 @@ class MqttBridge(Node):
             self._ingress_pubs[m.mqtt_topic] = (pub, TOPIC_MESSAGE_MAP[m.ros_topic])
 
         # --- egress ------------------------------------------------------
-        # _last_emit holds the monotonic timestamp of the previous publish
-        # per egress topic (throttling). _last_payload holds the previous
-        # JSON-encoded payload (on-change dedup + retained semantics).
+        # Per-topic egress state: _last_emit tracks the previous publish time
+        # (throttling), _last_payload the previous encoded payload (on-change
+        # dedup + reseed).
         self._last_emit: dict[str, float] = {}
         self._last_payload: dict[str, str] = {}
         self._egress_subs: list = []
@@ -287,69 +320,80 @@ class MqttBridge(Node):
             self._egress_subs.append(sub)
 
         # --- mission-active mirror --------------------------------------
-        # Cached MissionCommand JSON dict from the most recent
-        # nautilus/cmd/path, plus the most recently observed command-state.
-        # Combined into MISSION_ACTIVE_TOPIC on every change so the UI can
-        # render "current mission" without pathfinding_node owning its own
-        # status topic.
+        # Mission mirror: the last MissionCommand from nautilus/cmd/path plus
+        # the current command state. Published on MISSION_ACTIVE_TOPIC on every
+        # change, so the UI can show the current mission. Guarded by _state_lock
+        # (below): the paho thread (ingress) and the timer thread (the
+        # lifeguard's mission re-stop) both write it.
         self._mission_cache: dict | None = None
         self._mission_state: str = MISSION_STATE_IDLE
 
         # --- lifeguard -----------------------------------------------------
-        # State is mutated from the paho network thread (_on_mqtt_message)
-        # and read from the rclpy timer thread. The lock also pairs each
-        # transition with its ROS/MQTT publish, so a disarm's stand-down can
-        # never be overtaken by a stale engage re-publish from the tick.
+        # _state_lock guards every piece of bridge state shared across threads:
+        # the lifeguard latch, the tank/registration fields, the manual-blow
+        # flag, and the mission mirror above. The paho thread (_on_mqtt_message)
+        # and the rclpy timer (_tick_lifeguard) both touch it, so one lock keeps
+        # them in step and pairs each transition with its publish. The helpers
+        # that touch this state (_update_mission_mirror, _publish_mission_active,
+        # _update_manual_emergency) run with the lock already held; it is not
+        # re-entrant.
         #
-        # Time source is time.monotonic(), not the node clock: the node clock
-        # is wall time, and an NTP step when the tether returns is exactly
-        # this feature's active window -- a forward step would mis-fire, a
-        # backward one would delay the failsafe.
+        # The lifeguard times with time.monotonic(), not the node clock. The
+        # node clock is wall time, and the tether's return can bring an NTP step
+        # right inside the failsafe's active window. The monotonic clock is
+        # immune to that step.
         timeout_s = (
             self.get_parameter("lifeguard_timeout_s").get_parameter_value().double_value
         )
         self._lifeguard = Lifeguard(timeout_s)
-        self._lifeguard_lock = threading.Lock()
+        self._state_lock = threading.Lock()
 
-        # Tank-empty stand-down state, all under the same lock: the
-        # registered empty endpoint and the live tank pressure arrive on
-        # the rclpy executor (ROS subscriptions below), the stood-down
-        # flag is written there too, and _tick_lifeguard reads all three.
-        # Stood-down means: the latch stays engaged, but the blow has
-        # been stopped because the tank is within 10% of empty -- there's
-        # nothing left to pump. Cleared only by disarm. Process-local: a
-        # bridge restart while engaged may re-blow for ~a tick until the
-        # retained init replay and the first tank sample stand it down
-        # again.
+        # Tank-empty stand-down state, all under _state_lock. The registered
+        # endpoints and the live tank pressure arrive on the rclpy executor
+        # (subscriptions below); _tick_lifeguard reads them. Stood-down means
+        # the latch stays engaged but the blow has stopped: the tank is within
+        # 10% of empty, so the bladder is full. Disarm clears it. The flag is
+        # process-local, so a restart while engaged re-blows for about one tick
+        # until the retained init and first tank sample stand it down.
         self._init_tank_empty_pa: float | None = None
         self._init_tank_full_pa: float | None = None
         self._tank_pa: float | None = None
         self._lifeguard_stood_down = False
 
-        # The operator's manual emergency surface (the UI slider) rides the
-        # same /debug/emergency_surface topic and deserves the same
-        # tank-empty stand-down. The bridge sees the command pass through
-        # its own ingress, so it tracks "a manual blow is running" here and
-        # the 1 s tick applies the band check. Unlike the lifeguard there
-        # is no latch to preserve: stand-down just clears the flag, and the
-        # next manual engage is re-evaluated from scratch. A blow commanded
-        # directly on the ROS graph (ros2 topic pub) bypasses MQTT and this
-        # guard -- the UI path is what's covered.
+        # The operator's manual emergency surface rides the same
+        # /debug/emergency_surface topic and gets the same tank-empty stand-down.
+        # The bridge sees the command pass through its own ingress and tracks
+        # "a manual blow is running" here; the tick applies the band check.
+        # Stand-down clears this flag, so the next manual engage starts fresh.
+        # This guards the UI path.
         self._manual_emergency_active = False
 
         create_subscription_for_topic(
             self, UUVTopics.BCU_PRESSURE, self._on_tank_pressure
         )
-        # The registration is consumed as the typed ROS message, not by
-        # re-parsing the MQTT JSON: rclpy delivers the bridge's own
-        # ingress publish locally (same mechanism the status/init echo
-        # rides), and the TRANSIENT_LOCAL latch replays it on discovery.
+        # The bridge reads the registration as the typed ROS message. rclpy
+        # delivers its own ingress publish locally (the same path the
+        # status/init echo rides), and the TRANSIENT_LOCAL latch replays it on
+        # discovery.
         create_subscription_for_topic(self, UUVTopics.DIVE_INIT, self._on_dive_init)
 
-        # connect_async + loop_start: broker absence at boot must not block
-        # node init. The mqtt thread services reconnect in the background.
-        self._mqtt.connect_async(host, port, keepalive=keepalive)
-        self._mqtt.loop_start()
+        # --- reconnect backstop -------------------------------------------
+        # Monotonic time of the last inbound MQTT message; None until the first
+        # one lands. Written under _state_lock in _on_mqtt_message (paho thread),
+        # read by the watchdog (executor thread). Feeds the stale-link check.
+        self._last_rx_monotonic: float | None = None
+        self._supervisor = ReconnectSupervisor(
+            down_grace_s=self.get_parameter("reconnect_grace_s")
+            .get_parameter_value()
+            .double_value,
+            rx_silence_s=self.get_parameter("rx_silence_s")
+            .get_parameter_value()
+            .double_value,
+        )
+
+        # Build + start the live client now that the publishers and state its
+        # on_connect callback touches exist. _build_client repoints self._mqtt.
+        self._build_client()
 
         self._heartbeat_timer = self.create_timer(
             HEARTBEAT_PERIOD_S, self._publish_heartbeat
@@ -360,27 +404,72 @@ class MqttBridge(Node):
             .double_value,
             self._tick_lifeguard,
         )
+        self._connection_watchdog_timer = self.create_timer(
+            self.get_parameter("connection_watchdog_period_s")
+            .get_parameter_value()
+            .double_value,
+            self._connection_watchdog,
+        )
 
         self.get_logger().info(
-            f"mqtt_bridge: broker={host}:{port}, "
+            f"mqtt_bridge: broker={self._broker_host}:{self._broker_port}, "
             f"ingress={len(INGRESS_MAP)} egress={len(EGRESS_MAP)}"
         )
+
+    def _build_client(self):
+        """Create, wire, and start a paho client (or the test fake).
+
+        Used both at startup and by the reconnect watchdog -- a rebuild is a
+        brand-new client on the same broker target, so it can't inherit a
+        wedged socket or a dead loop thread. connect_async + loop_start let node
+        init (and a rebuild) proceed even with the broker unreachable; the mqtt
+        thread connects in the background and on_connect re-subscribes and
+        re-seeds retained state.
+        """
+        if self._mqtt_client_factory is None:
+            client = mqtt.Client(
+                mqtt.CallbackAPIVersion.VERSION2,
+                client_id=self._client_id,
+            )
+        else:
+            client = self._mqtt_client_factory(self._client_id)
+        # Last will: the broker publishes link_lost if the connection drops
+        # uncleanly (crash, tether loss). A clean shutdown sends DISCONNECT
+        # first, which suppresses the will, so offline and link_lost stay
+        # distinct on the UI side.
+        client.will_set(STATUS_TOPIC, payload=STATUS_LINK_LOST, qos=1, retain=True)
+        client.on_connect = self._on_connect
+        client.on_disconnect = self._on_disconnect
+        client.on_message = self._on_mqtt_message
+        # Built-in exponential backoff on reconnect.
+        client.reconnect_delay_set(min_delay=1, max_delay=30)
+        client.connect_async(
+            self._broker_host, self._broker_port, keepalive=self._keepalive
+        )
+        # Publish self._mqtt before loop_start: the paho thread can fire
+        # on_connect the instant it spins up, and on_connect's retained re-seed
+        # publishes through self._mqtt. Point it at the new client first so that
+        # re-seed lands on the right socket.
+        self._mqtt = client
+        client.loop_start()
 
     # --- egress: ROS -> MQTT --------------------------------------------
 
     def _make_egress_callback(self, mapping: EgressMapping):
-        """Closure that captures the mapping and returns a ROS subscription
-        callback. One per egress entry so each topic has its own throttle
-        state via ``mapping.mqtt_topic`` as the key into _last_emit /
-        _last_payload."""
+        """Build the ROS subscription callback for one egress mapping.
+
+        One callback per entry, each keyed on ``mapping.mqtt_topic`` for its own
+        throttle/dedup state in _last_emit and _last_payload.
+        """
+
+        encode = mapping.encoder or message_to_ordereddict
 
         def _callback(msg) -> None:
             try:
-                payload_dict = message_to_ordereddict(msg)
+                payload_dict = encode(msg)
                 payload_str = _safe_json(payload_dict)
             except Exception as exc:
-                # Don't kill the subscription on one bad message; log and
-                # drop.
+                # Log and drop one bad message; keep the subscription alive.
                 self.get_logger().warning(
                     f"egress encode failed for {mapping.mqtt_topic}: {exc}"
                 )
@@ -408,34 +497,35 @@ class MqttBridge(Node):
         return _callback
 
     def _reseed_retained_egress(self, client) -> None:
-        """Re-publish the last-known payload of every on-change egress topic,
-        retained, on (re)connect.
+        """Re-publish every on-change topic's last payload, retained, on
+        (re)connect.
 
-        paho drops (doesn't queue) QoS-0 publishes while disconnected, but
-        the on-change dedup updates _last_payload regardless -- so the first
-        liveness/valves/setpoint frame the bridge encodes before the broker
-        is reachable never lands, and every byte-identical follow-up is then
-        suppressed as "no change". The broker ends up with no retained copy,
-        and a fresh UI tab subscribing later sees nothing: the whole liveness
-        grid defaults to offline while Tether (re-seeded below on every
-        connect) sits green. This is the common boot order -- the vehicle's
-        control stack, this bridge included, comes up before the laptop
-        broker; same on a tether reconnect after the broker restarted and
-        lost its retained store. Re-seeding from the cache here restores the
-        retained copy immediately for ALL on-change topics, regardless of how
-        rarely they next change. Snapshot the dict: egress callbacks on the
-        rclpy executor thread mutate it while this runs on the paho thread."""
+        paho drops QoS-0 publishes while disconnected, but the on-change dedup
+        still records each one in _last_payload. So an on-change frame encoded
+        before the broker is reachable can be the only copy the bridge holds.
+        The vehicle stack usually boots before the laptop broker, and a broker
+        restart drops its retained store, so this is the common case. Re-seeding
+        from the cache hands the broker a fresh retained copy of all on-change
+        topics, so a late-joining UI tab gets real state. Snapshot the dict:
+        egress callbacks on the rclpy executor mutate it while this runs on the
+        paho thread."""
         for mqtt_topic, payload_str in list(self._last_payload.items()):
             client.publish(mqtt_topic, payload=payload_str, qos=0, retain=True)
 
     # --- ingress: MQTT -> ROS -------------------------------------------
 
     def _on_mqtt_message(self, _client, _userdata, mqtt_msg) -> None:
-        # Lifeguard surfaces are consumed by the bridge itself -- they never
-        # touch the ROS graph, so they're intercepted before the ingress map.
+        # Any inbound message is proof the link is live -- the watchdog's
+        # stale-connected check keys on this. The laptop heartbeats at ~1 Hz
+        # whenever an operator is present, so it stays fresh on a healthy link.
+        with self._state_lock:
+            self._last_rx_monotonic = time.monotonic()
+
+        # Lifeguard surfaces are handled here, before the ingress map: the
+        # bridge consumes them itself.
         if mqtt_msg.topic == LIFEGUARD_HEARTBEAT_TOPIC:
-            with self._lifeguard_lock:
-                # Payload deliberately ignored: arrival IS the signal.
+            with self._state_lock:
+                # Payload ignored: arrival is the signal.
                 self._lifeguard.beat(time.monotonic())
             return
         if mqtt_msg.topic == LIFEGUARD_CMD_TOPIC:
@@ -444,7 +534,7 @@ class MqttBridge(Node):
 
         entry = self._ingress_pubs.get(mqtt_msg.topic)
         if entry is None:
-            # subscribed via wildcard one day? log so it's visible.
+            # Unmapped topic (e.g. a future wildcard subscribe). Log it.
             self.get_logger().debug(f"unmapped ingress topic {mqtt_msg.topic}")
             return
         pub, msg_cls = entry
@@ -460,23 +550,23 @@ class MqttBridge(Node):
             return
         pub.publish(ros_msg)
 
-        # Mission-active mirror: piggy-back on the ingress decode so the
-        # UI's "what mission is loaded" view stays in sync with the
-        # commands actually dispatched. The pathfinder owns the real
-        # state machine; this is just a UI-facing shadow.
-        self._update_mission_mirror(mqtt_msg.topic, payload)
-        # Same piggy-back for the manual emergency surface: the blow guard
-        # tracks engage/cancel (and the red reset) off the ingress decode.
-        self._update_manual_emergency(mqtt_msg.topic, payload)
+        # Mission-active mirror + manual-blow guard: piggy-back on the ingress
+        # decode so the UI's "what mission is loaded" view and the blow guard
+        # stay in sync with the commands actually dispatched. Both touch state
+        # the lifeguard timer also mutates, so take _state_lock; the helpers
+        # assume it's held.
+        with self._state_lock:
+            self._update_mission_mirror(mqtt_msg.topic, payload)
+            self._update_manual_emergency(mqtt_msg.topic, payload)
 
     def _update_mission_mirror(self, mqtt_topic: str, payload: dict) -> None:
+        # Caller holds _state_lock.
         changed = False
 
         if mqtt_topic == PATH_CMD_TOPIC:
             self._mission_cache = dict(payload)
-            # First /path after IDLE -> LOADED; if we were already RUNNING
-            # (a re-dispatch mid-run) keep the running state, the
-            # pathfinder loads the new mission and continues.
+            # First /path moves IDLE -> LOADED. A /path while RUNNING is a
+            # mid-run re-dispatch: keep RUNNING, the pathfinder swaps missions.
             if self._mission_state == MISSION_STATE_IDLE:
                 self._mission_state = MISSION_STATE_LOADED
             changed = True
@@ -488,8 +578,8 @@ class MqttBridge(Node):
                     self._mission_state = MISSION_STATE_RUNNING
                     changed = True
             elif not start:
-                # Stop -> clean idle. Drop the cached mission too, mirroring
-                # pathfinding_node clearing its loaded mission on /command=false.
+                # Stop -> IDLE, and drop the cached mission, matching
+                # pathfinding_node on /command=false.
                 if (
                     self._mission_state != MISSION_STATE_IDLE
                     or self._mission_cache is not None
@@ -502,6 +592,7 @@ class MqttBridge(Node):
             self._publish_mission_active()
 
     def _publish_mission_active(self) -> None:
+        # Caller holds _state_lock (reads _mission_state / _mission_cache).
         snapshot: dict = {"state": self._mission_state}
         if self._mission_cache is not None:
             snapshot.update(self._mission_cache)
@@ -517,35 +608,31 @@ class MqttBridge(Node):
     # --- lifeguard --------------------------------------------------------
 
     def _on_tank_pressure(self, msg) -> None:
-        # Tank pressure in the sensor's own frame (tank relative to
-        # hull), same stream the registered empty endpoint was sampled
-        # from. Cached for the stand-down check in _tick_lifeguard.
-        with self._lifeguard_lock:
+        # Tank pressure in the sensor's own frame (tank relative to hull), the
+        # same stream the registered endpoints came from. Cached for the
+        # stand-down check in _tick_lifeguard.
+        with self._state_lock:
             self._tank_pa = float(msg.data)
 
     def _on_dive_init(self, msg) -> None:
-        # Registered tank endpoints for the lifeguard's stand-down check.
-        # Both feed the span-based band -- the empty endpoint sets the floor,
-        # the full endpoint sets the span the 10% is measured against.
-        with self._lifeguard_lock:
+        # Registered tank endpoints for the stand-down band. Empty sets the
+        # floor; full sets the span the 10% is measured against.
+        with self._state_lock:
             empty_pa = float(msg.tank_empty_pa)
             full_pa = float(msg.tank_full_pa)
-            # Non-positive (including a missing field decoding as 0.0)
-            # means "not registered" -- tank_blow_exhausted double-guards
-            # (it also rejects a full <= empty span).
+            # Non-positive (a missing field decodes to 0.0) means "not
+            # registered". tank_blow_exhausted re-checks this too.
             self._init_tank_empty_pa = empty_pa if empty_pa > 0.0 else None
             self._init_tank_full_pa = full_pa if full_pa > 0.0 else None
 
     def _update_manual_emergency(self, mqtt_topic: str, payload: dict) -> None:
-        # Track the operator's manual blow so the tick can stand it down at
-        # the tank-empty band. The operator's own cancel and the red reset
-        # both end the blow at bcu_debug, so they clear the flag too.
+        # Track the operator's manual blow so the tick can stand it down at the
+        # tank-empty band. Cancel and the red reset both end the blow, so they
+        # clear the flag. Caller holds _state_lock.
         if mqtt_topic == EMERGENCY_SURFACE_CMD_TOPIC:
-            with self._lifeguard_lock:
-                self._manual_emergency_active = bool(payload.get("data"))
+            self._manual_emergency_active = bool(payload.get("data"))
         elif mqtt_topic == DEBUG_RESET_CMD_TOPIC:
-            with self._lifeguard_lock:
-                self._manual_emergency_active = False
+            self._manual_emergency_active = False
 
     def _on_lifeguard_cmd(self, raw: bytes) -> None:
         try:
@@ -553,7 +640,7 @@ class MqttBridge(Node):
         except Exception as exc:
             self.get_logger().error(f"lifeguard decode failed: {exc}")
             return
-        with self._lifeguard_lock:
+        with self._state_lock:
             if arm:
                 self._lifeguard.arm(time.monotonic())
                 self.get_logger().info(
@@ -562,10 +649,8 @@ class MqttBridge(Node):
             else:
                 was_engaged = self._lifeguard.engaged
                 self._lifeguard.disarm()
-                # Disarm is also the only thing that clears a tank-empty
-                # stand-down -- the arm branch deliberately doesn't, so a
-                # retained-arm replay can't restart a blow at an empty tank.
-                # It's a total stand-down, so the manual-blow flag goes too.
+                # Disarm is the only thing that clears a tank-empty stand-down.
+                # It's a full stand-down, so the manual-blow flag clears too.
                 self._lifeguard_stood_down = False
                 self._manual_emergency_active = False
                 if was_engaged:
@@ -575,11 +660,11 @@ class MqttBridge(Node):
             self._publish_lifeguard_status()
 
     def _tick_lifeguard(self) -> None:
-        with self._lifeguard_lock:
+        with self._state_lock:
             was_engaged = self._lifeguard.engaged
             if not self._lifeguard.tick(time.monotonic()):
-                # No lifeguard engagement -> the same tick guards a manual
-                # blow against pumping past the tank-empty band.
+                # Not engaged: the same tick guards a manual blow at the
+                # tank-empty band.
                 self._tick_manual_blow_guard()
                 return
             if not was_engaged:
@@ -587,24 +672,21 @@ class MqttBridge(Node):
                     "LIFEGUARD: laptop heartbeat lost -- engaging emergency surface"
                 )
                 self._publish_lifeguard_status()
-            # Stop the mission so the depth PID goes silent before bcu_debug
-            # blows ballast -- same sequencing as the UI's emergency slider.
-            # Unconditionally on the engage transition; afterwards only while
-            # the mission mirror shows one loaded/running (an operator starting
-            # a mission over a restored link without disarming first). bcu_node
-            # safe-stops on EVERY /command=false, so re-sending it each tick in
-            # the steady engaged state would chatter the valves against the
-            # emergency hold.
+
+            # Stop the mission so the depth PID goes quiet before bcu_debug blows
+            # ballast -- same order as the UI's emergency slider. Always on the
+            # engage transition; afterwards only while the mirror shows a mission
+            # loaded/running (an operator restarted one over a restored link).
+            # Skipping it in the steady engaged state keeps the valves from
+            # chattering against the emergency hold.
             if not was_engaged or self._mission_state != MISSION_STATE_IDLE:
                 self._publish_ingress_bool(COMMAND_CMD_TOPIC, False)
                 self._update_mission_mirror(COMMAND_CMD_TOPIC, {"data": False})
-            # Tank-empty stand-down: once the tank is within 10% of the
-            # registered empty endpoint there is nothing left to pump, so
-            # stop the blow (one False -> bcu_debug zeroes RPM and closes
-            # the valves) and go quiet. The latch stays engaged -- only a
-            # disarm clears it -- and the mission re-stop above keeps
-            # running. With no registration this never fires and the blow
-            # stays continuous and dumb, exactly as before.
+
+            # Tank-empty stand-down: once the tank is within 10% of empty the
+            # bladder is full, so stop the blow (one False zeroes RPM and closes
+            # the valves) and go quiet. The latch stays engaged until disarm, and
+            # the mission re-stop above continues.
             if self._lifeguard_stood_down:
                 return
             if tank_blow_exhausted(
@@ -619,18 +701,16 @@ class MqttBridge(Node):
                     "-- blow stood down, latch stays engaged"
                 )
                 return
-            # The engage itself IS re-published every tick (idempotent at
-            # bcu_debug) so a DEBUG_RESET or a bcu_debug restart cannot quietly
-            # stand the failsafe down.
+            # Re-publish the engage every tick (idempotent at bcu_debug), so it
+            # survives a DEBUG_RESET or a bcu_debug restart.
             self._publish_ingress_bool(EMERGENCY_SURFACE_CMD_TOPIC, True)
 
     def _tick_manual_blow_guard(self) -> None:
-        """Stand a MANUAL emergency blow down at the tank-empty band.
+        """Stand a manual emergency blow down at the tank-empty band.
 
         Called from the lifeguard tick with the lock held. One False stops
-        bcu_debug (0 RPM, valves closed, flush); clearing the flag means a
-        fresh manual engage starts a fresh evaluation -- no latch, unlike
-        the lifeguard. With no registration this never fires.
+        bcu_debug (0 RPM, valves closed). Clearing the flag lets the next manual
+        engage start fresh.
         """
         if not self._manual_emergency_active:
             return
@@ -647,16 +727,15 @@ class MqttBridge(Node):
         )
 
     def _publish_ingress_bool(self, mqtt_topic: str, value: bool) -> None:
-        """Publish on a ROS topic through the existing ingress mapping, as if
-        the command had arrived over MQTT."""
+        """Publish a bool on a ROS topic through the ingress mapping, as if the
+        command had arrived over MQTT."""
         pub, msg_cls = self._ingress_pubs[mqtt_topic]
         msg = msg_cls()
         msg.data = value
         pub.publish(msg)
 
     def _publish_lifeguard_status(self) -> None:
-        # timeout_s rides along so the UI can count a tether drop down
-        # without hardcoding the window.
+        # Include timeout_s so the UI can count the tether-drop window down.
         self._mqtt.publish(
             LIFEGUARD_STATUS_TOPIC,
             payload=json.dumps(
@@ -685,27 +764,73 @@ class MqttBridge(Node):
         client.subscribe(LIFEGUARD_CMD_TOPIC, qos=1)
         client.subscribe(LIFEGUARD_HEARTBEAT_TOPIC, qos=0)
         client.publish(STATUS_TOPIC, payload=STATUS_ONLINE, qos=1, retain=True)
-        # Seed MISSION_ACTIVE_TOPIC on connect (and reconnect) so a fresh
-        # UI tab sees a defined state immediately rather than waiting for
-        # the first command to flow.
-        self._publish_mission_active()
-        # Re-seed lifeguard status too: paho drops (doesn't queue) publishes
-        # while disconnected, so an engage during a tether outage would
-        # otherwise leave a stale retained status behind.
-        with self._lifeguard_lock:
+        # Seed MISSION_ACTIVE_TOPIC and re-seed lifeguard status on (re)connect,
+        # so a fresh UI tab gets a defined state at once and the broker holds the
+        # current retained status (paho drops publishes while disconnected). Both
+        # read bridge state the executor/timer threads mutate, so under
+        # _state_lock.
+        with self._state_lock:
+            self._publish_mission_active()
             self._publish_lifeguard_status()
-        # Same hazard for the on-change egress topics (liveness, valves,
-        # setpoint, init): re-publish their last-known retained payloads so a
-        # late-joining UI gets real state instead of a default-offline grid.
+        # Same for the on-change egress topics (liveness, valves, setpoint,
+        # init): re-publish their retained payloads so a late-joining UI gets
+        # real state.
         self._reseed_retained_egress(client)
         self.get_logger().info("mqtt connected")
 
     def _on_disconnect(self, _client, _userdata, _flags, reason_code, _props=None):
-        # Surface as warning -- paho's loop thread handles the reconnect.
+        # Warn only; paho's loop thread handles the reconnect.
         self.get_logger().warning(f"mqtt disconnected (rc={reason_code})")
 
     def _publish_heartbeat(self) -> None:
         self._mqtt.publish(STATUS_TOPIC + "/tick", payload="alive", qos=0)
+
+    def _connection_watchdog(self) -> None:
+        """Periodic link-health check; rebuilds the client when paho has wedged.
+
+        Runs on the rclpy executor (single-threaded with the egress callbacks,
+        so the client swap can't race a publish). The supervisor decides;
+        is_connected() is paho's own view, rx_age the time since the last
+        inbound message.
+        """
+        now = time.monotonic()
+        with self._state_lock:
+            last_rx = self._last_rx_monotonic
+        rx_age_s = None if last_rx is None else now - last_rx
+        connected = self._mqtt.is_connected()
+        if self._supervisor.should_rebuild(
+            connected=connected, rx_age_s=rx_age_s, now=now
+        ):
+            self._rebuild_client(connected=connected, rx_age_s=rx_age_s)
+
+    def _rebuild_client(self, *, connected: bool, rx_age_s: float | None) -> None:
+        """Tear the wedged client down and stand up a fresh one.
+
+        The in-process equivalent of the reboot that used to be the only fix:
+        loop_stop joins the old paho thread (no stale callbacks afterward), then
+        a brand-new client connect_asyncs on the same target. on_connect handles
+        the re-subscribe and retained re-seed, so telemetry and the UI recover
+        on their own."""
+        reason = (
+            f"connected but silent for {rx_age_s:.0f}s"
+            if connected
+            else "disconnected past grace"
+        )
+        self.get_logger().warning(f"mqtt link wedged ({reason}); rebuilding client")
+        old = self._mqtt
+        try:
+            old.loop_stop()
+            old.disconnect()
+        except Exception:
+            pass
+        # _build_client repoints self._mqtt at the fresh client.
+        self._build_client()
+        # Fresh client: nothing received yet. Reset so its silence is measured
+        # from this rebuild, not the wedged span -- and so a healthy link with
+        # no operator (no inbound beats) doesn't thrash the watchdog.
+        with self._state_lock:
+            self._last_rx_monotonic = None
+        self._supervisor.note_rebuilt()
 
     def destroy_node(self) -> bool:
         try:

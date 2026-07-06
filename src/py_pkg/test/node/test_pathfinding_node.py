@@ -57,13 +57,46 @@ class TestPathIngress:
     def test_known_mission_id_loads_mission(self, pathfinding_node_harness):
         h = pathfinding_node_harness
         h.publish_mission_command(
-            SAWTOOTH, target_pressure_pa=200_000.0, angle_rad=0.5, n_resurfaces=2
+            SAWTOOTH,
+            target_pressure_pa=200_000.0,
+            shallow_pressure_pa=50_000.0,
+            angle_rad=0.5,
+            n_oscillations=2,
         )
         h.spin_until(lambda: h.node._mission is not None, timeout=1.0)
         assert h.node._mission is not None
         assert h.node._mission_cmd is not None
         assert h.node._mission_cmd.mission_id == SAWTOOTH
         assert h.node._mission_cmd.target_pressure_pa == pytest.approx(200_000.0)
+
+    def test_sawtooth_fields_propagate_into_mission(self, pathfinding_node_harness):
+        # The two-pressure sawtooth params must survive ingress on /path and
+        # reach the mission's internal state at start() (the full propagation
+        # frontend -> bridge -> /path -> pathfinding -> mission, ROS side).
+        h = pathfinding_node_harness
+        h.publish_mission_command(
+            SAWTOOTH,
+            target_pressure_pa=120_000.0,
+            shallow_pressure_pa=40_000.0,
+            angle_rad=0.6,
+            n_oscillations=3,
+        )
+        h.publish_depth_gauge(GAUGE_AT_DEPTH_PA)
+        h.spin_until(
+            lambda: (
+                h.node._mission is not None and h.node._current_pressure_pa is not None
+            ),
+            timeout=1.0,
+        )
+        # The command carries the new fields...
+        assert h.node._mission_cmd.shallow_pressure_pa == pytest.approx(40_000.0)
+        assert h.node._mission_cmd.n_oscillations == 3
+        # ...and starting the mission threads them into the state machine.
+        h.publish_command(True)
+        h.spin_until(lambda: h.node._mission_t0_s is not None, timeout=1.0)
+        assert h.node._mission._deep_pa == pytest.approx(120_000.0)
+        assert h.node._mission._shallow_pa == pytest.approx(40_000.0)
+        assert h.node._mission._n_oscillations == 3
 
     def test_unknown_mission_id_is_rejected(self, pathfinding_node_harness):
         h = pathfinding_node_harness
@@ -228,9 +261,10 @@ class TestPoseEstimationIngress:
         h = pathfinding_node_harness
         h.publish_depth_gauge(GAUGE_AT_DEPTH_PA)
         h.spin_until(
-            lambda: h.node._current_pressure_pa is not None
-            and h.node._current_pressure_pa == pytest.approx(
-                GAUGE_AT_DEPTH_PA, abs=1e-3
+            lambda: (
+                h.node._current_pressure_pa is not None
+                and h.node._current_pressure_pa
+                == pytest.approx(GAUGE_AT_DEPTH_PA, abs=1e-3)
             ),
             timeout=1.0,
         )
@@ -351,6 +385,42 @@ class TestSurfaceMission:
             h.spin_for(0.05)
         assert h.node._mission_t0_s is not None
         assert len(h.received_targets) >= 5
+
+
+class TestCompletionSafeStop:
+    """On mission completion the node drives /command=false itself so the
+    controllers run their safe-stop -- completion is not otherwise a stop
+    signal, and without it the BCU would hold the last target forever.
+    Exercised through SURFACE, which self-terminates on a (shrunk) dwell."""
+
+    def test_completion_emits_command_false(
+        self, pathfinding_node_harness, monkeypatch
+    ):
+        monkeypatch.setattr(surface_mod, "DWELL_AT_SURFACE_S", 0.3)
+
+        h = pathfinding_node_harness
+        h.publish_mission_command(SURFACE)
+        h.publish_depth_gauge(GAUGE_AT_SURFACE_PA)
+        h.spin_until(
+            lambda: (
+                h.node._mission is not None and h.node._current_pressure_pa is not None
+            ),
+            timeout=1.0,
+        )
+        # The only /command WE publish is this start.
+        h.publish_command(True)
+        h.spin_until(lambda: h.node._mission_t0_s is not None, timeout=1.0)
+        # Feed "at surface" across the dwell so the mission completes.
+        deadline = time.monotonic() + 1.5
+        while time.monotonic() < deadline and h.node._mission is not None:
+            h.publish_depth_gauge(GAUGE_AT_SURFACE_PA)
+            h.spin_for(0.05)
+        h.spin_until(lambda: h.node._mission is None, timeout=1.0)
+        h.spin_for(0.2)  # let the completion /command=false reach the tester
+
+        # We never published a stop, so a False in the stream came from the
+        # node's completion safe-stop.
+        assert False in h.received_commands, h.received_commands
 
 
 class TestTickGating:

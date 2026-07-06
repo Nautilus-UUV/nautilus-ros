@@ -39,8 +39,9 @@ class AutoMission(Node):
 
         self.declare_parameter("mission_id", 1)
         self.declare_parameter("target_pressure_pa", 0.0)
+        self.declare_parameter("shallow_pressure_pa", 0.0)
         self.declare_parameter("angle_rad", 0.0)
-        self.declare_parameter("n_resurfaces", 0)
+        self.declare_parameter("n_oscillations", 0)
         # Gap between /path and /command so the mission is loaded before the
         # start lands. Order isn't strictly required -- pathfinding re-checks
         # its preconditions on every /path and pressure message -- but it keeps
@@ -51,9 +52,12 @@ class AutoMission(Node):
         target_pressure_pa = (
             self.get_parameter("target_pressure_pa").get_parameter_value().double_value
         )
+        shallow_pressure_pa = (
+            self.get_parameter("shallow_pressure_pa").get_parameter_value().double_value
+        )
         angle_rad = self.get_parameter("angle_rad").get_parameter_value().double_value
-        n_resurfaces = (
-            self.get_parameter("n_resurfaces").get_parameter_value().integer_value
+        n_oscillations = (
+            self.get_parameter("n_oscillations").get_parameter_value().integer_value
         )
         start_delay_s = (
             self.get_parameter("start_delay_s").get_parameter_value().double_value
@@ -65,13 +69,15 @@ class AutoMission(Node):
         cmd = MissionCommand()
         cmd.mission_id = int(mission_id)
         cmd.target_pressure_pa = float(target_pressure_pa)
+        cmd.shallow_pressure_pa = float(shallow_pressure_pa)
         cmd.angle_rad = float(angle_rad)
-        cmd.n_resurfaces = int(n_resurfaces)
+        cmd.n_oscillations = int(n_oscillations)
         self._path_pub.publish(cmd)
         self.get_logger().info(
             f"Published latched MissionCommand on {UUVTopics.PATH}: "
             f"mission_id={cmd.mission_id}, target_pressure_pa={cmd.target_pressure_pa}, "
-            f"angle_rad={cmd.angle_rad}, n_resurfaces={cmd.n_resurfaces}"
+            f"shallow_pressure_pa={cmd.shallow_pressure_pa}, "
+            f"angle_rad={cmd.angle_rad}, n_oscillations={cmd.n_oscillations}"
         )
 
         # One-shot: a periodic timer we cancel on first fire.

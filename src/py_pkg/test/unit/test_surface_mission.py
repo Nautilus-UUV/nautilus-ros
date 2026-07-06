@@ -12,7 +12,6 @@ tick; these tests interleave those calls in the same order.
 import math
 
 import pytest
-
 from py_pkg.path.missions.profile import MissionState
 from py_pkg.path.missions.sawtooth import SURFACE_THRESHOLD_PA
 from py_pkg.path.missions.surface import DWELL_AT_SURFACE_S, SurfaceMission
@@ -63,15 +62,16 @@ class TestReferenceIsConstant:
             assert ref.orientation.w == pytest.approx(1.0)
 
     def test_command_parameters_are_ignored(self):
-        # `target_pressure_pa`, `angle_rad`, `n_resurfaces` are mission-
-        # specific — SurfaceMission has none, and any value passed must
-        # not bleed into the setpoint.
+        # `target_pressure_pa`, `shallow_pressure_pa`, `angle_rad`,
+        # `n_oscillations` are mission-specific — SurfaceMission has none, and
+        # any value passed must not bleed into the setpoint.
         m = SurfaceMission()
         m.start(
             MissionState(
                 target_pressure_pa=80_000.0,
+                shallow_pressure_pa=20_000.0,
                 angle_rad=0.5,
-                n_resurfaces=3,
+                n_oscillations=3,
             )
         )
         assert m.reference(0.0).position.z == pytest.approx(0.0)
@@ -106,8 +106,8 @@ class TestDwellTimerCompletes:
     def test_done_after_full_dwell(self):
         m = SurfaceMission()
         m.start(MissionState())
-        m.update(0.0)              # surfaced
-        assert m.is_done(0.0) is False     # latches dwell start at t=0
+        m.update(0.0)  # surfaced
+        assert m.is_done(0.0) is False  # latches dwell start at t=0
         assert m.is_done(DWELL_AT_SURFACE_S - 0.1) is False
         # Executor calls update before is_done each tick.
         m.update(0.0)
@@ -116,7 +116,7 @@ class TestDwellTimerCompletes:
     def test_threshold_boundary_counts_as_surfaced(self):
         m = SurfaceMission()
         m.start(MissionState())
-        m.update(SURFACE_THRESHOLD_PA)     # exactly on threshold (<= predicate)
+        m.update(SURFACE_THRESHOLD_PA)  # exactly on threshold (<= predicate)
         assert m.is_done(0.0) is False
         m.update(SURFACE_THRESHOLD_PA)
         assert m.is_done(DWELL_AT_SURFACE_S) is True
@@ -140,7 +140,7 @@ class TestDwellTimerResets:
         # Half the dwell at the surface.
         half = DWELL_AT_SURFACE_S / 2
         m.update(0.0)
-        assert m.is_done(0.0) is False     # latch dwell start
+        assert m.is_done(0.0) is False  # latch dwell start
         m.update(0.0)
         assert m.is_done(half) is False
         # Bob back below the surface — timer resets.

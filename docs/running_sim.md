@@ -38,7 +38,7 @@ ros2 launch nautilus_hal trim_sim.launch.py \
 ros2 topic pub --once \
     --qos-reliability reliable --qos-durability transient_local \
     /path nautilus_msgs/msg/MissionCommand \
-    "{mission_id: 0, target_pressure_pa: 60295.0, angle_rad: 0.0, n_resurfaces: 0}"
+    "{mission_id: 0, target_pressure_pa: 60295.0, shallow_pressure_pa: 0.0, angle_rad: 0.0, n_oscillations: 0}"
 
 ros2 topic pub --once \
     --qos-reliability reliable --qos-durability transient_local \
@@ -55,9 +55,14 @@ ros2 launch nautilus_hal sawtooth_sim.launch.py \
     headless:=false \
     mission_autostart:=true \
     target_pressure_pa:=147150.0 \
+    shallow_pressure_pa:=49050.0 \
     angle_rad:=0.6109 \
-    n_resurfaces:=1
+    n_oscillations:=1
 ```
+
+`shallow_pressure_pa` is the shallow turn-around pressure (gauge Pa); `0`
+climbs all the way to the surface between dives. The mission ends with a
+final ascent to the surface after `n_oscillations` dives.
 
 #### Re-firing mid-run
 
@@ -65,7 +70,7 @@ ros2 launch nautilus_hal sawtooth_sim.launch.py \
 ros2 topic pub --once \
     --qos-reliability reliable --qos-durability transient_local \
     /path nautilus_msgs/msg/MissionCommand \
-    "{mission_id: 1, target_pressure_pa: 147150.0, angle_rad: 0.6109, n_resurfaces: 2}"
+    "{mission_id: 1, target_pressure_pa: 147150.0, shallow_pressure_pa: 49050.0, angle_rad: 0.6109, n_oscillations: 2}"
 
 ros2 topic pub --once \
     --qos-reliability reliable --qos-durability transient_local \
@@ -87,7 +92,7 @@ ros2 launch nautilus_hal surface_sim.launch.py \
 ros2 topic pub --once \
     --qos-reliability reliable --qos-durability transient_local \
     /path nautilus_msgs/msg/MissionCommand \
-    "{mission_id: 2, target_pressure_pa: 0.0, angle_rad: 0.0, n_resurfaces: 0}"
+    "{mission_id: 2, target_pressure_pa: 0.0, shallow_pressure_pa: 0.0, angle_rad: 0.0, n_oscillations: 0}"
 
 ros2 topic pub --once \
     --qos-reliability reliable --qos-durability transient_local \
@@ -136,15 +141,25 @@ Then, an interactive session as close as to real-life can be initialized as foll
 
 #### Mission Laptop
 
-Go to the `nautilus-command-bridge-frontend` folder and:
 
 ```bash
+cd ~/dave_ws/nautilus-command-bridge-frontend
 mosquitto -c ./mosquitto/mosquitto.conf -v
 ```
 
 ```bash
+cd ~/dave_ws/nautilus-command-bridge-frontend
 npm run dev
 ```
+
+(Optional) Database Supervisor:
+```
+cd ~/dave_ws/nautilus-command-bridge-frontend/db
+./run.sh
+```
+
+Do not forget to press the START DB button when ready.
+
 
 #### Main Board Simulation
 
@@ -167,3 +182,4 @@ Start control:
 ```bash
 ros2 launch py_pkg control_stack.launch.py
 ```
+

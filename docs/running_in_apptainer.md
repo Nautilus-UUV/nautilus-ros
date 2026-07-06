@@ -37,7 +37,7 @@ Sanity-check the new SIF before relying on it:
 ```bash
 apptainer exec nautilus_sim.sif /entrypoint.sh \
     ros2 launch nautilus_hal sawtooth_sim.launch.py --show-args \
-    | grep -E 'sampler_id|n_resurfaces|scenario'
+    | grep -E 'sampler_id|n_oscillations|scenario'
 ```
 
 All three arguments should be advertised.
@@ -54,7 +54,7 @@ All three arguments should be advertised.
   --cpu-budget 0-31 \
   --per-run-timeout 1200 \
   --launch sawtooth_sim.launch.py \
-  --launch-args target_pressure_pa:=100000.0 angle_rad:=0.6109 n_resurfaces:=30
+  --launch-args target_pressure_pa:=100000.0 angle_rad:=0.6109 n_oscillations:=30
 ```
 
 ### Physics Parameters with Failures
@@ -68,7 +68,7 @@ All three arguments should be advertised.
   --cpu-budget 0-31 \
   --per-run-timeout 6400 \
   --launch sawtooth_sim.launch.py \
-  --launch-args target_pressure_pa:=100000.0 angle_rad:=0.6109 n_resurfaces:=30
+  --launch-args target_pressure_pa:=100000.0 angle_rad:=0.6109 n_oscillations:=30
 ```
 
 ### Visualization
@@ -93,7 +93,7 @@ apptainer exec --cleanenv \
 	nautilus_sim.sif \
 	/entrypoint.sh ros2 launch nautilus_hal sawtooth_sim.launch.py \
     headless:=true mission_autostart:=true \
-    target_pressure_pa:=147150.0 angle_rad:=0.6109 n_resurfaces:=1 \
+    target_pressure_pa:=147150.0 angle_rad:=0.6109 n_oscillations:=1 \
     record:=true sampler_id:=bcu_hydro_coarse run_id:=lhs_0000 \
     scenario:=/ros2_ws/scenarios/bcu_hydro_coarse/lhs_0000.yaml
 ```

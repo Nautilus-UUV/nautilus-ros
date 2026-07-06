@@ -128,6 +128,11 @@ class _BCUTesterNode(Node):
         )
         self.dive_init_pub = create_publisher_for_topic(self, UUVTopics.DIVE_INIT)
         self.command_pub = create_publisher_for_topic(self, UUVTopics.COMMAND)
+        # Stands in for a manual valve command (bcu_debug's input). bcu_node
+        # listens to this only to yield the wire -- it doesn't act on the mask.
+        self.debug_valves_pub = create_publisher_for_topic(
+            self, UUVTopics.DEBUG_BCU_VALVES
+        )
         self.bcu_rpm_sub = create_subscription_for_topic(
             self, UUVTopics.BCU_RPM, self._on_rpm
         )
@@ -181,6 +186,11 @@ class _BCUTesterNode(Node):
         msg.data = bool(start)
         self.command_pub.publish(msg)
 
+    def publish_debug_valves(self, mask: int) -> None:
+        msg = UInt8()
+        msg.data = int(mask) & 0xFF
+        self.debug_valves_pub.publish(msg)
+
 
 class BCUNodeHarness(NodeHarness):
     """NodeHarness specialised for BCUNode + _BCUTesterNode."""
@@ -219,6 +229,9 @@ class BCUNodeHarness(NodeHarness):
 
     def publish_command(self, start: bool) -> None:
         self.tester.publish_command(start)
+
+    def publish_debug_valves(self, mask: int) -> None:
+        self.tester.publish_debug_valves(mask)
 
 
 @pytest.fixture
@@ -368,6 +381,9 @@ class _PathfindingTesterNode(Node):
     def __init__(self):
         super().__init__("pathfinding_node_tester")
         self.received_targets: list = []
+        # Every /command we see -- our own start/stop plus any the node emits
+        # itself (it drives /command=false on mission completion).
+        self.received_commands: list[bool] = []
 
         self.estimation_pub = create_publisher_for_topic(
             self, UUVTopics.POSITION_ESTIMATION
@@ -377,9 +393,15 @@ class _PathfindingTesterNode(Node):
         self.target_sub = create_subscription_for_topic(
             self, UUVTopics.POSITION_TARGET, self._on_target
         )
+        self.command_sub = create_subscription_for_topic(
+            self, UUVTopics.COMMAND, self._on_command_capture
+        )
 
     def _on_target(self, msg: Pose) -> None:
         self.received_targets.append(msg)
+
+    def _on_command_capture(self, msg: Bool) -> None:
+        self.received_commands.append(bool(msg.data))
 
     def publish_pose_estimation(self, x: float, y: float, z: float) -> None:
         # position.z is gauge depth (Pa); pathfinding reads it straight off the
@@ -406,14 +428,16 @@ class _PathfindingTesterNode(Node):
         self,
         mission_id: int,
         target_pressure_pa: float = 0.0,
+        shallow_pressure_pa: float = 0.0,
         angle_rad: float = 0.0,
-        n_resurfaces: int = 0,
+        n_oscillations: int = 0,
     ) -> None:
         msg = MissionCommand()
         msg.mission_id = int(mission_id)
         msg.target_pressure_pa = float(target_pressure_pa)
+        msg.shallow_pressure_pa = float(shallow_pressure_pa)
         msg.angle_rad = float(angle_rad)
-        msg.n_resurfaces = int(n_resurfaces)
+        msg.n_oscillations = int(n_oscillations)
         self.path_pub.publish(msg)
 
 
@@ -426,6 +450,10 @@ class PathfindingNodeHarness(NodeHarness):
     @property
     def received_targets(self) -> list:
         return self.tester.received_targets
+
+    @property
+    def received_commands(self) -> list:
+        return self.tester.received_commands
 
     def publish_pose_estimation(self, x: float, y: float, z: float) -> None:
         self.tester.publish_pose_estimation(x, y, z)
@@ -440,14 +468,16 @@ class PathfindingNodeHarness(NodeHarness):
         self,
         mission_id: int,
         target_pressure_pa: float = 0.0,
+        shallow_pressure_pa: float = 0.0,
         angle_rad: float = 0.0,
-        n_resurfaces: int = 0,
+        n_oscillations: int = 0,
     ) -> None:
         self.tester.publish_mission_command(
             mission_id,
             target_pressure_pa=target_pressure_pa,
+            shallow_pressure_pa=shallow_pressure_pa,
             angle_rad=angle_rad,
-            n_resurfaces=n_resurfaces,
+            n_oscillations=n_oscillations,
         )
 
 

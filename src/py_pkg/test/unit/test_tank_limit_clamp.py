@@ -15,7 +15,7 @@ are sampled off the same /bcu/pressure stream `tank_pa` reports, so all
 comparisons share one frame.
 """
 
-from py_pkg.pid.bcu_node import clamp_to_tank_limits
+from py_pkg.pid.tank_limit_guard import clamp_to_tank_limits
 from py_pkg.scenarios.spec.rig import PlantSpec
 
 # The sim plant's endpoints (rig.py): empty = drained tank (bladder

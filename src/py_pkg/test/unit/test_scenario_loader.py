@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from py_pkg.scenarios import derive_seed, load_scenario
+from py_pkg.scenarios.compile import params_for_bcu_node
 from py_pkg.scenarios.spec.control import ControlScenario
 from py_pkg.scenarios.spec.rig import RigScenario
 
@@ -38,11 +39,39 @@ def test_unknown_top_level_key_raises():
 
 
 def test_unknown_nested_key_raises():
-    p = _write_yaml(
-        "control:\n  controllers:\n    depth:\n      typo_field: 1\n"
-    )
+    p = _write_yaml("control:\n  controllers:\n    depth:\n      typo_field: 1\n")
     with pytest.raises(ValueError, match="typo_field"):
         load_scenario(p)
+
+
+def test_bcu_command_gate_disarm_above_arm_raises():
+    # The disarm band is the inner edge of the arm hysteresis, so a scenario
+    # that sets disarm > arm is incoherent and must fail at load, not run.
+    p = _write_yaml(
+        "control:\n  controllers:\n    depth:\n"
+        "      error_disarm_pa: 5000.0\n      error_arm_pa: 4000.0\n"
+    )
+    with pytest.raises(ValueError, match="error_disarm_pa"):
+        load_scenario(p)
+
+
+def test_bcu_command_gate_negative_dwell_raises():
+    p = _write_yaml(
+        "control:\n  controllers:\n    depth:\n      min_valve_dwell_s: -0.1\n"
+    )
+    with pytest.raises(ValueError, match="min_valve_dwell_s"):
+        load_scenario(p)
+
+
+def test_bcu_command_gate_fields_round_trip_through_params():
+    # Forward half of the param mapping: the gate knobs reach the BCU node's
+    # parameter dict (the inverse half, bcu_spec_from_node, is exercised by
+    # the Tier 2 node construction test).
+    params = params_for_bcu_node(ControlScenario())
+    d = ControlScenario().controllers.depth
+    assert params["error_arm_pa"] == d.error_arm_pa
+    assert params["error_disarm_pa"] == d.error_disarm_pa
+    assert params["min_valve_dwell_s"] == d.min_valve_dwell_s
 
 
 def test_derive_seed_is_deterministic_and_varies():

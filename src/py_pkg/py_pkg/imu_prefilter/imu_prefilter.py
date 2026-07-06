@@ -27,8 +27,17 @@ class ImuPrefilter(Node):
     def __init__(self):
         super().__init__("imu_prefilter")
 
-        # Filter coefficient: 0 = very smooth, 1 = no filtering
-        self.alpha = 0.5
+        # EMA coefficient (0 = very smooth, 1 = no filtering). The filtered
+        # stream feeds two consumers with opposite biases: the attitude
+        # estimator runs on it at the full IMU rate and wants low lag, while
+        # the MQTT egress to the operator UI is decimated to 10 Hz by plain
+        # sample-dropping, so it wants the content band-limited below ~5 Hz or
+        # the thinning aliases high-frequency noise into the display.
+        #
+        # alpha=0.15 puts the -3 dB cutoff at ~5 Hz for a 200 Hz IMU
+        #   (alpha = 1 - exp(-2*pi*fc/fs)) with ~28 ms of group delay
+        #   (~(1-alpha)/alpha samples).
+        self.alpha = 0.15
 
         # Previous filtered values (initialized on first message)
         self.prev_ax = None

@@ -42,11 +42,14 @@ def generate_launch_description() -> LaunchDescription:
                 "target_pressure_pa": ParameterValue(
                     LaunchConfiguration("target_pressure_pa"), value_type=float
                 ),
+                "shallow_pressure_pa": ParameterValue(
+                    LaunchConfiguration("shallow_pressure_pa"), value_type=float
+                ),
                 "angle_rad": ParameterValue(
                     LaunchConfiguration("angle_rad"), value_type=float
                 ),
-                "n_resurfaces": ParameterValue(
-                    LaunchConfiguration("n_resurfaces"), value_type=int
+                "n_oscillations": ParameterValue(
+                    LaunchConfiguration("n_oscillations"), value_type=int
                 ),
                 "start_delay_s": ParameterValue(
                     LaunchConfiguration("start_delay_s"), value_type=float
@@ -60,8 +63,9 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("mission_autostart", default_value="false"),
             DeclareLaunchArgument("mission_id", default_value="1"),
             DeclareLaunchArgument("target_pressure_pa", default_value="0.0"),
+            DeclareLaunchArgument("shallow_pressure_pa", default_value="0.0"),
             DeclareLaunchArgument("angle_rad", default_value="0.0"),
-            DeclareLaunchArgument("n_resurfaces", default_value="0"),
+            DeclareLaunchArgument("n_oscillations", default_value="0"),
             DeclareLaunchArgument("start_delay_s", default_value="2.0"),
             TimerAction(period=_BRINGUP_DELAY_S, actions=[autostart_node]),
         ]

@@ -43,12 +43,15 @@ from py_pkg.mqtt.mqtt_bridge_node import (
     DEBUG_RESET_CMD_TOPIC,
     EGRESS_MAP,
     EMERGENCY_SURFACE_CMD_TOPIC,
+    INGRESS_MAP,
     INIT_CMD_TOPIC,
     LIFEGUARD_CMD_TOPIC,
     LIFEGUARD_HEARTBEAT_TOPIC,
     LIFEGUARD_STATUS_TOPIC,
     MISSION_ACTIVE_TOPIC,
     PATH_CMD_TOPIC,
+    STATUS_ONLINE,
+    STATUS_TOPIC,
     MqttBridge,
 )
 from py_pkg.scenarios.spec.rig import PlantSpec
@@ -105,6 +108,11 @@ class FakeMqttClient:
 
     def disconnect(self):
         pass
+
+    def is_connected(self):
+        # The reconnect watchdog reads this as paho's own link view. Tests flip
+        # `connected` to simulate a drop or a stale-but-claimed connection.
+        return self.connected
 
     def subscribe(self, topic, qos=0):
         self.subscribed.append((topic, qos))
@@ -175,6 +183,13 @@ class _BridgeTesterNode(Node):
             self, UUVTopics.DIVE_INIT, self._on_init
         )
 
+        # Mission observer: ingress on nautilus/cmd/path must land a
+        # MissionCommand on /path with all fields decoded.
+        self.received_path: list = []
+        self.path_sub = create_subscription_for_topic(
+            self, UUVTopics.PATH, self._on_path
+        )
+
     def _on_emergency(self, msg) -> None:
         self.received_emergency.append(bool(msg.data))
 
@@ -183,6 +198,9 @@ class _BridgeTesterNode(Node):
 
     def _on_init(self, msg) -> None:
         self.received_init.append(msg)
+
+    def _on_path(self, msg) -> None:
+        self.received_path.append(msg)
 
     @staticmethod
     def _int32(v: int) -> Int32:
@@ -212,11 +230,36 @@ TICK_PERIOD_S = 0.1
 class MqttBridgeHarness:
     """Spins MqttBridge + a tester node behind a SingleThreadedExecutor."""
 
-    def __init__(self, lifeguard_timeout_s: float | None = None):
-        self.fake = FakeMqttClient()
+    def __init__(
+        self,
+        lifeguard_timeout_s: float | None = None,
+        reconnect_grace_s: float | None = None,
+        rx_silence_s: float | None = None,
+        watchdog_period_s: float | None = None,
+    ):
+        # The factory builds a fresh fake per call and records them, so a
+        # reconnect-watchdog rebuild is observable as a new entry. `fake` stays
+        # the first (initial) client, which is what the egress/mirror/lifeguard
+        # tests drive.
+        self.fakes: list[FakeMqttClient] = []
+
+        def _factory(_client_id):
+            fake = FakeMqttClient()
+            self.fakes.append(fake)
+            return fake
+
         overrides = [
             Parameter("lifeguard_tick_period_s", Parameter.Type.DOUBLE, TICK_PERIOD_S)
         ]
+        # Park the watchdog timer far out by default so it never fires mid-test;
+        # the reconnect tests drive node._connection_watchdog() directly.
+        overrides.append(
+            Parameter(
+                "connection_watchdog_period_s",
+                Parameter.Type.DOUBLE,
+                watchdog_period_s if watchdog_period_s is not None else 1000.0,
+            )
+        )
         if lifeguard_timeout_s is not None:
             overrides.append(
                 Parameter(
@@ -225,10 +268,19 @@ class MqttBridgeHarness:
                     lifeguard_timeout_s,
                 )
             )
+        if reconnect_grace_s is not None:
+            overrides.append(
+                Parameter("reconnect_grace_s", Parameter.Type.DOUBLE, reconnect_grace_s)
+            )
+        if rx_silence_s is not None:
+            overrides.append(
+                Parameter("rx_silence_s", Parameter.Type.DOUBLE, rx_silence_s)
+            )
         self.node = MqttBridge(
-            mqtt_client_factory=lambda client_id: self.fake,
+            mqtt_client_factory=_factory,
             parameter_overrides=overrides,
         )
+        self.fake = self.fakes[0]
         self.tester = _BridgeTesterNode()
         self.executor = SingleThreadedExecutor()
         self.executor.add_node(self.node)
@@ -376,9 +428,11 @@ class TestStructuredEgress:
         assert payload["position"]["z"] == pytest.approx(-5.0)
         assert payload["orientation"]["w"] == pytest.approx(1.0)
 
-    def test_imu_carries_header_and_axes(self, bridge_harness):
-        # Single IMU now: filtered IMU egresses to nautilus/telemetry/imu with
-        # frame_id "imu" (the /right egress is gone).
+    def test_imu_sends_only_axes(self, bridge_harness):
+        # The filtered IMU egresses compactly: only angular_velocity and
+        # linear_acceleration cross the tether. orientation, the covariance
+        # arrays, and the header are trimmed (nothing past the tether reads
+        # them, and dropping them keeps the DB from logging dead channels).
         h = bridge_harness
         m = Imu()
         m.header.frame_id = "imu"
@@ -390,9 +444,15 @@ class TestStructuredEgress:
             lambda: h.fake.publishes_on("nautilus/telemetry/imu"), timeout=1.0
         )
         payload = h.fake.last_payload_on("nautilus/telemetry/imu")
-        assert payload["header"]["frame_id"] == "imu"
         assert payload["angular_velocity"]["x"] == pytest.approx(0.05)
         assert payload["linear_acceleration"]["z"] == pytest.approx(-9.81)
+        # Trimming contract: the fat fields must not be on the wire.
+        assert payload.keys() == {"angular_velocity", "linear_acceleration"}
+        assert "header" not in payload
+        assert "orientation" not in payload
+        assert "orientation_covariance" not in payload
+        assert "angular_velocity_covariance" not in payload
+        assert "linear_acceleration_covariance" not in payload
 
 
 # ---------------------------------------------------------------------------
@@ -542,12 +602,15 @@ def _mission_states(harness) -> list[str]:
 
 
 # The stock mission dispatch used wherever a test just needs "a mission
-# is loaded" -- TRIM at the nominal target.
+# is loaded" -- TRIM at the nominal target. Keys mirror
+# nautilus_msgs/MissionCommand exactly; an unknown field would fail
+# set_message_fields and drop the command before the mirror sees it.
 PATH_PAYLOAD = {
     "mission_id": 0,
     "target_pressure_pa": 75383.0,
+    "shallow_pressure_pa": 0.0,
     "angle_rad": 0.0,
-    "n_resurfaces": 0,
+    "n_oscillations": 0,
 }
 
 
@@ -570,13 +633,37 @@ class TestMissionMirror:
             {
                 "mission_id": 1,
                 "target_pressure_pa": 147150.0,
+                "shallow_pressure_pa": 49050.0,
                 "angle_rad": 0.6109,
-                "n_resurfaces": 2,
+                "n_oscillations": 2,
             },
         )
         h.receive_mqtt(COMMAND_CMD_TOPIC, {"data": True})
         states = _mission_states(h)
         assert states[-1] == "RUNNING"
+
+    def test_sawtooth_path_decodes_with_two_pressure_fields(self, bridge_harness):
+        # End-to-end ingress: a sawtooth PATH payload shaped exactly as the
+        # frontend builds it must decode onto /path with the new
+        # shallow_pressure_pa + n_oscillations fields intact (set_message_fields
+        # is generic, so this is the bridge-side "propagated all the way" proof).
+        h = bridge_harness
+        h.receive_mqtt(
+            PATH_CMD_TOPIC,
+            {
+                "mission_id": 1,
+                "target_pressure_pa": 60_000.0,
+                "shallow_pressure_pa": 30_000.0,
+                "angle_rad": 0.6109,
+                "n_oscillations": 2,
+            },
+        )
+        h.spin_until(lambda: h.tester.received_path, timeout=1.0)
+        msg = h.tester.received_path[-1]
+        assert msg.mission_id == 1
+        assert msg.target_pressure_pa == pytest.approx(60_000.0)
+        assert msg.shallow_pressure_pa == pytest.approx(30_000.0)
+        assert msg.n_oscillations == 2
 
     def test_stop_returns_to_idle_and_clears_cache(self, bridge_harness):
         h = bridge_harness
@@ -947,3 +1034,86 @@ class TestManualBlowStandDown:
         h.tester.received_emergency.clear()
         h.receive_mqtt(EMERGENCY_SURFACE_CMD_TOPIC, {"data": True})
         h.spin_until(lambda: False in h.tester.received_emergency, timeout=3.0)
+
+
+# ---------------------------------------------------------------------------
+# Reconnect watchdog (E-001)
+# ---------------------------------------------------------------------------
+
+
+class TestReconnectWatchdog:
+    """The bridge's reconnect backstop. paho's loop_start() normally reconnects
+    on its own; when it wedges after a yanked tether -- stuck disconnected, or
+    'connected' but mute -- the watchdog rebuilds the client in-process, which
+    used to need a Pi reboot. A rebuild surfaces as a fresh fake in
+    ``harness.fakes``; the bridge's client is repointed at it, and on the fresh
+    client's connect the bridge re-subscribes and re-publishes online so
+    telemetry and the UI recover on their own. The watchdog timer is parked far
+    out (harness default), so these drive ``_connection_watchdog()`` directly."""
+
+    def test_disconnect_past_grace_rebuilds_and_resubscribes(self):
+        # grace 0: the first watchdog tick that sees a dropped link escalates.
+        h = MqttBridgeHarness(reconnect_grace_s=0.0)
+        try:
+            assert len(h.fakes) == 1
+            assert h.node._mqtt is h.fakes[0]
+            h.fakes[0].connected = False  # tether yanked; paho reports down
+
+            h.node._connection_watchdog()
+
+            # A fresh client was built and is now the bridge's live client.
+            assert len(h.fakes) == 2, "a wedged-disconnected link must rebuild"
+            assert h.node._mqtt is h.fakes[1]
+
+            # Its on_connect (fired by paho on a real reconnect; driven here)
+            # re-subscribes to every ingress topic and republishes online.
+            new = h.fakes[1]
+            new.connected = True
+            h.node._on_connect(new, None, None, 0)
+            subscribed = {t for t, _ in new.subscribed}
+            for m in INGRESS_MAP:
+                assert m.mqtt_topic in subscribed, f"missing resubscribe {m.mqtt_topic}"
+            assert LIFEGUARD_CMD_TOPIC in subscribed
+            assert LIFEGUARD_HEARTBEAT_TOPIC in subscribed
+            online = [
+                p for p in new.publishes_on(STATUS_TOPIC) if p.payload == STATUS_ONLINE
+            ]
+            assert online, "reconnect must republish online"
+            assert online[-1].retain is True
+        finally:
+            h.shutdown()
+
+    def test_stale_connected_link_rebuilds_then_does_not_thrash(self):
+        # rx_silence 0: an inbound message followed by silence while paho still
+        # claims 'connected' is the half-open / stale-socket wedge.
+        h = MqttBridgeHarness(rx_silence_s=0.0)
+        try:
+            h.receive_mqtt(LIFEGUARD_HEARTBEAT_TOPIC, {})  # sets _last_rx
+            assert h.node._last_rx_monotonic is not None
+            assert h.fakes[0].connected is True  # paho still claims a link
+
+            h.node._connection_watchdog()
+            assert len(h.fakes) == 2, "stale-connected link must rebuild"
+            assert h.node._mqtt is h.fakes[1]
+            # rx clock cleared on rebuild, so a healthy-but-quiet fresh client
+            # (no operator beats) does not get rebuilt again next tick.
+            assert h.node._last_rx_monotonic is None
+
+            h.node._connection_watchdog()
+            assert len(h.fakes) == 2, "must not thrash after a rebuild"
+        finally:
+            h.shutdown()
+
+    def test_healthy_link_does_not_rebuild(self):
+        # Default windows (grace 12 s, rx_silence 20 s). Connected with a fresh
+        # inbound beat: the watchdog must leave the client alone.
+        h = MqttBridgeHarness()
+        try:
+            h.receive_mqtt(LIFEGUARD_HEARTBEAT_TOPIC, {})
+            assert h.fakes[0].connected is True
+            for _ in range(5):
+                h.node._connection_watchdog()
+            assert len(h.fakes) == 1, "a healthy link must never rebuild"
+            assert h.node._mqtt is h.fakes[0]
+        finally:
+            h.shutdown()
