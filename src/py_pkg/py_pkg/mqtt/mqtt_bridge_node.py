@@ -158,6 +158,9 @@ EGRESS_MAP: tuple[EgressMapping, ...] = (
     ),
     EgressMapping(UUVTopics.BCU_RPM, "nautilus/telemetry/bcu/rpm", 10.0),
     EgressMapping(
+        UUVTopics.BCU_FEEDBACK_RPM, "nautilus/telemetry/bcu/feedback/rpm", 10.0
+    ),
+    EgressMapping(
         UUVTopics.BCU_VALVES, "nautilus/telemetry/bcu/valves", 0.0, on_change=True
     ),
     EgressMapping(UUVTopics.ACU_PITCH, "nautilus/telemetry/acu/pitch", 10.0),

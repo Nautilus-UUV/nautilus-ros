@@ -86,6 +86,11 @@ class DepthSpec(StrictModel):
 class AcuPitchSpec(StrictModel):
     """ACU pitch axis — soft-saturation limits for the bang-bang loop.
 
+    DEPRECATED / NOT IMPLEMENTED IN SIM: the simulated ACU actuator was
+    removed (the glider_nautilus model is now static, symmetric, BCU-only).
+    These limits are retained for the real-hardware ACU path and are not
+    exercised in simulation.
+
     The pitch loop has no PID; the node throws the mass-shifter to one
     of two extremes pulled from `output_limits` (front, back) in metres.
     Wire format is Int16 mm; the node multiplies by 1000.
@@ -105,6 +110,11 @@ class AcuPitchSpec(StrictModel):
 
 class AcuRollSpec(StrictModel):
     """ACU roll axis PID.
+
+    DEPRECATED / NOT IMPLEMENTED IN SIM: the simulated ACU actuator was
+    removed (the glider_nautilus model is now static, symmetric, BCU-only).
+    These gains are retained for the real-hardware ACU path and are not
+    exercised in simulation.
 
     Conservative gains so the roll loop doesn't induce pitch
     coupling. command_tolerance sits just above estimator roll noise

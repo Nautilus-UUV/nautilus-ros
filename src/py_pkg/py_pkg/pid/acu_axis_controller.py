@@ -1,3 +1,10 @@
+"""ACU axis controllers (PID + mass-shifter helpers).
+
+DEPRECATED / NOT IMPLEMENTED IN SIM: these back the ACU node, whose simulated
+actuator was removed (glider_nautilus is now static, symmetric, BCU-only).
+Retained for the real-hardware ACU path only.
+"""
+
 from py_pkg.math_utils import clamp
 from py_pkg.utils_controls import PIDController
 

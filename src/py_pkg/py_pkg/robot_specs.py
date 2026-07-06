@@ -51,12 +51,8 @@ BCU_MOTOR_VALVE_MASK = 0b01  # bit0 -- pump flow path ("valve 2" in the UI)
 BCU_FREE_VALVE_MASK = 0b10  # bit1 -- passive free/bypass vent ("valve 1")
 
 # ---------------------------------------------------------------------------
-# ACU mechanics (DEPRECATED: ingore for now)
+# ACU mechanics (DEPRECATED / NOT IMPLEMENTED IN SIM)
 # ---------------------------------------------------------------------------
-# Values mirror the Gazebo glider_nautilus model
-# (src/dave/models/dave_robot_models/description/glider_nautilus/model.sdf,
-# ACU section). Duplicated here so the control stack can import them
-# without parsing the SDF; if you change one, change the other.
 
 # Pitch — acu_tilt_joint, prismatic, axis = +x in body frame.
 # SDF limit: lower=0, upper=-0.1195 (m) → travel = 0.1195 m.

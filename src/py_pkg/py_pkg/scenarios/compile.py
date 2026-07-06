@@ -119,6 +119,9 @@ def bcu_spec_from_node(node: Node) -> DepthSpec:
 
 
 def params_for_acu_node(scen: ControlScenario) -> dict[str, Any]:
+    # DEPRECATED / NOT IMPLEMENTED IN SIM: the sim ACU actuator was removed
+    # (glider_nautilus is now static, symmetric, BCU-only). Retained for the
+    # real-hardware ACU path (acu_node -> can_com_node); unused in simulation.
     p = scen.controllers.acu_pitch
     r = scen.controllers.acu_roll
     return {
@@ -140,6 +143,9 @@ def params_for_acu_node(scen: ControlScenario) -> dict[str, Any]:
 def acu_pitch_spec_from_node(node: Node) -> AcuPitchSpec:
     """Read ACU pitch-axis params off `node` into a typed AcuPitchSpec.
 
+    DEPRECATED / NOT IMPLEMENTED IN SIM: the sim ACU actuator was removed;
+    retained for the real-hardware ACU path only.
+
     The pitch axis is bang-bang, so the only knobs are the two
     output_limits (front, back) in metres.
     """
@@ -156,6 +162,9 @@ def acu_pitch_spec_from_node(node: Node) -> AcuPitchSpec:
 
 def acu_roll_spec_from_node(node: Node) -> AcuRollSpec:
     """Read ACU roll-controller params off `node` into a typed AcuRollSpec.
+
+    DEPRECATED / NOT IMPLEMENTED IN SIM: the sim ACU actuator was removed;
+    retained for the real-hardware ACU path only.
 
     Defaults match the literal values that used to live in the
     `init_acu_roll` dict.
@@ -206,13 +215,6 @@ def params_for_bcu_bridge(scen: RigScenario, parent_seed: int = 0) -> dict[str, 
         "tank_pressure_empty_pa": p.tank_pressure_empty_pa,
         "tank_pressure_full_pa": p.tank_pressure_full_pa,
         "tank_pressure_vacuum_offset_pa": p.tank_pressure_vacuum_offset_pa,
-    }
-
-
-def params_for_acu_bridge(scen: RigScenario) -> dict[str, Any]:
-    return {
-        "model_name": scen.sim.model_name,
-        "world_name": scen.sim.world_name,
     }
 
 
