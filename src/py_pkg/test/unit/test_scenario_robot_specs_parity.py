@@ -14,25 +14,12 @@ also mirror robot_specs.
 
 from __future__ import annotations
 
-import os
-
-from ament_index_python.packages import get_package_share_directory
-
 from py_pkg import robot_specs
 from py_pkg.scenarios.loader import load_scenario
 
 
-def _nominal_path() -> str:
-    return os.path.join(
-        get_package_share_directory("py_pkg"),
-        "scenarios",
-        "library",
-        "nominal.yaml",
-    )
-
-
-def test_rig_plant_mirrors_robot_specs():
-    rig_plant = load_scenario(_nominal_path()).rig.plant
+def test_rig_plant_mirrors_robot_specs(nominal_scenario_path):
+    rig_plant = load_scenario(nominal_scenario_path).rig.plant
     assert rig_plant.volume_per_rev_m3 == robot_specs.VOLUME_PER_REV_M3
     # bladder_min_m3 / bladder_max_m3 are YAML-only operating-range knobs
     # (no robot_specs counterpart) — same shape as acu_pitch.output_limits.
@@ -41,8 +28,8 @@ def test_rig_plant_mirrors_robot_specs():
     assert rig_plant.bcu_motor_max_rpm == robot_specs.BCU_MOTOR_MAX_RPM
 
 
-def test_control_plant_model_mirrors_robot_specs():
-    pm = load_scenario(_nominal_path()).control.controllers.depth.plant_model
+def test_control_plant_model_mirrors_robot_specs(nominal_scenario_path):
+    pm = load_scenario(nominal_scenario_path).control.controllers.depth.plant_model
     assert pm.bladder_nominal_m3 == robot_specs.BLADDER_VOLUME_M3
     assert pm.max_rpm == robot_specs.BCU_MOTOR_MAX_RPM
     # min_rpm / min_operating_rpm are control-tuning knobs (the pump deadband
@@ -50,8 +37,8 @@ def test_control_plant_model_mirrors_robot_specs():
     # intentionally diverge from BCU_MOTOR_MIN_RPM, so they're not asserted here.
 
 
-def test_acu_roll_output_limits_mirror_robot_specs():
-    a = load_scenario(_nominal_path()).control.controllers.acu_roll
+def test_acu_roll_output_limits_mirror_robot_specs(nominal_scenario_path):
+    a = load_scenario(nominal_scenario_path).control.controllers.acu_roll
     assert a.output_limits == (
         -robot_specs.ACU_ROLL_MAX_ANGLE_DEG,
         robot_specs.ACU_ROLL_MAX_ANGLE_DEG,

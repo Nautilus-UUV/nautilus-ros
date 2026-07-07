@@ -32,15 +32,17 @@ from py_pkg.robot_specs import (
 # constant off the absolute reading from the external pressure sensor.
 ATMOSPHERIC_PRESSURE_PA = 101_325.0
 
-# Fresh-water density (kg/m^3). Override for salt water if needed.
-WATER_DENSITY_KG_M3 = 1_025.0
+# Fresh-water density (kg/m^3), matching the lake deployment environment
+# (2026-06-24 lake test) and the sim's fresh-water calibration. Override
+# for salt water if needed (~1025).
+WATER_DENSITY_KG_M3 = 1_000.0
 
 # Gravitational acceleration (m/s^2).
 GRAVITY_M_S2 = 9.806
 
 # Hydrostatic pressure rise per metre of submersion (Pa/m). The control
 # stack uses gauge pressure as its primary state; this constant is the
-# only place depth-in-metres ↔ pressure-in-Pa conversions get scaled.
+# only place depth-in-metres <-> pressure-in-Pa conversions get scaled.
 WATER_PRESSURE_GRADIENT_PA_PER_M = WATER_DENSITY_KG_M3 * GRAVITY_M_S2
 
 SECONDS_PER_MINUTE = 60

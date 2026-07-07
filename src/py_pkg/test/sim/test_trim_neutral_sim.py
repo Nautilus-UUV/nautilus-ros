@@ -12,12 +12,13 @@ Pipeline under test:
                           attitude_node <- imu_prefilter <- /imu/left
 
 The test loads ``MissionId.TRIM_AND_NEUTRAL_BUOYANCY = 0`` with
-``target_pressure_pa = 65332`` (~6.5 m of seawater) and asserts the
-closed loop holds depth + comes to a stop. Spawn is at z=-5 (~5 m), so
-the BCU has to descend ~1.5 m by draining the bladder. The target is
-deliberately inside the depth envelope the SDF's mass + 0.0544 m^3
-hull-collision balance allows the BuoyancyEngine plugin to reach with
-the bladder clamp at ``rig.plant.bladder_min_m3``. Ground truth comes from
+``target_pressure_pa = 65332`` (~6.66 m of lake water at the sensor's
+9806 Pa/m gradient) and asserts the closed loop holds depth + comes to
+a stop. Spawn is at z=-5 (~5 m), so the BCU has to descend ~1.7 m by
+draining the bladder below the lake-calibrated neutral fill
+(V_n = 2.097e-3 m^3; the plant has no hull compressibility, so any
+depth is holdable as long as V_n sits inside the
+``rig.plant.bladder_min/max_m3`` clamps). Ground truth comes from
 the model's already-bridged ``/model/glider_nautilus/odometry`` topic
 — privileged sim-only info kept *out* of the Nautilus topic registry
 so production controllers can't accidentally depend on it.
@@ -74,7 +75,7 @@ from ._sim_helpers import (
     window,
 )
 
-TARGET_PRESSURE_PA = 65332.0  # ~6.5 m of seawater (gauge); spawn is ~5 m
+TARGET_PRESSURE_PA = 65332.0  # ~6.66 m of lake water (gauge); spawn is ~5 m
 GROUND_TRUTH_TOPIC = "/model/glider_nautilus/odometry"
 
 

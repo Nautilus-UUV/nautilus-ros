@@ -66,7 +66,7 @@ from std_msgs.msg import Bool, Int16
 
 from ._sim_helpers import reap_lingering_gz, sim_gui_enabled, spin_for, spin_until
 
-TARGET_PRESSURE_PA = 73575.0  # ~7.5 m of seawater (gauge); spawn is ~5 m
+TARGET_PRESSURE_PA = 73575.0  # ~7.5 m of lake water (gauge); spawn is ~5 m
 # TARGET_PRESSURE_PA = 703575.0
 PITCH_RAD = math.radians(30.0)  # SAWTOOTH glide magnitude
 N_RESURFACES = 1

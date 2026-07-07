@@ -36,7 +36,15 @@ from .spec.control import (
     DepthSpec,
     PIDPressureSpec,
 )
-from .spec.rig import FinAeroSpec, HydrodynamicsSpec, PhysicsKnobs, RigScenario
+from .spec.rig import (
+    FinAeroSpec,
+    HydrodynamicsSpec,
+    ImuNoiseSpec,
+    NoiseSpec,
+    PhysicsKnobs,
+    PressureNoiseSpec,
+    RigScenario,
+)
 
 # ---------------------------------------------------------------------------
 # Control-side: forward (params_for_*) and inverse (*_spec_from_node)
@@ -199,10 +207,29 @@ def acu_roll_spec_from_node(node: Node) -> AcuRollSpec:
 # ---------------------------------------------------------------------------
 
 
+_NOISE_OFF = NoiseSpec(
+    enabled=False,
+    imu=ImuNoiseSpec(accel_sigma_mps2=(0.0, 0.0, 0.0), gyro_sigma_rads=(0.0, 0.0, 0.0)),
+    external_pressure=PressureNoiseSpec(sigma_pa=0.0, quantization_pa=0.0),
+    tank_pressure=PressureNoiseSpec(sigma_pa=0.0, quantization_pa=0.0),
+)
+
+
+def _effective_noise(scen: RigScenario) -> NoiseSpec:
+    """Resolve the scenario's `enabled` gate to plain per-channel numbers.
+
+    The bridges never see a boolean: a disabled scenario compiles to
+    all-zero sigmas/steps, which the noise model treats as exact
+    passthrough. Keeps the gate testable at Tier 1.
+    """
+    return scen.noise if scen.noise.enabled else _NOISE_OFF
+
+
 def params_for_bcu_bridge(scen: RigScenario, parent_seed: int = 0) -> dict[str, Any]:
     p = scen.plant
     f = scen.faults.bcu_rpm
     b = scen.bridges.bcu
+    n = _effective_noise(scen)
     return {
         "model_name": scen.sim.model_name,
         "volume_per_rev_m3": p.volume_per_rev_m3,
@@ -214,18 +241,33 @@ def params_for_bcu_bridge(scen: RigScenario, parent_seed: int = 0) -> dict[str, 
         "publish_rate_hz": b.publish_rate_hz,
         "tank_pressure_empty_pa": p.tank_pressure_empty_pa,
         "tank_pressure_full_pa": p.tank_pressure_full_pa,
-        "tank_pressure_vacuum_offset_pa": p.tank_pressure_vacuum_offset_pa,
+        "tank_noise_seed": derive_seed(parent_seed, "tank_pressure_noise"),
+        "tank_noise_sigma_pa": n.tank_pressure.sigma_pa,
+        "tank_noise_quantization_pa": n.tank_pressure.quantization_pa,
     }
 
 
-def params_for_imu_bridge(scen: RigScenario) -> dict[str, Any]:
-    return {"model_name": scen.sim.model_name}
+def params_for_imu_bridge(scen: RigScenario, parent_seed: int = 0) -> dict[str, Any]:
+    n = _effective_noise(scen)
+    return {
+        "model_name": scen.sim.model_name,
+        "noise_seed": derive_seed(parent_seed, "imu_noise"),
+        # (x, y, z) as ROS double-array parameters.
+        "noise_accel_sigma": list(n.imu.accel_sigma_mps2),
+        "noise_gyro_sigma": list(n.imu.gyro_sigma_rads),
+    }
 
 
-def params_for_external_sensor_bridge(scen: RigScenario) -> dict[str, Any]:
+def params_for_external_sensor_bridge(
+    scen: RigScenario, parent_seed: int = 0
+) -> dict[str, Any]:
+    n = _effective_noise(scen)
     return {
         "model_name": scen.sim.model_name,
         "publish_rate_hz": scen.bridges.external_sensor.publish_rate_hz,
+        "noise_seed": derive_seed(parent_seed, "external_pressure_noise"),
+        "noise_sigma_pa": n.external_pressure.sigma_pa,
+        "noise_quantization_pa": n.external_pressure.quantization_pa,
     }
 
 
@@ -282,7 +324,7 @@ def _load_nominal_data() -> dict[str, Any]:
         )
         return {
             "physics_knobs": PhysicsKnobs().model_dump(),
-            "fluid_constants": {"rho": 1025.0, "nu": 1.05e-6, "u_ref": 0.3},
+            "fluid_constants": {"rho": 1000.0, "nu": 1.05e-6, "u_ref": 0.3},
             "structural_constants": {"z_r": 0.119},
         }
 

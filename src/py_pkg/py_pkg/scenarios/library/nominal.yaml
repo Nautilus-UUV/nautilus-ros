@@ -23,7 +23,9 @@ control:
         derivative_filter: 0.3
       plant_model:
         bladder_nominal_m3: 0.0025
-        initial_proportion_full: 1.0
+        # Matches the sim spawn (SDF default_volume 2.2e-3 of the 2.5e-3
+        # bladder) and the real pre-dive float state.
+        initial_proportion_full: 0.88
         min_rpm: 500
         min_operating_rpm: 1000
         max_rpm: 3000
@@ -46,9 +48,17 @@ rig:
     world_name: oceans_waves
   plant:
     volume_per_rev_m3: 0.32e-6
-    bladder_min_m3: 0.0004969875585183712
-    bladder_max_m3: 0.0017114339203579084
+    # Lake-calibrated operating range: fresh-water neutral sits at
+    # 2.097e-3 m^3 (investigation/heave_calibration_fit.json), floor
+    # matches the deepest real excursion (dive 2, ~1.03e-3), ceiling
+    # leaves a 2% end-stop guard under the 2.5 L mechanical max.
+    bladder_min_m3: 0.001
+    bladder_max_m3: 0.00245
     bladder_nominal_m3: 0.0025
+    # Tank sensor endpoints from the lake-test 'init' calibration
+    # (tank_empty_pa / tank_full_pa as reported on the wire).
+    tank_pressure_empty_pa: 97800.0
+    tank_pressure_full_pa: 190000.0
     bcu_motor_min_rpm: 0
     bcu_motor_max_rpm: 3000
   faults:
@@ -63,3 +73,20 @@ rig:
       publish_rate_hz: 10
     external_sensor:
       publish_rate_hz: 10
+  # Sensor noise injected by the HAL sim bridges (Gaussian sigma +
+  # digitizer quantization). Values are the fits from the 2026-06-24
+  # lake test — provenance: UG-anomaly_detection/lake_test_jun24/
+  # investigation/noise_characterization.json. `enabled: false`
+  # restores noise-free bridges without touching the per-channel values.
+  noise:
+    enabled: true
+    imu:
+      accel_sigma_mps2: [0.01215, 0.02372, 0.009544]
+      gyro_sigma_rads: [0.006541, 0.001033, 0.0008779]
+    external_pressure:
+      # Real channel is quantization-dominated: sub-LSB Gaussian, 100 Pa comb.
+      sigma_pa: 0.0
+      quantization_pa: 100.0
+    tank_pressure:
+      sigma_pa: 353.0
+      quantization_pa: 600.0

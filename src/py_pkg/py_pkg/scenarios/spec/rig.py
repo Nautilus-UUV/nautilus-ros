@@ -44,30 +44,28 @@ class PlantSpec(StrictModel):
 
     volume_per_rev_m3: float = VOLUME_PER_REV_M3
     # Operating-range clamps the bridge enforces on the simulated bladder.
-    # Default to 10% headroom from the SDF's 2.5 L mechanical max so the
-    # control loop can swing through a 2.0 L range without ever pinning the
-    # plugin clamp; MC sweeps can widen or shrink either end.
-    bladder_min_m3: float = 0.00025
-    bladder_max_m3: float = 0.00225
+    # Lake-calibrated: the fresh-water neutral point sits at 2.097e-3 m^3
+    # (heave_calibration_fit.json), so the ceiling leaves 2% end-stop
+    # guard below the 2.5 L mechanical max and the floor matches the
+    # deepest real excursion (dive 2 reached ~1.03e-3 m^3). MC sweeps can
+    # widen or shrink either end.
+    bladder_min_m3: float = 0.001
+    bladder_max_m3: float = 0.00245
     bladder_nominal_m3: float = BLADDER_VOLUME_M3
     bcu_motor_min_rpm: int = BCU_MOTOR_MIN_RPM
     bcu_motor_max_rpm: int = BCU_MOTOR_MAX_RPM
 
     # Internal tank pressure sensor model. The tank feeds the
     # bladder, so tank pressure runs INVERSE to bladder fill: oil pushed out
-    # into the bladder drains the tank. Dive tests saw a ~0.7-1.5 barg gauge
-    # swing, which the BCU bridge maps linearly onto the tank's oil level
-    # (full bladder = drained tank = empty endpoint; empty bladder = full tank
-    # = full endpoint). Pure fill — depth does not enter. YAML-only knobs with
+    # into the bladder drains the tank. The BCU bridge maps the tank's oil
+    # level linearly between these endpoints (full bladder = drained tank =
+    # empty endpoint; empty bladder = full tank = full endpoint). Pure fill —
+    # depth does not enter. Endpoints mirror the 2026-06-24 lake-test `init`
+    # calibration (tank_empty_pa=97800, tank_full_pa=190000, the values the
+    # real oil-circuit sensor reports on the wire). YAML-only knobs with
     # no robot_specs counterpart, same as bladder_min_m3 / bladder_max_m3.
-    tank_pressure_empty_pa: float = 70_000.0  # 0.7 barg, tank drained (bladder full)
-    tank_pressure_full_pa: float = 150_000.0  # 1.5 barg, tank full of oil (bladder empty)
-    
-    # Correction for a hull held below atmospheric (partial vacuum). The
-    # sensor reads tank-relative-to-hull, so a sub-atmospheric hull inflates
-    # the gauge reading by however far it sits below atmospheric. This offset
-    # is added to the reading; 0.0 = hull at atmospheric (no correction).
-    tank_pressure_vacuum_offset_pa: float = 0.0
+    tank_pressure_empty_pa: float = 97_800.0  # tank drained (bladder full)
+    tank_pressure_full_pa: float = 190_000.0  # tank full of oil (bladder empty)
 
 
 class FaultInjectorSpec(StrictModel):
@@ -91,10 +89,52 @@ class FaultsSpec(StrictModel):
     bcu_rpm: FaultInjectorSpec = Field(default_factory=FaultInjectorSpec)
 
 
-class NoiseSpec(StrictModel):
-    """Placeholder for SDF noise-plugin seeds (Phase 8+ work)."""
+class ImuNoiseSpec(StrictModel):
+    """Per-axis additive Gaussian sigma for the sim IMU bridge, (x, y, z).
 
-    pass
+    sigma <= 0 disables that axis (exact passthrough).
+    """
+
+    accel_sigma_mps2: tuple[float, float, float] = (0.01215, 0.02372, 0.009544)
+    gyro_sigma_rads: tuple[float, float, float] = (0.006541, 0.001033, 0.0008779)
+
+
+class PressureNoiseSpec(StrictModel):
+    """Gaussian sigma + digitizer quantization for one pressure channel.
+
+    Gaussian noise is applied first, then the value is rounded to the
+    quantization grid (a real ADC chain). sigma_pa <= 0 disables the
+    Gaussian term; quantization_pa <= 0 disables the rounding.
+    """
+
+    sigma_pa: float
+    quantization_pa: float
+
+
+class NoiseSpec(StrictModel):
+    """Sensor noise injected by the HAL sim bridges (Gaussian + quantization).
+
+    Defaults are the values fitted from the 2026-06-24 lake test —
+    provenance: UG-anomaly_detection/lake_test_jun24/investigation/
+    noise_characterization.json (dive-4 steady-glide window, rolling-
+    median-detrended residuals; Sheppard-corrected sigmas for the
+    quantized pressure channels). External pressure is quantization-
+    dominated in the real data (sub-LSB Gaussian), so its sigma is 0.0
+    and the 100 Pa comb carries the noise.
+
+    `enabled: false` zeroes every channel at compile time, so the
+    bridges pass samples through untouched; per-channel sigma/step <= 0
+    disables just that term.
+    """
+
+    enabled: bool = True
+    imu: ImuNoiseSpec = Field(default_factory=ImuNoiseSpec)
+    external_pressure: PressureNoiseSpec = Field(
+        default_factory=lambda: PressureNoiseSpec(sigma_pa=0.0, quantization_pa=100.0)
+    )
+    tank_pressure: PressureNoiseSpec = Field(
+        default_factory=lambda: PressureNoiseSpec(sigma_pa=353.0, quantization_pa=600.0)
+    )
 
 
 class BcuBridgeSpec(StrictModel):
@@ -134,30 +174,30 @@ class PhysicsKnobs(StrictModel):
     """
 
     # Body geometry (3)
-    L: float = 1.50       # hull length [m]
-    D: float = 0.15       # hull max diameter [m]
+    L: float = 1.50  # hull length [m]
+    D: float = 0.15  # hull max diameter [m]
     nabla: float = 0.018  # displaced volume [m³]
 
     # Horizontal fin pair (3)
-    b_f: float = 0.33     # horizontal fin span, root-to-tip [m]
-    c_f: float = 0.22     # horizontal fin chord, mean [m]
-    x_f: float = 0.70     # horizontal fin lever arm from x_CB [m]
+    b_f: float = 0.33  # horizontal fin span, root-to-tip [m]
+    c_f: float = 0.22  # horizontal fin chord, mean [m]
+    x_f: float = 0.70  # horizontal fin lever arm from x_CB [m]
 
     # Top rudder (3)
-    b_r: float = 0.22     # rudder span, root-to-tip [m]
-    c_r: float = 0.11     # rudder chord, mean [m]
-    x_r: float = 0.939    # rudder lever arm from x_CB [m]
+    b_r: float = 0.22  # rudder span, root-to-tip [m]
+    c_r: float = 0.11  # rudder chord, mean [m]
+    x_r: float = 0.939  # rudder lever arm from x_CB [m]
 
     # Foil profile / fin nonlinear envelope (3 — alpha_stall split)
-    t_over_c: float = 0.12         # fin thickness ratio [-]
+    t_over_c: float = 0.12  # fin thickness ratio [-]
     alpha_stall_horiz: float = 0.17  # stall angle, horizontal pair [rad]
     alpha_stall_rudder: float = 0.17  # stall angle, top rudder [rad]
 
     # Empirical / flow-physics (4)
-    C_d_c: float = 1.10        # 2D cylinder cross-flow drag coeff [-]
-    one_plus_k: float = 1.20   # hull form-factor multiplier [-]
-    C_p_base: float = 0.08     # base-pressure drag coefficient [-]
-    C_La_mult: float = 1.10    # fin lift-slope correction multiplier [-]
+    C_d_c: float = 1.10  # 2D cylinder cross-flow drag coeff [-]
+    one_plus_k: float = 1.20  # hull form-factor multiplier [-]
+    C_p_base: float = 0.08  # base-pressure drag coefficient [-]
+    C_La_mult: float = 1.10  # fin lift-slope correction multiplier [-]
 
 
 class FinAeroSpec(StrictModel):
@@ -195,6 +235,16 @@ class HydrodynamicsSpec(StrictModel):
     same shape regardless.
     """
 
+    # Fluid density seen by the model-side plugins: BuoyancyEngine
+    # <fluid_density>, Hydrodynamics <water_density>, and the three
+    # LiftDrag <air_density>. Fresh water — the 2026-06-24 lake test is
+    # the deployment environment the sim is calibrated against. The
+    # world buoyancy plugin's <default_density> (static hull buoyancy)
+    # is NOT templated — it is hardcoded in dave_ocean_waves.world and
+    # must be changed together with this value when switching between
+    # lake and sea water.
+    fluid_density: float = 1000.0
+
     # base_link <fluid_added_mass> (model.sdf lines 39-46)
     added_mass_xx: float = 5.30023995
     added_mass_yy: float = 98.529516
@@ -203,25 +253,44 @@ class HydrodynamicsSpec(StrictModel):
     added_mass_qq: float = 20.2676439
     added_mass_rr: float = 16.1139805
 
-    # gz-sim-hydrodynamics-system linear drag diagonals (model.sdf lines 135-140)
+    # gz-sim-hydrodynamics-system linear drag diagonals. drag_zW is the
+    # lake-fit heave value (quadratic variant of
+    # lake_test_jun24/investigation/heave_calibration_fit.json); the
+    # other five keep their strip-theory authoring.
     drag_xU: float = -108.0
     drag_yV: float = -8.0
-    drag_zW: float = -162.0
+    drag_zW: float = -52.2
     drag_kP: float = -13.0
     drag_mQ: float = -32.0
     drag_nR: float = -20.0
 
+    # gz-sim-hydrodynamics-system quadratic drag diagonals. Deliberately
+    # outside the forward-map slot registries (_BODY_SLOTS) — the strip
+    # theory map only produces linear coefficients; these are frozen at
+    # spec defaults unless a scenario sets them directly. drag_zWabsW is
+    # fitted together with drag_zW from the lake dives.
+    drag_xUabsU: float = 0.0
+    drag_yVabsV: float = 0.0
+    drag_zWabsW: float = -436.7
+    drag_kPabsP: float = 0.0
+    drag_mQabsQ: float = 0.0
+    drag_nRabsR: float = 0.0
+
+    # In real life, we also trim the weight slightly for each dive.
+    # We have these variables here to do the same thing, and achieve the buoyancy profile
+    # we desire.
+    trim_mass_bow: float = 3.157
+    trim_mass_stern: float = 0.2765
+    trim_mass_bladder: float = 0.001
+
+    # BuoyancyEngine <default_volume>: bladder fill at spawn.
+    bladder_spawn_volume_m3: float = 0.0022
+
     # Three gz-sim-lift-drag-system plugins (model.sdf lines 289 / 353 / 462).
     # Fins share 0.0725 m^2; the top rudder is smaller at 0.0244 m^2.
-    left_fin: FinAeroSpec = Field(
-        default_factory=lambda: FinAeroSpec(area=0.0725)
-    )
-    right_fin: FinAeroSpec = Field(
-        default_factory=lambda: FinAeroSpec(area=0.0725)
-    )
-    top_rudder: FinAeroSpec = Field(
-        default_factory=lambda: FinAeroSpec(area=0.0244)
-    )
+    left_fin: FinAeroSpec = Field(default_factory=lambda: FinAeroSpec(area=0.0725))
+    right_fin: FinAeroSpec = Field(default_factory=lambda: FinAeroSpec(area=0.0725))
+    top_rudder: FinAeroSpec = Field(default_factory=lambda: FinAeroSpec(area=0.0244))
 
     # Physics knobs that generated the SDF coefficients above.  Stored
     # for provenance and Sobol analysis; the render path ignores this.

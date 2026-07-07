@@ -14,8 +14,9 @@ Mission parameters supplied by the operator via `MissionCommand`:
 
 Tolerances:
     - SURFACE_THRESHOLD_PA: gauge pressure below this counts as "surfaced".
-      Set wider than weather-driven atmospheric drift (~5 kPa) and sea-state
-      noise.
+      0.8 m of lake water — the same dive boundary the 2026-06-24 lake
+      analysis uses (depth > 0.8 m = diving), wider than weather-driven
+      atmospheric drift and sea-state noise.
     - DESCEND_TOLERANCE_PA: gauge pressure within this of `target_pa` counts
       as "at depth". Equal to the surface threshold by symmetry.
 
@@ -27,11 +28,15 @@ shows up in sim, smooth the leg-end with a tanh blend on `reference`.
 from geometry_msgs.msg import Pose
 
 from py_pkg.math_utils import rpy_to_quaternion
+from py_pkg.physics import WATER_PRESSURE_GRADIENT_PA_PER_M
 
 from .profile import MissionState
 
-SURFACE_THRESHOLD_PA = 5_000.0  # ~0.5 m water column
-DESCEND_TOLERANCE_PA = 5_000.0  # ~0.5 m above the target
+# 0.8 m water column (lake-analysis convention); the Pa value tracks the
+# physics-layer water density so a salt-water override moves it too.
+_SURFACE_THRESHOLD_M = 0.8
+SURFACE_THRESHOLD_PA = _SURFACE_THRESHOLD_M * WATER_PRESSURE_GRADIENT_PA_PER_M
+DESCEND_TOLERANCE_PA = SURFACE_THRESHOLD_PA  # "at depth" band, by symmetry
 
 
 class SawtoothMission:

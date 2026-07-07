@@ -1,0 +1,22 @@
+# Scenario for test_sawtooth_lake_velocity_sim — the lake-calibration
+# acceptance gate.
+#
+# The bladder operating clamps are pinned to dive 4's steady-leg bladder
+# volumes (UG-anomaly_detection/lake_test_jun24/investigation/
+# heave_calibration_targets.csv, config B):
+#   descent leg: V_b = 0.866e-3 m^3  (v_term 0.1245 m/s down)
+#   ascent leg:  V_b = 2.465e-3 m^3  (v_term 0.0677 m/s up)
+# During the saturated sawtooth legs the BCU rails at these clamps, so
+# the sim reproduces dive 4's actual buoyancy offsets instead of railing
+# to the library operating range. Everything else (plant, gains, lake
+# noise ON) inherits the nominal defaults.
+
+seed: 4
+
+rig:
+  faults:
+    bcu_rpm:
+      mttf_sec: 0.0
+  plant:
+    bladder_min_m3: 0.000866
+    bladder_max_m3: 0.002465

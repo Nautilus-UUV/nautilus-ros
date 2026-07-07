@@ -60,7 +60,10 @@ class DepthPlantModel(StrictModel):
     """
 
     bladder_nominal_m3: float = BLADDER_VOLUME_M3
-    initial_proportion_full: float = 1.0
+    # Matches the sim spawn (SDF default_volume 2.2e-3 of the 2.5e-3
+    # bladder) and the real pre-dive float state, so a bare `ros2 run`
+    # controller starts from the same belief as the plant.
+    initial_proportion_full: float = 0.88
     # Pump deadband, applied to the RPM command in the control loop. The
     # pump can't run reliably at low speed, so the loop snaps the command
     # into three regions: |rpm| < min_rpm -> 0,

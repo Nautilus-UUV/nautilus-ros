@@ -38,7 +38,9 @@ control:
         derivative_filter: 0.3
       plant_model:
         bladder_nominal_m3: 0.0025
-        initial_proportion_full: 1.0
+        # Matches the sim spawn (SDF default_volume 2.2e-3 of the 2.5e-3
+        # bladder) and the real pre-dive float state.
+        initial_proportion_full: 0.88
         min_rpm: 500
         min_operating_rpm: 1000
         max_rpm: 3000
@@ -61,9 +63,12 @@ rig:
     world_name: oceans_waves
   plant:
     volume_per_rev_m3: 0.32e-6
-    bladder_min_m3: 0.0004969875585183712
-    bladder_max_m3: 0.0017114339203579084
+    # Lake-calibrated operating range + tank endpoints — see nominal.yaml.
+    bladder_min_m3: 0.001
+    bladder_max_m3: 0.00245
     bladder_nominal_m3: 0.0025
+    tank_pressure_empty_pa: 97800.0
+    tank_pressure_full_pa: 190000.0
     bcu_motor_min_rpm: 0
     bcu_motor_max_rpm: 3000
   faults:
@@ -76,12 +81,34 @@ rig:
       publish_rate_hz: 10
     external_sensor:
       publish_rate_hz: 10
+  # Sensor noise injected by the HAL sim bridges (Gaussian sigma +
+  # digitizer quantization). Values are the fits from the 2026-06-24
+  # lake test — provenance: UG-anomaly_detection/lake_test_jun24/
+  # investigation/noise_characterization.json. `enabled: false`
+  # restores noise-free bridges without touching the per-channel values.
+  noise:
+    enabled: true
+    imu:
+      accel_sigma_mps2: [0.01215, 0.02372, 0.009544]
+      gyro_sigma_rads: [0.006541, 0.001033, 0.0008779]
+    external_pressure:
+      # Real channel is quantization-dominated: sub-LSB Gaussian, 100 Pa comb.
+      sigma_pa: 0.0
+      quantization_pa: 100.0
+    tank_pressure:
+      sigma_pa: 353.0
+      quantization_pa: 600.0
 
   # Hydrodynamic plant — every field at its canonical-SDF value. Render
   # path fires (since the block is present), but the rendered SDF
   # equals `model.sdf` byte-for-byte. The Tier 3 parity test in
   # nautilus_hal locks that equivalence in.
   hydrodynamics:
+    # Fluid density seen by the model-side plugins (BuoyancyEngine,
+    # Hydrodynamics, LiftDrag). Fresh water, lake-calibrated. Must agree
+    # with the world buoyancy plugin's <default_density>.
+    fluid_density: 1000.0
+
     # Body <fluid_added_mass> (model.sdf lines 39-46).
     added_mass_xx: 5.30023995
     added_mass_yy: 98.529516
@@ -90,13 +117,36 @@ rig:
     added_mass_qq: 20.2676439
     added_mass_rr: 16.1139805
 
-    # Hydrodynamics plugin linear-drag diagonals (model.sdf lines 135-140).
+    # Hydrodynamics plugin linear-drag diagonals. drag_zW carries the
+    # lake-fit heave value (heave_calibration_fit.json).
     drag_xU: -108.0
     drag_yV: -8.0
-    drag_zW: -162.0
+    drag_zW: -52.2
     drag_kP: -13.0
     drag_mQ: -32.0
     drag_nR: -20.0
+
+    # Hydrodynamics plugin quadratic-drag diagonals. drag_zWabsW is
+    # fitted together with drag_zW from the lake dives.
+    drag_xUabsU: 0.0
+    drag_yVabsV: 0.0
+    drag_zWabsW: -436.7
+    drag_kPabsP: 0.0
+    drag_mQabsQ: 0.0
+    drag_nRabsR: 0.0
+
+    # Centerline trim-link masses (see the mass-budget note in
+    # model.sdf) — bow + stern solved jointly so the fresh-water neutral
+    # bladder volume matches the lake fit (V_n = 2.097e-3 m^3) AND the
+    # vehicle floats level at the spawn bladder volume, like the real
+    # pre-dive surface float.
+    trim_mass_bow: 3.157
+    trim_mass_stern: 0.2765
+    trim_mass_bladder: 0.001
+
+    # BuoyancyEngine <default_volume>: bladder fill at spawn, slightly
+    # above the neutral point so the vehicle floats gently at rest.
+    bladder_spawn_volume_m3: 0.0022
 
     # Per-fin lift/drag (model.sdf lines 289 / 353 / 462). Fins share
     # area (0.0725 m^2); the top rudder is smaller (0.0244 m^2). All

@@ -14,7 +14,8 @@ rig:
   hydrodynamics:
     drag_xU: -151.2
     drag_yV: -11.2
-    drag_zW: -226.8
+    drag_zW: -73.08
     drag_kP: -18.2
     drag_mQ: -44.8
     drag_nR: -28.0
+    drag_zWabsW: -611.38
