@@ -15,6 +15,11 @@ the container via `py_pkg.scenarios.loader.load_scenario` (Pydantic
 `extra="forbid"` catches schema typos). `run_sweep.py` does that
 pre-flight on the first sample before queueing the rest.
 
+Dimensions whose path starts with `mission.` are *launch dimensions*:
+mission knobs (target_pressure_pa, n_oscillations, ...) are launch args, 
+so their sampled values are recorded in
+manifest.json only
+
 Example:
     lhs_sample.py --spec sweeps/example_hydro_faults_pump.yaml \\
                   --out ./scenarios --name lhs_hydro_v1
@@ -41,7 +46,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src/py_pkg"))
 from py_pkg.scenarios.compile import forward_map
 from py_pkg.scenarios.spec.rig import FinAeroSpec, HydrodynamicsSpec, PhysicsKnobs
 
-SAMPLER_VERSION = "1.0.0"
+SAMPLER_VERSION = "1.1.0"
+
+# Dimensions under this prefix are launch args (mission knobs), not scenario
+# fields: they are recorded in the manifest but never written into the
+# scenario YAML, whose schema (`extra="forbid"`) would reject them.
+MISSION_PREFIX = "mission."
 
 # The bare-name dimensions a "physics" sweep feeds to the deterministic
 # forward map. Any dimension whose path is *not* one of these is treated as a
@@ -66,6 +76,7 @@ class Dimension:
     distribution: str
     low: float
     high: float
+    integer: bool = False
 
     @classmethod
     def from_dict(cls, raw: dict) -> "Dimension":
@@ -87,15 +98,29 @@ class Dimension:
             raise ValueError(
                 f"dimension {raw['path']!r}: loguniform requires low > 0, got {low}"
             )
-        return cls(path=raw["path"], distribution=dist, low=low, high=high)
+        return cls(
+            path=raw["path"],
+            distribution=dist,
+            low=low,
+            high=high,
+            integer=bool(raw.get("integer", False)),
+        )
 
     def scale(self, u: np.ndarray) -> np.ndarray:
         """Map LHS uniforms in [0,1) to the dimension's range."""
         if self.distribution == "uniform":
-            return self.low + u * (self.high - self.low)
-        # loguniform: equal density per decade between low and high.
-        log_low, log_high = math.log(self.low), math.log(self.high)
-        return np.exp(log_low + u * (log_high - log_low))
+            scaled = self.low + u * (self.high - self.low)
+        else:
+            # loguniform: equal density per decade between low and high.
+            log_low, log_high = math.log(self.low), math.log(self.high)
+            scaled = np.exp(log_low + u * (log_high - log_low))
+        # `integer: true` floors, so uniform [1, 4] draws {1, 2, 3} uniformly
+        # (u < 1 keeps the high edge exclusive).
+        return np.floor(scaled) if self.integer else scaled
+
+    def emit(self, value: float) -> int | float:
+        """The value as written to the scenario/manifest (int when declared)."""
+        return int(value) if self.integer else float(value)
 
 
 @dataclass(frozen=True)
@@ -204,7 +229,9 @@ def jitter_hydrodynamics(
         if isinstance(getattr(spec, name), float)
     }
 
-    def jit_fin(fin: FinAeroSpec, cla_n: float, cda_n: float, stall_n: float) -> FinAeroSpec:
+    def jit_fin(
+        fin: FinAeroSpec, cla_n: float, cda_n: float, stall_n: float
+    ) -> FinAeroSpec:
         return fin.model_copy(
             update={
                 "cla": fin.cla * cla_n,
@@ -237,28 +264,42 @@ def render_scenario(
     # the spec seed with the sample index to keep reproducibility.
     scenario["seed"] = (spec.seed * 1_000_003 + idx) & 0xFFFFFFFF
 
+    # Launch dimensions (mission.*) are launch args, not scenario fields —
+    # they live in the manifest only, so drop them before writing anything.
+    scenario_dims = [
+        (dim, value)
+        for dim, value in zip(spec.dimensions, row)
+        if not dim.path.startswith(MISSION_PREFIX)
+    ]
+
     if spec.sampling_mode == "lhs":
-        for dim, value in zip(spec.dimensions, row):
-            # YAML round-trips Python floats fine; cast to float so numpy
-            # scalars don't end up serialized as `!!python/object/apply`.
-            set_dotted(scenario, dim.path, float(value))
+        for dim, value in scenario_dims:
+            # `emit` casts through Python int/float so numpy scalars don't
+            # end up serialized as `!!python/object/apply`.
+            set_dotted(scenario, dim.path, dim.emit(value))
     elif spec.sampling_mode == "physics":
         # Split the row: bare PhysicsKnobs names drive the deterministic
         # forward map; any dotted path is a plain scenario overlay, exactly as
         # in lhs mode. This lets one joint LHS perturb the plant geometry *and*
         # a scenario knob like the fault MTTF together.
         knobs: dict[str, float] = {}
-        for dim, value in zip(spec.dimensions, row):
+        overlays: list[tuple[Dimension, float]] = []
+        for dim, value in scenario_dims:
             if dim.path in _PHYSICS_KNOB_FIELDS:
                 knobs[dim.path] = float(value)
             else:
-                set_dotted(scenario, dim.path, float(value))
+                overlays.append((dim, value))
         hydro_spec = forward_map(knobs)
         if spec.isotropic_jitter_sigma > 0.0:
             hydro_spec = jitter_hydrodynamics(
                 hydro_spec, spec.isotropic_jitter_sigma, seed=scenario["seed"]
             )
         scenario.setdefault("rig", {})["hydrodynamics"] = hydro_spec.model_dump()
+        # Overlays go in *after* the hydrodynamics block so a dotted path
+        # like rig.hydrodynamics.trim_mass_bow perturbs the freshly mapped
+        # block instead of being clobbered by it.
+        for dim, value in overlays:
+            set_dotted(scenario, dim.path, dim.emit(value))
     else:
         raise ValueError(f"Unsupported sampling_mode: {spec.sampling_mode}")
 
@@ -287,13 +328,14 @@ def write_manifest(
                 "distribution": d.distribution,
                 "low": d.low,
                 "high": d.high,
+                "integer": d.integer,
             }
             for d in spec.dimensions
         ],
         "samples": [
             {
                 "run_id": rid,
-                "values": {d.path: float(v) for d, v in zip(spec.dimensions, row)},
+                "values": {d.path: d.emit(v) for d, v in zip(spec.dimensions, row)},
             }
             for rid, row in zip(run_ids, matrix)
         ],

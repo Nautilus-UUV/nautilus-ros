@@ -9,12 +9,12 @@ python3 src/nautilus-ros/scripts/lhs_sample.py \
   --out ./scenarios --name nominal_pid_sweep
 ```
 
-Physics:
+Lake Envelope Coeff.:
 ```bash
-./src/nautilus-ros/scripts/lhs_sample.py \
-  --spec src/nautilus-ros/scripts/sweeps/bcu_hydro_coarse.yaml \
+python3 ./src/nautilus-ros/scripts/lhs_sample.py \
+  --spec src/nautilus-ros/scripts/sweeps/nominal_lake_envelope_jun24.yaml \
   --out ./scenarios \
-  --name bcu_hydro_coarse
+  --name lake_test_env
 ```
 
 ## Build the SIF
@@ -63,18 +63,18 @@ Python deps for the sampler and analysis live in
   --launch-args target_pressure_pa:=100000.0 angle_rad:=0.6109 n_oscillations:=30
 ```
 
-### Physics Parameters with Failures
+### Envelope of the Lake Test
 
 
 ```bash
 ./src/nautilus-ros/scripts/run_sweep.py \
-  --scenarios-dir ./scenarios/bcu_fault_dataset \
+  --scenarios-dir ./scenarios/lake_test_env \
   --sif nautilus_sim.sif \
-  --concurrency 8 \
-  --cpu-budget 0-31 \
-  --per-run-timeout 6400 \
+  --concurrency 64 \
+  --cpu-budget 0-383 \
+  --per-run-timeout 4800 \
   --launch sawtooth_sim.launch.py \
-  --launch-args target_pressure_pa:=100000.0 angle_rad:=0.6109 n_oscillations:=30
+  --launch-args angle_rad:=0.0 z:=-1.0
 ```
 
 ### Visualization

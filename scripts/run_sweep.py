@@ -15,7 +15,17 @@ into disjoint sets via `--cpu-budget`, handed to apptainer_exec.sh's
 
 Mission knobs (`target_pressure_pa`, `angle_rad`, `n_oscillations`) are
 not scenario-YAML fields — pass them as `--launch-args foo:=bar`. The
-same value is used for every run in the sweep.
+same value is used for every run in the sweep, unless the sampler's
+manifest.json (next to the scenario YAMLs) carries `mission.*`
+dimensions: those become per-run launch args (`mission.target_pressure_pa`
+-> `target_pressure_pa:=<value>`), appended after `--launch-args` so the
+per-run value wins on collision.
+
+When a run's manifest mission values include `target_pressure_pa`, the
+per-run wall-clock budget is scaled to that run's mission length
+(conservative leg speeds + bringup margin, see `_scaled_timeout`), with
+`--per-run-timeout` acting as the cap. Runs without mission values fall
+back to `--per-run-timeout` unchanged.
 
 Before queueing anything, runs one `apptainer exec` to load the first
 scenario through `py_pkg.scenarios.loader.load_scenario` so a Pydantic
@@ -39,7 +49,9 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -66,6 +78,64 @@ KILL_GRACE_SEC = 20
 # the same convention when it predicts where bags will land.
 CONTAINER_SIM_DATA = "/ros2_ws/sim_data"
 HOST_SIM_DATA = Path.cwd() / "sim_data"
+
+# Sampler dimensions under this prefix are per-run launch args, not
+# scenario fields (mirrors lhs_sample.py's MISSION_PREFIX).
+MISSION_PREFIX = "mission."
+
+# Per-run timeout scaling for runs whose manifest carries mission values.
+# Leg speeds are deliberately below the lake-calibrated plant's slowest
+# steady legs (sim ascents run ~0.04 m/s), so the budget expires well
+# after the mission finishes even at a poor real-time factor.
+WATER_PRESSURE_GRADIENT_PA_PER_M = 9806.0  # physics.py, fresh water
+TIMEOUT_DESCENT_MPS = 0.10
+TIMEOUT_ASCENT_MPS = 0.035
+TIMEOUT_BRINGUP_SEC = 120.0
+TIMEOUT_SAFETY = 2.0
+
+
+def load_mission_args(scenarios_dir: Path) -> dict[str, dict[str, object]]:
+    """Per-run launch args from the sampler manifest's mission.* dimensions.
+
+    Returns {run_id: {launch_arg_name: value}}; empty when there is no
+    manifest or it carries no mission dimensions.
+    """
+    manifest_path = scenarios_dir / "manifest.json"
+    if not manifest_path.is_file():
+        return {}
+    manifest = json.loads(manifest_path.read_text())
+    mission_args: dict[str, dict[str, object]] = {}
+    for sample in manifest.get("samples", []):
+        args = {
+            path[len(MISSION_PREFIX) :]: value
+            for path, value in sample.get("values", {}).items()
+            if path.startswith(MISSION_PREFIX)
+        }
+        if args:
+            mission_args[sample["run_id"]] = args
+    return mission_args
+
+
+def _scaled_timeout(
+    mission: dict[str, object], cap: Optional[float]
+) -> Optional[float]:
+    """Wall-clock budget for one run, sized to its sampled mission.
+
+    Round-trip time at conservative leg speeds, times a safety factor for
+    real-time-factor jitter, plus bringup. `cap` (--per-run-timeout)
+    bounds the result; without a target pressure there is nothing to
+    scale and the cap is returned unchanged.
+    """
+    target_pa = mission.get("target_pressure_pa")
+    if target_pa is None:
+        return cap
+    depth_m = float(target_pa) / WATER_PRESSURE_GRADIENT_PA_PER_M
+    n_osc = max(1, int(mission.get("n_oscillations", 1)))
+    round_trips_sec = (
+        n_osc * depth_m * (1.0 / TIMEOUT_DESCENT_MPS + 1.0 / TIMEOUT_ASCENT_MPS)
+    )
+    scaled = TIMEOUT_BRINGUP_SEC + TIMEOUT_SAFETY * round_trips_sec
+    return min(cap, scaled) if cap is not None else scaled
 
 # Per-bag finalize: glob *.mcap in cwd, zstd each into *.mcap.zstd, drop
 # the original. We use libzstd via ctypes rather than the `zstd` CLI
@@ -182,6 +252,7 @@ class Slot:
     yaml_path: Optional[Path] = None
     log_file: Optional[object] = None
     start_ts: Optional[float] = None
+    timeout_sec: Optional[float] = None
     host_bag_path: Optional[Path] = None
     container_bag_path: Optional[str] = None
 
@@ -211,6 +282,7 @@ class SweepRunner:
     per_run_timeout: Optional[float]
     slots: list[Slot]
     queue: list[tuple[str, Path]]
+    mission_args: dict[str, dict[str, object]] = field(default_factory=dict)
     status: list[StatusRow] = field(default_factory=list)
     status_path: Path = field(init=False)
     logs_dir: Path = field(init=False)
@@ -244,6 +316,11 @@ class SweepRunner:
             (self.sweep_dir / "launch_args.txt").write_text(
                 " ".join(self.extra_launch_args) + "\n"
             )
+        # Per-run mission args come from the sampler manifest; keep a copy
+        # next to sweep_status.csv so the output dir is self-describing.
+        manifest_src = self.scenarios_dir / "manifest.json"
+        if self.mission_args and manifest_src.is_file():
+            shutil.copy2(manifest_src, self.sweep_dir / "manifest.json")
 
     def launch_slot(self, slot: Slot, run_id: str, yaml_path: Path) -> None:
         log_path = self.logs_dir / f"{run_id}.log"
@@ -296,6 +373,10 @@ class SweepRunner:
                 "bag_compression:=none",
             ]
         cmd += list(self.extra_launch_args)
+        # Per-run mission args go last so they win over any identically
+        # named global --launch-args value.
+        run_mission = self.mission_args.get(run_id, {})
+        cmd += [f"{name}:={value}" for name, value in run_mission.items()]
 
         # Header line in the per-run log makes post-hoc forensics easy —
         # you can see the exact wrapper invocation that produced the bag.
@@ -316,12 +397,14 @@ class SweepRunner:
         slot.yaml_path = yaml_path
         slot.log_file = log_file
         slot.start_ts = time.time()
+        slot.timeout_sec = _scaled_timeout(run_mission, self.per_run_timeout)
         slot.host_bag_path = host_bag_path
         slot.container_bag_path = container_bag_path
         print(
             f"[slot {slot.index}] launched {run_id} (pid={proc.pid}, "
             f"GZ_PARTITION={gz_partition}, ROS_DOMAIN_ID={ros_domain}"
             + (f", cpus={slot.cpus}" if slot.cpus else "")
+            + (f", timeout={slot.timeout_sec:.0f}s" if slot.timeout_sec else "")
             + ")"
         )
 
@@ -379,6 +462,7 @@ class SweepRunner:
         slot.yaml_path = None
         slot.log_file = None
         slot.start_ts = None
+        slot.timeout_sec = None
         slot.host_bag_path = None
         slot.container_bag_path = None
 
@@ -498,21 +582,25 @@ class SweepRunner:
             # Enforce per-run wall-clock budget. The sawtooth/trim launches
             # keep the controller stack alive after the mission completes,
             # so without this they'd never voluntarily exit and the slot
-            # would hang forever.
-            if self.per_run_timeout is not None:
-                now = time.time()
-                for slot in self.slots:
-                    if slot.proc is None or slot.start_ts is None:
-                        continue
-                    elapsed = now - slot.start_ts
-                    if elapsed < self.per_run_timeout:
-                        continue
-                    print(
-                        f"[slot {slot.index}] {slot.run_id} hit timeout "
-                        f"({elapsed:.1f}s >= {self.per_run_timeout:.1f}s); terminating"
-                    )
-                    rc = self._kill_slot(slot)
-                    self.reap_slot(slot, rc, timed_out=True)
+            # would hang forever. The budget is per-slot: scaled to the
+            # run's sampled mission when known, else --per-run-timeout.
+            now = time.time()
+            for slot in self.slots:
+                if (
+                    slot.proc is None
+                    or slot.start_ts is None
+                    or slot.timeout_sec is None
+                ):
+                    continue
+                elapsed = now - slot.start_ts
+                if elapsed < slot.timeout_sec:
+                    continue
+                print(
+                    f"[slot {slot.index}] {slot.run_id} hit timeout "
+                    f"({elapsed:.1f}s >= {slot.timeout_sec:.1f}s); terminating"
+                )
+                rc = self._kill_slot(slot)
+                self.reap_slot(slot, rc, timed_out=True)
 
             # Refill idle slots from the queue.
             for slot in self.slots:
@@ -683,6 +771,13 @@ def main(argv: list[str] | None = None) -> int:
     if not args.no_preflight:
         preflight_validate(args.sif.resolve(), args.scenarios_dir.resolve(), yamls[0])
 
+    mission_args = load_mission_args(args.scenarios_dir)
+    if mission_args:
+        print(
+            f"manifest.json provides per-run mission args for "
+            f"{len(mission_args)} runs (e.g. {next(iter(mission_args.values()))})"
+        )
+
     runner = SweepRunner(
         sif=args.sif.resolve(),
         scenarios_dir=args.scenarios_dir.resolve(),
@@ -695,6 +790,7 @@ def main(argv: list[str] | None = None) -> int:
         per_run_timeout=args.per_run_timeout,
         slots=slots,
         queue=queue,
+        mission_args=mission_args,
     )
     return runner.run()
 
