@@ -12,8 +12,5 @@
 seed: 4
 
 rig:
-  faults:
-    bcu_rpm:
-      mttf_sec: 0.0
   hydrodynamics:
     bladder_spawn_volume_m3: 0.00245

@@ -1,10 +1,5 @@
 # Scenario for test_trim_neutral_sim (full closed-loop TRIM, estimator in
 # the loop). Convergence thresholds live in the test code itself, not here.
 
-# Fixed seed so fault timing (if enabled) is reproducible run-to-run.
+# Fixed seed so the derived noise/fault RNG streams are reproducible.
 seed: 1
-
-rig:
-  faults:
-    bcu_rpm:
-      mttf_sec: 0.0

@@ -13,6 +13,7 @@ Example:
 from diagnostic_msgs.msg import DiagnosticArray
 from geometry_msgs.msg import Pose
 from nautilus_msgs.msg import (
+    AnomalyLabel,
     BcuPumpCommand,
     BcuPumpUntilPressureCommand,
     DiveInit,
@@ -67,4 +68,5 @@ TOPIC_MESSAGE_MAP = {
     UUVTopics.DEBUG_EMERGENCY_SURFACE: Bool,
     UUVTopics.DEBUG_RESET: Empty,
     UUVTopics.STATUS_LIVENESS: DiagnosticArray,
+    UUVTopics.ANOMALY_LABEL: AnomalyLabel,
 }

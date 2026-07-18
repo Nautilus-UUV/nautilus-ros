@@ -7,12 +7,15 @@ endif()
 
 find_package(ament_cmake REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
+find_package(std_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/MissionCommand.msg"
   "msg/BcuPumpCommand.msg"
   "msg/BcuPumpUntilPressureCommand.msg"
   "msg/DiveInit.msg"
+  "msg/AnomalyLabel.msg"
+  DEPENDENCIES std_msgs
 )
 
 ament_package()

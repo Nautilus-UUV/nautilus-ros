@@ -50,10 +50,9 @@ rig:
     bcu_motor_min_rpm: 0
     bcu_motor_max_rpm: 4000
   faults:
-    bcu_rpm:
-      # Fault injection disabled (mttf_sec <= 0 never steps the ladder).
-      mttf_sec: 0.0
-      num_levels: 5
+    # Fault injection disabled (healthy pump, persistent-fault schema).
+    bcu_pump:
+      effectiveness: 1.0
   bridges:
     bcu:
       publish_rate_hz: 10

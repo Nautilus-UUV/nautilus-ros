@@ -16,6 +16,7 @@ from collections import deque
 from typing import Callable
 
 from py_pkg.math_utils import clamp
+from py_pkg.robot_specs import BCU_MOTOR_VALVE_MASK
 
 
 class PumpDynamics:
@@ -69,6 +70,19 @@ class PumpDynamics:
             error = target - self._eff_rpm
             self._eff_rpm += clamp(error, -budget, budget)
         return self._eff_rpm
+
+
+def pump_flow_active(rpm: float, valves: int) -> bool:
+    """True iff the pump moves oil: shaft turning AND the motor way open.
+
+    The single hydraulic gate shared by the BCU sim bridge's flow
+    integral and the anomaly label bridge's ``active`` flag — a closed
+    motor valve deadheads the pump (shaft spins, no flow), so both
+    consumers must agree on what "actuating" means. Callers pick the
+    rpm flavour (effective shaft rpm for the plant, commanded rpm for
+    the label's approximation).
+    """
+    return rpm != 0 and bool(valves & BCU_MOTOR_VALVE_MASK)
 
 
 def tank_pressure_linear(

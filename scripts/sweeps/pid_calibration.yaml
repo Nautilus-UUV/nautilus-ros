@@ -34,8 +34,7 @@ dimensions:
   - { path: rig.plant.bladder_min_m3, distribution: uniform, low: 0.00025,  high: 0.000839 }
   - { path: rig.plant.bladder_max_m3, distribution: uniform, low: 0.001559, high: 0.00225  }
 
-  # # BCU fault injection: mean time between successive 20% degradation
-  # # steps. The ladder is monotonic and latching (no recovery). Tight band
-  # # so realized values stay close to target (the sampler rejects high == low).
-  # #   mttf_sec in [160 s, 200 s]
-  # - { path: rig.faults.bcu_rpm.mttf_sec, distribution: loguniform, low: 160.0, high: 200.0 }
+  # Fault injection is per-run and persistent now (sampler >= 2.0.0):
+  # author an `anomaly_mix:` block (see validation_mix_v1.yaml) instead
+  # of sampling a fault dimension — e.g. rig.faults.bcu_pump.effectiveness
+  # is drawn from the mix's band for the runs assigned the bcu_pump class.

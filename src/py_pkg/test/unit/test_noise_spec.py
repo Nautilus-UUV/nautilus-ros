@@ -95,10 +95,14 @@ def test_enabled_true_compiles_fitted_values_and_seeds():
 
 def test_noise_seed_streams_are_pairwise_distinct_and_int64():
     ids = [
-        "bcu_rpm_fault",
         "imu_noise",
         "external_pressure_noise",
         "tank_pressure_noise",
+        "tank_pressure_fault",
+        "external_pressure_fault",
+        "bcu_comms_drop",
+        "imu_comms_drop",
+        "external_pressure_comms_drop",
     ]
     seeds = [derive_seed(0, i) for i in ids]
     assert len(set(seeds)) == len(seeds)

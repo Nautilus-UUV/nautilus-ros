@@ -182,31 +182,32 @@ def read_launch_args(sweep_dir: Path) -> dict[str, str]:
     return dict(tok.split(":=", 1) for tok in p.read_text().split() if ":=" in tok)
 
 
-def read_scenario_faults(
+def read_scenario_anomaly(
     entry: RunEntry, *, sweep_dir: Path | None = None
-) -> dict[str, float] | None:
-    """The BCU fault-injector knobs a run was *initialised* with.
+) -> dict | None:
+    """The anomaly label a run carries, from its scenario YAML.
 
-    Reads `rig.faults.bcu_rpm` from the run's scenario YAML and returns
-    `{"mttf_sec": ..., "num_levels": ...}` — the configured mean time between
-    successive degradation steps, as opposed to the ladder actually realised in
-    the bag (`read_fault_levels`). `mttf_sec <= 0` means faults were disabled.
+    Reads the top-level `anomaly:` label block (written by the sampler
+    and validated against `rig.faults` at load time). Returns
+    `{"class", "channel", "archetype"}` — a YAML without a label block
+    is an explicit `"nominal"` record (absence of the label never has
+    to be inferred downstream). Per-timestamp ground truth lives in the
+    bag's `/anomaly/label` stream; this is the run-level view.
 
     `entry.scenario_yaml_path` is recorded relative to the sweep's launch cwd
     (the workspace root), so we try it verbatim and then against each parent of
     `sweep_dir`, letting analysis run from any working directory. Returns None
-    when the path is missing, unresolvable, or carries no `bcu_rpm` fault block.
+    only when the YAML itself is missing or unresolvable.
     """
     path = _resolve_scenario_yaml(entry.scenario_yaml_path, sweep_dir)
     if path is None:
         return None
     doc = yaml.safe_load(path.read_text()) or {}
-    bcu = ((doc.get("rig") or {}).get("faults") or {}).get("bcu_rpm") or {}
-    if "mttf_sec" not in bcu:
-        return None
+    label = doc.get("anomaly") or {}
     return {
-        "mttf_sec": float(bcu["mttf_sec"]),
-        "num_levels": int(bcu.get("num_levels", 5)),
+        "class": label.get("anomaly_class", "nominal"),
+        "channel": label.get("channel", ""),
+        "archetype": label.get("archetype", ""),
     }
 
 

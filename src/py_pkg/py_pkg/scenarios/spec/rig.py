@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Literal, Optional
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from py_pkg.robot_specs import (
     BCU_MOTOR_MAX_RPM,
@@ -97,25 +97,115 @@ class PlantSpec(StrictModel):
     tank_air_volume_m3: float = 3.041025e-3
 
 
-class FaultInjectorSpec(StrictModel):
-    """Per-injector knobs for the monotonic degradation ladder.
+SensorFaultKind = Literal["none", "bias", "drift", "stuck", "dropout"]
 
-    The actuator walks down `num_levels` equal effectiveness steps
-    (100 % -> 0 %) and never recovers; each step is an independent
-    Poisson event with mean `mttf_sec`. Defaults are fault-free.
+
+class BcuPumpFaultSpec(StrictModel):
+    """Persistent whole-run pump degradation.
+
+    The commanded pump RPM is multiplied by `effectiveness` for the
+    entire run, before the pump transient (PumpDynamics). Constant
+    severity from t=0 — no onset, no escalation. 1.0 is a healthy pump.
+    A degraded pump *transient* (longer dead time, slower slew) is
+    authored through the existing `PlantSpec.pump_response_delay_s` /
+    `pump_slew_rpm_per_s` knobs instead.
     """
 
-    # Mean time between successive degradation steps (s). <= 0 disables
-    # faults entirely (the actuator stays at 100 % forever).
-    mttf_sec: float = 0.0
-    # Effectiveness ladder resolution: N steps from healthy (level 0,
-    # 100 %) to fully broken (level N, 0 %). 5 => 100/80/60/40/20/0.
-    num_levels: int = 5
+    effectiveness: float = 1.0
+
+    @model_validator(mode="after")
+    def _check_range(self) -> "BcuPumpFaultSpec":
+        if not (0.0 < self.effectiveness <= 1.0):
+            raise ValueError(
+                f"effectiveness must be in (0, 1], got {self.effectiveness}"
+            )
+        return self
+
+
+class SensorFaultSpec(StrictModel):
+    """One persistent measurement-fault archetype on one pressure channel.
+
+    Active from the first published sample for the whole run (constant
+    severity). Kind semantics:
+
+      bias    -> `magnitude` is a signed additive offset [Pa]
+      drift   -> `magnitude` is a signed ramp rate [Pa/s] from bridge start
+      stuck   -> the channel repeats its first reported sample forever
+      dropout -> each publish of this channel is suppressed i.i.d. with
+                 probability `drop_prob`
+
+    The bridge applies bias/drift to the true value *before* the
+    calibrated noise+quantization chain (a transducer-stage fault; the
+    digitizer always runs last); stuck latches the post-chain reading,
+    so a frozen channel stays on its quantization comb.
+    """
+
+    kind: SensorFaultKind = "none"
+    magnitude: float = 0.0
+    drop_prob: float = 0.0
+
+    @model_validator(mode="after")
+    def _check_kind_fields(self) -> "SensorFaultSpec":
+        if self.kind in ("none", "stuck"):
+            if self.magnitude != 0.0 or self.drop_prob != 0.0:
+                raise ValueError(
+                    f"kind={self.kind!r} uses neither magnitude nor drop_prob"
+                )
+        elif self.kind in ("bias", "drift"):
+            if self.magnitude == 0.0:
+                raise ValueError(f"kind={self.kind!r} requires a nonzero magnitude")
+            if self.drop_prob != 0.0:
+                raise ValueError(f"kind={self.kind!r} does not use drop_prob")
+        else:  # dropout
+            if not (0.0 < self.drop_prob <= 1.0):
+                raise ValueError("kind='dropout' requires 0 < drop_prob <= 1")
+            if self.magnitude != 0.0:
+                raise ValueError("kind='dropout' does not use magnitude")
+        return self
+
+
+class SensorFaultsSpec(StrictModel):
+    """Measurement faults, one optional archetype per pressure channel.
+
+    Deliberately pressure-only: the IMU is excluded from sensor-fault
+    injection by design (it is still covered by the comms fault).
+    """
+
+    external_pressure: SensorFaultSpec = Field(default_factory=SensorFaultSpec)
+    tank_pressure: SensorFaultSpec = Field(default_factory=SensorFaultSpec)
+
+
+class CommsFaultSpec(StrictModel):
+    """Uniform bridge-layer link degradation.
+
+    Every bridged sensor/telemetry publish (/imu, /external/pressure,
+    /bcu/pressure, /bcu/volume, feedback, flow rate) is dropped i.i.d.
+    Bernoulli(drop_prob) — the archetype of frame loss on the shared
+    Pi<->STM link. 0.0 = healthy link. The Gazebo-facing plant command
+    path and the /anomaly/label ground-truth stream are never gated.
+    """
+
+    drop_prob: float = 0.0
+
+    @model_validator(mode="after")
+    def _check_range(self) -> "CommsFaultSpec":
+        if not (0.0 <= self.drop_prob < 1.0):
+            raise ValueError(f"drop_prob must be in [0, 1), got {self.drop_prob}")
+        return self
 
 
 class FaultsSpec(StrictModel):
-    # Add more injectors here as they appear (acu_pitch, imu, ...).
-    bcu_rpm: FaultInjectorSpec = Field(default_factory=FaultInjectorSpec)
+    """Persistent whole-run faults at constant severity, active from t=0.
+
+    Replaces the old Poisson-MTTF escalation ladder: a run is either
+    healthy or carries its fault for the entire duration. The anomaly
+    class of a run is recorded in `Scenario.anomaly` (validated for
+    consistency against these blocks).
+    """
+
+    bcu_pump: BcuPumpFaultSpec = Field(default_factory=BcuPumpFaultSpec)
+    sensors: SensorFaultsSpec = Field(default_factory=SensorFaultsSpec)
+    comms: CommsFaultSpec = Field(default_factory=CommsFaultSpec)
 
 
 class ImuNoiseSpec(StrictModel):

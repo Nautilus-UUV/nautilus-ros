@@ -52,6 +52,15 @@ from scipy.stats import qmc
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src/py_pkg"))
 from py_pkg.scenarios import buoyancy
+from py_pkg.scenarios.anomaly import (
+    AnomalyAssignment,
+    AnomalyMixSpec,
+    apply_anomaly,
+    assign_classes,
+    derivation_overrides,
+    draw_assignment,
+    fouled_neutral_volume,
+)
 from py_pkg.scenarios.compile import forward_map
 from py_pkg.scenarios.spec.rig import (
     FinAeroSpec,
@@ -60,7 +69,9 @@ from py_pkg.scenarios.spec.rig import (
     RigScenario,
 )
 
-SAMPLER_VERSION = "1.2.0"
+# 2.0.0: persistent-fault schema (rig.faults.bcu_pump/sensors/comms) +
+# per-run anomaly_mix class assignment; the Poisson-ladder schema is gone.
+SAMPLER_VERSION = "2.0.0"
 
 # Dimensions under this prefix are launch args (mission knobs), not scenario
 # fields: they are recorded in the manifest but never written into the
@@ -89,7 +100,7 @@ _DERIVED_FIELDS = {
 
 # The bare-name dimensions a "physics" sweep feeds to the deterministic
 # forward map. Any dimension whose path is *not* one of these is treated as a
-# plain scenario dot-path overlay (e.g. rig.faults.bcu_rpm.mttf_sec), so a
+# plain scenario dot-path overlay (e.g. rig.plant.pump_response_delay_s), so a
 # sweep can perturb the plant geometry and a scenario knob in one joint LHS.
 _PHYSICS_KNOB_FIELDS = frozenset(PhysicsKnobs.model_fields)
 
@@ -207,6 +218,12 @@ class SweepSpec:
     buoyancy_derivation: BuoyancyDerivationConfig = field(
         default_factory=BuoyancyDerivationConfig
     )
+    # Per-run anomaly class mix (validation sweeps). None = every run
+    # nominal (legacy sweeps unchanged). Deliberately NOT an LHS
+    # dimension: the class/severity streams are derive_seed children of
+    # the sweep seed, so adding/editing the mix never reshuffles the
+    # nominal LHS draws.
+    anomaly_mix: AnomalyMixSpec | None = None
 
     @property
     def derivation_enabled(self) -> bool:
@@ -222,7 +239,7 @@ class SweepSpec:
         if not dims:
             raise ValueError(f"{path}: 'dimensions' must be non-empty")
         _validate_derive_dims(path, dims)
-        return cls(
+        spec = cls(
             description=raw.get("description", ""),
             n_samples=int(raw["n_samples"]),
             seed=int(raw.get("seed", 0)),
@@ -233,7 +250,24 @@ class SweepSpec:
             buoyancy_derivation=BuoyancyDerivationConfig.from_dict(
                 raw.get("buoyancy_derivation") or {}
             ),
+            anomaly_mix=(
+                AnomalyMixSpec.model_validate(raw["anomaly_mix"])
+                if raw.get("anomaly_mix")
+                else None
+            ),
         )
+        if (
+            spec.anomaly_mix is not None
+            and spec.anomaly_mix.weights.get("biofouling", 0.0) > 0.0
+            and not (spec.sampling_mode == "physics" and spec.derivation_enabled)
+        ):
+            raise ValueError(
+                f"{path}: biofouling anomalies need a physics-mode sweep with "
+                f"the correlated buoyancy derivation ({DERIVE_NEUTRAL_VOLUME}) "
+                "— the drag multipliers and the fouling-mass neutral shift "
+                "have nothing to act on otherwise"
+            )
+        return spec
 
 
 def _validate_derive_dims(path: Path, dims: tuple[Dimension, ...]) -> None:
@@ -356,13 +390,19 @@ def jitter_hydrodynamics(
 
 
 def render_scenario(
-    base: dict, spec: SweepSpec, row: Sequence[float], idx: int
-) -> tuple[dict, dict | None]:
+    base: dict,
+    spec: SweepSpec,
+    row: Sequence[float],
+    idx: int,
+    anomaly_class: str | None = None,
+) -> tuple[dict, dict | None, AnomalyAssignment | None]:
     """Deep-copy the base, overlay the row's perturbations, set per-run seed.
 
-    Returns (scenario, derived) where `derived` is the per-run buoyancy
-    derivation record for the manifest, or None when the spec has no
-    derive dimensions.
+    `anomaly_class` is this run's stratified class assignment (None when
+    the spec has no anomaly_mix). Returns (scenario, derived, anomaly)
+    where `derived` is the per-run buoyancy derivation record for the
+    manifest (None without derive dimensions) and `anomaly` is the
+    resolved AnomalyAssignment (None without a mix).
     """
     scenario = copy.deepcopy(base)
     # Each run gets its own fault-RNG seed so MC outcomes are
@@ -411,18 +451,47 @@ def render_scenario(
     else:
         raise ValueError(f"Unsupported sampling_mode: {spec.sampling_mode}")
 
+    # Anomaly overlay runs after jitter + dotted overlays (so biofouling
+    # multiplies the final nominal-sampled hydro block, and an anomalous
+    # pump-transient band overrides the nominal draw of the same field)
+    # and before the buoyancy derivation (so the fouled trim is derived,
+    # not clobbered).
+    assignment = None
+    if spec.anomaly_mix is not None:
+        if anomaly_class is None:
+            raise ValueError("anomaly_mix configured but no class assigned")
+        assignment = draw_assignment(spec.anomaly_mix, spec.seed, idx, anomaly_class)
+        apply_anomaly(scenario, assignment)
+
     # Correlated buoyancy derivation runs *after* the mode branch so all
     # overlays — including a sampled rig.hydrodynamics.fluid_density and
     # per-run bladder clamps — are already visible in the scenario.
     derived = None
     if spec.derivation_enabled:
-        derived = _apply_buoyancy_derivation(scenario, spec, row, idx)
+        # anomaly.py owns class -> derivation coupling (biofouling's
+        # mass shift + relaxed climb margin; identity otherwise).
+        extra_mass_kg, min_climb_override = derivation_overrides(
+            spec.anomaly_mix, assignment
+        )
+        derived = _apply_buoyancy_derivation(
+            scenario,
+            spec,
+            row,
+            idx,
+            extra_mass_kg=extra_mass_kg,
+            min_climb_margin_m3=min_climb_override,
+        )
 
-    return scenario, derived
+    return scenario, derived, assignment
 
 
 def _apply_buoyancy_derivation(
-    scenario: dict, spec: SweepSpec, row: Sequence[float], idx: int
+    scenario: dict,
+    spec: SweepSpec,
+    row: Sequence[float],
+    idx: int,
+    extra_mass_kg: float = 0.0,
+    min_climb_margin_m3: float | None = None,
 ) -> dict:
     """Derive trim masses/spawn for one run and write them into the scenario.
 
@@ -431,6 +500,12 @@ def _apply_buoyancy_derivation(
     bands are mis-authored (e.g. bladder clamps too tight for the
     sampled neutral-volume band). Abort generation — never resample,
     which would silently bias the sweep distribution.
+
+    `extra_mass_kg` / `min_climb_margin_m3` are the biofouling hooks:
+    fouling mass shifts the neutral-volume target (heavier hull needs
+    more bladder), and the fouled run is checked against the relaxed
+    climb margin authored in the anomaly mix — the HARD-FAIL contract
+    itself is unchanged.
     """
     v_n_target = next(
         float(value)
@@ -452,6 +527,8 @@ def _apply_buoyancy_derivation(
     fluid_density = rig.hydrodynamics.fluid_density
     bladder_min = rig.plant.bladder_min_m3
     bladder_max = rig.plant.bladder_max_m3
+    if extra_mass_kg:
+        v_n_target = fouled_neutral_volume(v_n_target, extra_mass_kg, fluid_density)
 
     derived = buoyancy.derive_trim_masses(
         fluid_density,
@@ -469,7 +546,11 @@ def _apply_buoyancy_derivation(
         bladder_min,
         bladder_max,
         min_dive_margin_m3=cfg.min_dive_margin_m3,
-        min_climb_margin_m3=cfg.min_climb_margin_m3,
+        min_climb_margin_m3=(
+            cfg.min_climb_margin_m3
+            if min_climb_margin_m3 is None
+            else min_climb_margin_m3
+        ),
     )
     if not viability.ok:
         raise RuntimeError(
@@ -500,6 +581,7 @@ def write_manifest(
     matrix: np.ndarray,
     run_ids: Iterable[str],
     derived_records: Sequence[dict | None],
+    anomaly_records: Sequence[AnomalyAssignment | None],
 ) -> None:
     spec_text = spec_path.read_text()
     manifest = {
@@ -525,14 +607,21 @@ def write_manifest(
                 "run_id": rid,
                 "values": {d.path: d.emit(v) for d, v in zip(spec.dimensions, row)},
                 **({"derived": derived} if derived is not None else {}),
+                # Explicit per-run label, nominal included — downstream
+                # dataset builders join on this, never on absence.
+                **({"anomaly": anomaly.record()} if anomaly is not None else {}),
             }
-            for rid, row, derived in zip(run_ids, matrix, derived_records)
+            for rid, row, derived, anomaly in zip(
+                run_ids, matrix, derived_records, anomaly_records
+            )
         ],
     }
     if spec.derivation_enabled:
         # Echo the *effective* derivation config (defaults filled in) so
         # post-hoc analyses don't have to reconstruct it from the spec.
         manifest["buoyancy_derivation"] = asdict(spec.buoyancy_derivation)
+    if spec.anomaly_mix is not None:
+        manifest["anomaly_mix"] = spec.anomaly_mix.model_dump()
     (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
 
@@ -569,15 +658,38 @@ def main(argv: list[str] | None = None) -> int:
     width = max(4, len(str(spec.n_samples - 1)))
     run_ids = [f"lhs_{i:0{width}d}" for i in range(spec.n_samples)]
 
+    # Stratified per-run class assignment (exact counts, seeded shuffle)
+    # — resolved before rendering so a truncated --n-samples dry run
+    # still splits its n exactly by the mix weights.
+    classes = (
+        assign_classes(spec.anomaly_mix, spec.seed, spec.n_samples)
+        if spec.anomaly_mix is not None
+        else None
+    )
+
     derived_records: list[dict | None] = []
+    anomaly_records: list[AnomalyAssignment | None] = []
     for idx, (run_id, row) in enumerate(zip(run_ids, matrix)):
-        scenario, derived = render_scenario(base, spec, row, idx)
+        scenario, derived, anomaly = render_scenario(
+            base,
+            spec,
+            row,
+            idx,
+            anomaly_class=classes[idx] if classes is not None else None,
+        )
         derived_records.append(derived)
+        anomaly_records.append(anomaly)
         out_path = out_dir / f"{run_id}.yaml"
         out_path.write_text(yaml.safe_dump(scenario, sort_keys=False))
 
-    write_manifest(out_dir, spec, args.spec, matrix, run_ids, derived_records)
+    write_manifest(
+        out_dir, spec, args.spec, matrix, run_ids, derived_records, anomaly_records
+    )
 
+    if classes is not None:
+        from collections import Counter
+
+        print(f"anomaly mix: {dict(Counter(classes))}")
     print(f"wrote {spec.n_samples} scenarios + manifest.json to {out_dir}")
     return 0
 

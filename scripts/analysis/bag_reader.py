@@ -68,33 +68,6 @@ def read_odometry(
     }
 
 
-def read_fault_levels(bag_dir: Path) -> dict[str, np.ndarray]:
-    """Return arrays `t` (s) and `level` (int) from `/bcu/rpm/fault` — the latched
-    BCU degradation ladder (0..5). Empty arrays if the topic is absent.
-    """
-    bag_dir = Path(bag_dir)
-    candidates = ("/bcu/rpm/fault/throttled", "/bcu/rpm/fault")
-    ts: list[int] = []
-    levels: list[int] = []
-
-    with Reader(bag_dir) as reader:
-        connections = [c for c in reader.connections if c.topic in candidates]
-        if not connections:
-            return _empty_fault()
-        for conn, timestamp, rawdata in reader.messages(connections=connections):
-            msg = _TYPESTORE.deserialize_cdr(rawdata, conn.msgtype)
-            ts.append(timestamp)
-            levels.append(int(msg.data))
-
-    if not ts:
-        return _empty_fault()
-    return {"t": _rebase(ts), "level": np.asarray(levels, dtype=np.int64)}
-
-
 def _empty_odom() -> dict[str, np.ndarray]:
     keys = ("t", "x", "y", "z", "roll", "pitch", "yaw")
     return {k: np.empty(0, dtype=np.float64) for k in keys}
-
-
-def _empty_fault() -> dict[str, np.ndarray]:
-    return {"t": np.empty(0, dtype=np.float64), "level": np.empty(0, dtype=np.int64)}

@@ -316,10 +316,12 @@ class SweepRunner:
             (self.sweep_dir / "launch_args.txt").write_text(
                 " ".join(self.extra_launch_args) + "\n"
             )
-        # Per-run mission args come from the sampler manifest; keep a copy
-        # next to sweep_status.csv so the output dir is self-describing.
+        # The sampler manifest carries per-run mission args AND the
+        # per-run anomaly labels — copy it whenever it exists so the
+        # output dir is self-describing (the dataset builder joins
+        # labels on run_id from this copy).
         manifest_src = self.scenarios_dir / "manifest.json"
-        if self.mission_args and manifest_src.is_file():
+        if manifest_src.is_file():
             shutil.copy2(manifest_src, self.sweep_dir / "manifest.json")
 
     def launch_slot(self, slot: Slot, run_id: str, yaml_path: Path) -> None:

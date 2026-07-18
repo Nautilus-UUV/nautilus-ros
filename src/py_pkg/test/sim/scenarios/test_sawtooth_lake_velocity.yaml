@@ -14,9 +14,6 @@
 seed: 4
 
 rig:
-  faults:
-    bcu_rpm:
-      mttf_sec: 0.0
   plant:
     bladder_min_m3: 0.000866
     bladder_max_m3: 0.002465

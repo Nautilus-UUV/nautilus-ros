@@ -84,4 +84,7 @@ TOPIC_QOS_MAP = {
     UUVTopics.POSITION_TARGET: UUVQoS.CONTROL,
     UUVTopics.POSITION_ESTIMATION: UUVQoS.CONTROL,
     UUVTopics.STATUS_LIVENESS: UUVQoS.CONTROL,
+    # Ground-truth labels must not be lost: RELIABLE (CONTROL), not a
+    # best-effort sensor stream.
+    UUVTopics.ANOMALY_LABEL: UUVQoS.CONTROL,
 }

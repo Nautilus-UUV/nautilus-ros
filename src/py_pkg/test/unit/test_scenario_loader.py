@@ -43,10 +43,10 @@ def test_unknown_nested_key_raises():
 
 
 def test_derive_seed_is_deterministic_and_varies():
-    a = derive_seed(0, "bcu_rpm_fault")
-    b = derive_seed(0, "bcu_rpm_fault")
-    c = derive_seed(1, "bcu_rpm_fault")
-    d = derive_seed(0, "acu_pitch_fault")
+    a = derive_seed(0, "tank_pressure_fault")
+    b = derive_seed(0, "tank_pressure_fault")
+    c = derive_seed(1, "tank_pressure_fault")
+    d = derive_seed(0, "external_pressure_fault")
     assert a == b
     assert a != c
     assert a != d
@@ -62,7 +62,7 @@ def test_derive_seed_fits_in_ros_int64():
     # Half of unmasked 64-bit unsigned digests are > INT64_MAX, so sampling
     # a few hundred parent seeds reliably catches a regression.
     for i in range(512):
-        s = derive_seed(i, "bcu_rpm_fault")
+        s = derive_seed(i, "tank_pressure_fault")
         assert 0 <= s <= int64_max, f"derive_seed({i}, ...) = {s} > INT64_MAX"
 
 

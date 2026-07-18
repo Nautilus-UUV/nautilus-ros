@@ -65,14 +65,23 @@ class BridgeProbe(Node):
         self.fb_samples.append((time.monotonic(), int(msg.data)))
 
 
-def make_rig(probe_cls):
+def make_rig(probe_cls, init_args=None, name="rig", bridge_cls=BCUSimBridge):
     """Module-level ``rig = make_rig(_MyProbe)`` gives a test file the
-    shared bridge + probe + executor fixture with one teardown order."""
+    shared bridge + probe + executor fixture with one teardown order.
 
-    @pytest.fixture()
+    ``init_args`` goes to ``rclpy.init`` (e.g. ``["--ros-args", "-p",
+    "fault_effectiveness:=0.5"]``) — global overrides that parameterize
+    the bridge without a launch wrapper; nodes ignore parameters they
+    never declare. ``name`` names the fixture, so one file can carry
+    several rigs with different overrides. ``bridge_cls`` swaps the
+    node under test so sibling bridge tests reuse the same rig
+    choreography instead of hand-rolling the teardown order.
+    """
+
+    @pytest.fixture(name=name)
     def rig():
-        rclpy.init()
-        bridge = BCUSimBridge()
+        rclpy.init(args=init_args)
+        bridge = bridge_cls()
         probe = probe_cls()
         executor = SingleThreadedExecutor()
         executor.add_node(bridge)

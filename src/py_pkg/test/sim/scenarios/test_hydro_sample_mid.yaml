@@ -10,9 +10,6 @@
 seed: 0
 
 rig:
-  faults:
-    bcu_rpm:
-      mttf_sec: 0.0
   hydrodynamics:
     drag_xU: -108.0
     drag_yV: -8.0

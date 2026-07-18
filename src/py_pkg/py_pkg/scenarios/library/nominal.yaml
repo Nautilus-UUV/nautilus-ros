@@ -1,8 +1,8 @@
 # Nominal scenario: perturbation-free reference for Monte Carlo sweeps.
 #
-# Identical to baseline.yaml except BCU fault injection is disabled
-# (`mttf_sec: 0.0`). Use this as the deterministic baseline
-# every MC run differs from.
+# Identical to baseline.yaml except fault injection is disabled
+# (healthy pump, clean sensors, clean link). Use this as the
+# deterministic baseline every MC run differs from.
 
 seed: 0
 
@@ -62,12 +62,19 @@ rig:
     bcu_motor_min_rpm: 0
     bcu_motor_max_rpm: 3000
   faults:
-    bcu_rpm:
-      # Fault injection disabled — mttf_sec <= 0 means the degradation
-      # ladder never steps. num_levels is kept at the baseline value so a
-      # sweep flipping just mttf_sec back on is a one-line edit.
-      mttf_sec: 0.0
-      num_levels: 5
+    # Persistent whole-run faults (constant severity from t=0). All
+    # disabled here: healthy pump, clean sensors, clean link. Anomalous
+    # scenarios set one block and label themselves via the top-level
+    # `anomaly:` key (validated for consistency at load).
+    bcu_pump:
+      effectiveness: 1.0
+    sensors:
+      external_pressure:
+        kind: none
+      tank_pressure:
+        kind: none
+    comms:
+      drop_prob: 0.0
   bridges:
     bcu:
       publish_rate_hz: 10

@@ -74,3 +74,9 @@ class UUVTopics:
     # from a freshness watchdog over the steady glider-side feedback/sensor
     # streams.
     STATUS_LIVENESS = "/status/liveness"
+
+    # Sim-only ground truth: per-timestamp anomaly label broadcast by the
+    # anomaly_label_bridge and recorded into every bag. Never routed
+    # through any fault/comms gate — it must stay intact precisely when
+    # the faulted streams go quiet.
+    ANOMALY_LABEL = "/anomaly/label"

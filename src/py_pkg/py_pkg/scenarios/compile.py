@@ -44,7 +44,9 @@ from .spec.rig import (
     PhysicsKnobs,
     PressureNoiseSpec,
     RigScenario,
+    SensorFaultSpec,
 )
+from .spec.scenario import Scenario
 
 # ---------------------------------------------------------------------------
 # Control-side: forward (params_for_*) and inverse (*_spec_from_node)
@@ -225,9 +227,25 @@ def _effective_noise(scen: RigScenario) -> NoiseSpec:
     return scen.noise if scen.noise.enabled else _NOISE_OFF
 
 
+def _sensor_fault_params(
+    prefix: str, f: SensorFaultSpec, parent_seed: int, component_id: str
+) -> dict[str, Any]:
+    """Wire params for one persistent sensor-fault channel.
+
+    The seed is emitted unconditionally (only dropout consumes RNG;
+    harmless otherwise) so the wire shape never depends on the kind.
+    """
+    return {
+        f"{prefix}fault_kind": f.kind,
+        f"{prefix}fault_magnitude": f.magnitude,
+        f"{prefix}fault_drop_prob": f.drop_prob,
+        f"{prefix}fault_seed": derive_seed(parent_seed, component_id),
+    }
+
+
 def params_for_bcu_bridge(scen: RigScenario, parent_seed: int = 0) -> dict[str, Any]:
     p = scen.plant
-    f = scen.faults.bcu_rpm
+    f = scen.faults
     b = scen.bridges.bcu
     n = _effective_noise(scen)
     return {
@@ -235,9 +253,7 @@ def params_for_bcu_bridge(scen: RigScenario, parent_seed: int = 0) -> dict[str, 
         "volume_per_rev_m3": p.volume_per_rev_m3,
         "bladder_min_m3": p.bladder_min_m3,
         "bladder_max_m3": p.bladder_max_m3,
-        "fault_mttf_sec": f.mttf_sec,
-        "fault_num_levels": f.num_levels,
-        "rng_seed": derive_seed(parent_seed, "bcu_rpm_fault"),
+        "fault_effectiveness": f.bcu_pump.effectiveness,
         "publish_rate_hz": b.publish_rate_hz,
         "tank_pressure_empty_pa": p.tank_pressure_empty_pa,
         "tank_pressure_full_pa": p.tank_pressure_full_pa,
@@ -248,6 +264,11 @@ def params_for_bcu_bridge(scen: RigScenario, parent_seed: int = 0) -> dict[str, 
         "tank_noise_seed": derive_seed(parent_seed, "tank_pressure_noise"),
         "tank_noise_sigma_pa": n.tank_pressure.sigma_pa,
         "tank_noise_quantization_pa": n.tank_pressure.quantization_pa,
+        **_sensor_fault_params(
+            "tank_", f.sensors.tank_pressure, parent_seed, "tank_pressure_fault"
+        ),
+        "comms_drop_prob": f.comms.drop_prob,
+        "comms_seed": derive_seed(parent_seed, "bcu_comms_drop"),
     }
 
 
@@ -259,6 +280,10 @@ def params_for_imu_bridge(scen: RigScenario, parent_seed: int = 0) -> dict[str, 
         # (x, y, z) as ROS double-array parameters.
         "noise_accel_sigma": list(n.imu.accel_sigma_mps2),
         "noise_gyro_sigma": list(n.imu.gyro_sigma_rads),
+        # Comms fault only — the IMU is excluded from sensor-fault
+        # injection by design (SensorFaultsSpec).
+        "comms_drop_prob": scen.faults.comms.drop_prob,
+        "comms_seed": derive_seed(parent_seed, "imu_comms_drop"),
     }
 
 
@@ -272,11 +297,30 @@ def params_for_external_sensor_bridge(
         "noise_seed": derive_seed(parent_seed, "external_pressure_noise"),
         "noise_sigma_pa": n.external_pressure.sigma_pa,
         "noise_quantization_pa": n.external_pressure.quantization_pa,
+        **_sensor_fault_params(
+            "",
+            scen.faults.sensors.external_pressure,
+            parent_seed,
+            "external_pressure_fault",
+        ),
+        "comms_drop_prob": scen.faults.comms.drop_prob,
+        "comms_seed": derive_seed(parent_seed, "external_pressure_comms_drop"),
     }
 
 
 def params_for_gt_pose_bridge(scen: RigScenario) -> dict[str, Any]:
     return {"model_name": scen.sim.model_name}
+
+
+def params_for_anomaly_label(scen: Scenario) -> dict[str, Any]:
+    """Wire params for the sim-only anomaly_label_bridge.
+
+    The only consumer of `Scenario.anomaly` — the spec's fields ARE the
+    wire params (the bridge re-validates them through AnomalyLabelSpec
+    and broadcasts them verbatim, plus its per-class `active` gating),
+    so a field added to the spec reaches the wire without re-listing.
+    """
+    return scen.anomaly.model_dump()
 
 
 # ---------------------------------------------------------------------------

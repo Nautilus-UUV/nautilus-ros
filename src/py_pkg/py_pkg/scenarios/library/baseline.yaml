@@ -11,6 +11,11 @@
 
 seed: 0
 
+# Ground-truth label for this run — validated against rig.faults at load
+# and broadcast into bags by the sim-only anomaly_label_bridge.
+anomaly:
+  anomaly_class: bcu_pump
+
 control:
   controllers:
     depth:
@@ -67,11 +72,18 @@ rig:
     bcu_motor_min_rpm: 0
     bcu_motor_max_rpm: 3000
   faults:
-    bcu_rpm:
-      # Monotonic pump degradation: one 20% effectiveness step every ~60 s
-      # on average, latching at 0% (broken). No recovery.
-      mttf_sec: 60.0
-      num_levels: 5
+    bcu_pump:
+      # Persistent pump-degradation demo: commanded RPM is scaled to 60%
+      # for the entire run — constant severity from t=0 (the old Poisson
+      # MTTF escalation ladder is gone).
+      effectiveness: 0.6
+    sensors:
+      external_pressure:
+        kind: none
+      tank_pressure:
+        kind: none
+    comms:
+      drop_prob: 0.0
   bridges:
     bcu:
       publish_rate_hz: 10

@@ -1,8 +1,3 @@
 # Scenario for test_sawtooth_sim.
 
 seed: 2
-
-rig:
-  faults:
-    bcu_rpm:
-      mttf_sec: 0.0
