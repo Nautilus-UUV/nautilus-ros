@@ -26,6 +26,7 @@ from launch import LaunchDescription
 from launch.actions import IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.substitutions import FindPackageShare
+from py_pkg.robot_specs import BCU_MOTOR_VALVE_MASK
 from py_pkg.scenarios.spec.rig import NoiseSpec
 from py_pkg.uuv_ros_core import (
     UUVTopics,
@@ -35,7 +36,7 @@ from py_pkg.uuv_ros_core import (
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from sensor_msgs.msg import Imu
-from std_msgs.msg import Float32, Int16, Int32
+from std_msgs.msg import Float32, Int16, Int32, UInt8
 
 from ._sim_helpers import reap_lingering_gz, sim_gui_enabled, spin_for, spin_until
 
@@ -125,6 +126,7 @@ class _BCUTestDriver(Node):
         self.imu_msg_count: int = 0
 
         self.rpm_pub = create_publisher_for_topic(self, UUVTopics.BCU_RPM)
+        self.valves_pub = create_publisher_for_topic(self, UUVTopics.BCU_VALVES)
         create_subscription_for_topic(self, UUVTopics.BCU_FLOW_RATE, self._on_flow)
         create_subscription_for_topic(self, UUVTopics.BCU_VOLUME, self._on_volume)
         create_subscription_for_topic(self, UUVTopics.BCU_PRESSURE, self._on_tank)
@@ -151,9 +153,15 @@ class _BCUTestDriver(Node):
         self.imu_msg_count += 1
 
     def publish_rpm(self, rpm: int) -> None:
+        # Mirror bcu_node's wire shape: a nonzero RPM rides with valve 2
+        # (motor way) open, a stop closes the valves. The bridge gates the
+        # hydraulic transfer on valve 2, so RPM alone must not move oil.
         msg = Int16()
         msg.data = int(rpm)
         self.rpm_pub.publish(msg)
+        valves = UInt8()
+        valves.data = BCU_MOTOR_VALVE_MASK if rpm != 0 else 0
+        self.valves_pub.publish(valves)
 
 
 # ---------------------------------------------------------------------------
@@ -304,8 +312,10 @@ class BCUSimTest(unittest.TestCase):
 
         collected = spin_until(
             self.executor,
-            lambda: len(self.driver.received_tank_pa) >= n_samples
-            and len(self.driver.received_external_pa) >= n_samples,
+            lambda: (
+                len(self.driver.received_tank_pa) >= n_samples
+                and len(self.driver.received_external_pa) >= n_samples
+            ),
             timeout_s=30.0,
         )
         self.assertTrue(
@@ -329,8 +339,7 @@ class BCUSimTest(unittest.TestCase):
         self.assertEqual(
             off_comb_tank,
             [],
-            f"tank pressure samples off the {tank_step} Pa comb: "
-            f"{off_comb_tank[:5]!r}",
+            f"tank pressure samples off the {tank_step} Pa comb: {off_comb_tank[:5]!r}",
         )
         self.assertGreaterEqual(
             len(set(tank)),

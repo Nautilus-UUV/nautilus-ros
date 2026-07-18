@@ -43,6 +43,7 @@ from launch.actions import IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.substitutions import FindPackageShare
 from py_pkg.physics import gauge_pressure_pa
+from py_pkg.robot_specs import BCU_MOTOR_VALVE_MASK
 from py_pkg.uuv_ros_core import (
     UUVTopics,
     create_publisher_for_topic,
@@ -51,7 +52,7 @@ from py_pkg.uuv_ros_core import (
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from sensor_msgs.msg import Imu
-from std_msgs.msg import Int16, Int32
+from std_msgs.msg import Int16, Int32, UInt8
 
 from ._sim_helpers import (
     SIM_PA_PER_M,
@@ -192,6 +193,7 @@ class _PumpTransientDriver(Node):
         self.replay_t0: float | None = None
 
         self.rpm_pub = create_publisher_for_topic(self, UUVTopics.BCU_RPM)
+        self.valves_pub = create_publisher_for_topic(self, UUVTopics.BCU_VALVES)
         create_subscription_for_topic(
             self, UUVTopics.EXTERNAL_PRESSURE, self._on_pressure
         )
@@ -228,6 +230,10 @@ class _PumpTransientDriver(Node):
         t_rel = -1.0 if self.replay_t0 is None else time.monotonic() - self.replay_t0
         rpm = self._commanded_rpm(t_rel) if t_rel >= 0.0 else 0.0
         self.rpm_pub.publish(Int16(data=int(rpm)))
+        # Hold valve 2 (motor way) open for the whole replay — the lake fit
+        # was made with transfer following the shaft transient, so the
+        # bridge's valve gate must never truncate it mid-timeline.
+        self.valves_pub.publish(UInt8(data=BCU_MOTOR_VALVE_MASK))
 
 
 def _mean_near(samples: list[tuple[float, float]], t: float, half_w: float) -> float:

@@ -1,10 +1,8 @@
 """Tier 3 regression: the BCU feedback echo decays after commands stop.
 
-In-process bridge test (house rule: ``nautilus_hal``-importing tests are
-Tier 3 even without Gazebo -- marker-gated ``@pytest.mark.sim``). No
-Gazebo: the probe stands in for the ros_gz volume echo, then drives
-BCU_RPM the way bcu_debug does -- a held command at 10 Hz, a
-trailing-zero flush, then silence.
+In-process bridge test on the shared ``_bcu_bridge_harness`` rig (no
+Gazebo): the probe drives BCU_RPM the way bcu_debug does -- a held
+command at 10 Hz, a trailing-zero flush, then silence.
 
 Regression for the stuck UI "Feedback RPM" gauge: the bridge used to
 step PumpDynamics only inside rpm_callback, so when the commander went
@@ -24,16 +22,7 @@ production topic names overlap.
 import time
 
 import pytest
-import rclpy
-from py_pkg.scenarios.spec.rig import PlantSpec, SimSpec
-from py_pkg.uuv_ros_core import (
-    UUVTopics,
-    create_publisher_for_topic,
-    create_subscription_for_topic,
-)
-from rclpy.executors import SingleThreadedExecutor
-from rclpy.node import Node
-from std_msgs.msg import Float64, Int16
+from std_msgs.msg import Int16
 
 from ._sim_helpers import spin_for, spin_until
 
@@ -43,20 +32,21 @@ pytestmark = pytest.mark.sim
 # don't fail, exactly like test_buoyancy_budget_parity.
 pytest.importorskip("nautilus_hal")
 
-from nautilus_hal.bridges.bcu_sim_bridge import BCUSimBridge  # noqa: E402
-from nautilus_hal.constants import SimTopics  # noqa: E402
+from ._bcu_bridge_harness import (  # noqa: E402
+    CMD_RATE_HZ,
+    HELD_RPM,
+    MIN_VISIBLE_RPM,
+    PLANT,
+    BridgeProbe,
+    make_rig,
+    wait_wired,
+)
 
-_PLANT = PlantSpec()
-
-CMD_RATE_HZ = 10.0
-HELD_RPM = 3000
 # bcu_debug's stop shape: one immediate 0 plus FLUSH_TICKS trailing zeros.
 FLUSH_ZEROS = 6
 # Hold the command a little past the dead time so the shaft visibly
 # spins up before the stop lands.
-HOLD_S = _PLANT.pump_response_delay_s + 0.5
-# Same visibility threshold the pump-transient lake test uses for onset.
-MIN_VISIBLE_RPM = 100
+HOLD_S = PLANT.pump_response_delay_s + 0.5
 # All samples in this trailing window must be 0 to call the echo settled.
 QUIET_WINDOW_S = 0.5
 # After the last message the echo must reach 0 within: the flush 0 aging
@@ -64,62 +54,25 @@ QUIET_WINDOW_S = 0.5
 # hold could have reached (target held nonzero for at most the hold plus
 # the flush, so the down-ramp mirrors that), plus scheduling slack.
 RAMP_DOWN_BUDGET_S = (
-    _PLANT.pump_response_delay_s + HOLD_S + FLUSH_ZEROS / CMD_RATE_HZ + 3.0
+    PLANT.pump_response_delay_s + HOLD_S + FLUSH_ZEROS / CMD_RATE_HZ + 3.0
 )
 
 
-class _EchoProbe(Node):
-    """Drives BCU_RPM + the volume-state stand-in; records the echo."""
+class _EchoProbe(BridgeProbe):
+    """Adds the trailing-window echo view the settle assertions use."""
 
     def __init__(self):
         super().__init__("bcu_echo_probe")
-        self.fb_samples: list[tuple[float, int]] = []
-        self.rpm_pub = create_publisher_for_topic(self, UUVTopics.BCU_RPM)
-        # Stand-in for the ros_gz bridge's bladder-volume echo, so the
-        # bridge's integrate-and-push path is armed like in a real sim.
-        self.volume_state_pub = self.create_publisher(
-            Float64,
-            SimTopics.BUOYANCY_VOLUME_STATE.format(model_name=SimSpec().model_name),
-            10,
-        )
-        create_subscription_for_topic(self, UUVTopics.BCU_FEEDBACK_RPM, self._on_fb)
-
-    def _on_fb(self, msg: Int16) -> None:
-        self.fb_samples.append((time.monotonic(), int(msg.data)))
 
     def recent_fb(self, window_s: float) -> list[int]:
         cutoff = time.monotonic() - window_s
         return [v for t, v in self.fb_samples if t >= cutoff]
 
 
-@pytest.fixture()
-def rig():
-    rclpy.init()
-    bridge = BCUSimBridge()
-    probe = _EchoProbe()
-    executor = SingleThreadedExecutor()
-    executor.add_node(bridge)
-    executor.add_node(probe)
-    yield probe, executor
-    executor.remove_node(probe)
-    executor.remove_node(bridge)
-    probe.destroy_node()
-    bridge.destroy_node()
-    executor.shutdown()
-    rclpy.shutdown()
+rig = make_rig(_EchoProbe)
 
 
-def _wait_wired(probe: _EchoProbe, executor: SingleThreadedExecutor) -> None:
-    # The bridge's echo reaching the probe proves the pub/sub graph is up.
-    assert spin_until(
-        executor, lambda: len(probe.fb_samples) > 0, timeout_s=10.0
-    ), "feedback echo never arrived -- bridge not spinning?"
-    probe.volume_state_pub.publish(
-        Float64(data=(_PLANT.bladder_min_m3 + _PLANT.bladder_max_m3) / 2.0)
-    )
-
-
-def _drive(probe: _EchoProbe, executor: SingleThreadedExecutor, cmds: list[int]):
+def _drive(probe: _EchoProbe, executor, cmds: list[int]):
     period_s = 1.0 / CMD_RATE_HZ
     for rpm in cmds:
         probe.rpm_pub.publish(Int16(data=rpm))
@@ -129,7 +82,7 @@ def _drive(probe: _EchoProbe, executor: SingleThreadedExecutor, cmds: list[int])
 def test_echo_decays_to_zero_after_command_stream_stops(rig):
     """bcu_debug's hold + flush + silence must land the echo at 0."""
     probe, executor = rig
-    _wait_wired(probe, executor)
+    wait_wired(probe, executor)
 
     _drive(
         probe,
@@ -160,11 +113,11 @@ def test_held_command_survives_publisher_silence(rig):
     lands the stop; this test proves the flush is load-bearing.
     """
     probe, executor = rig
-    _wait_wired(probe, executor)
+    wait_wired(probe, executor)
 
     probe.rpm_pub.publish(Int16(data=HELD_RPM))
     # One dead time to age the command in, plus a second of slew.
-    spin_for(executor, _PLANT.pump_response_delay_s + 1.0)
+    spin_for(executor, PLANT.pump_response_delay_s + 1.0)
 
     recent = probe.recent_fb(QUIET_WINDOW_S)
     assert recent, "no echo samples in the trailing window"

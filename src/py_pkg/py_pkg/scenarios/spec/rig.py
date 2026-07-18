@@ -170,6 +170,9 @@ class BcuBridgeSpec(StrictModel):
     """BCU sim-bridge knobs. publish_rate_hz is the rate at which
     pressure/volume telemetry reaches the controllers and so is part
     of the closed-loop data-rate environment a Monte Carlo run sees.
+    The same timer steps the simulated pump plant (dead time/slew,
+    valve gate, volume integral), so lowering it also coarsens the
+    plant integration step.
     """
 
     publish_rate_hz: int = 10
