@@ -10,7 +10,7 @@ nominal mirror to robot_specs.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import Field
 
@@ -66,6 +66,35 @@ class PlantSpec(StrictModel):
     # no robot_specs counterpart, same as bladder_min_m3 / bladder_max_m3.
     tank_pressure_empty_pa: float = 97_800.0  # tank drained (bladder full)
     tank_pressure_full_pa: float = 190_000.0  # tank full of oil (bladder empty)
+
+    # Pump/tank transient dynamics (plant_dynamics.py). Fitted to the
+    # 2026-06-24 lake test — provenance:
+    # UG-anomaly_detection/analysis/lake_test_jun24/pump_transient_fit.json.
+    # The real pump holds still for a dead time after a command, then ramps
+    # at a constant slew to the target (no exponential tail); <= 0 disables
+    # either term (exact pre-calibration passthrough). YAML-only knobs with
+    # no robot_specs counterpart, same as the tank endpoints above.
+    # 2026-06-24 lake fit: delay 1.057 s (raw 1.308 minus 0.251 s feedback
+    # -reporting latency), slew 512.1 rpm/s (per-event 450-547). Stage-A
+    # acceptance PASSED (pooled RMS 83 rpm, held-out 1.91x fit RMS).
+    pump_response_delay_s: float = 1.057
+    pump_slew_rpm_per_s: float = 512.1
+    # Tank sensor curve shape: "linear" is the legacy straight-line oil
+    # map; "gaslaw" is the isothermal air-cushion hyperbola the lake
+    # traces show (flat near tank-empty, steep near tank-full). Default
+    # is the fit's pre-registered adoption (gas_free, RMS 4.9 kPa on the
+    # entry windows vs 7.6 kPa linear). NOTE: Stage B FAILED its 2 kPa
+    # gate — the residual is pump volumetric slip (see
+    # pump_transient_findings.md), flagged for a follow-up model.
+    tank_map_shape: Literal["linear", "gaslaw"] = "gaslaw"
+    # Air-cushion volume at the tank-empty endpoint for the gaslaw map.
+    # <= 0 pins the cushion so the curve hits both calibrated endpoints
+    # exactly (zero extra dof — same "<= 0 disables" convention as the
+    # pump knobs above); a positive value frees the curvature and must
+    # exceed bladder_max_m3 - bladder_min_m3. Default = fitted free
+    # cushion (its bladder-min-rail reading lands at ~187 kPa, within
+    # ~3 kPa of the nominal full endpoint).
+    tank_air_volume_m3: float = 3.041025e-3
 
 
 class FaultInjectorSpec(StrictModel):

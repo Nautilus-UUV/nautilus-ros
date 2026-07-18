@@ -1,0 +1,34 @@
+# fitted: pump_delay_raw_s=1.308, fb_latency_est_s=0.251, pump_delay_s=1.057 (corrected), pump_slew_rpm_per_s=512.1
+# tank map adopted: gas_free, tank_air_volume_m3=3.041025e-03, rms_pa=4928 (STAGE-B FAIL: gate 2000 Pa)
+# TARGET lo/hi: pump rows = per-event single-event-fit min/max (n=6); tank_rise = min/max of the two entries (n=2, not statistics); depth rows = +-25% warn band
+# ddepth_Xs_m = depth gained X s after submergence (0.5 m crossing); timeline t0 = 2026-06-24 17:30:59.868995 (first dive-4 deflate command)
+row_type,name,value,lo,hi,ts_utc,rpm,cluster,status,runtime_s,settle_rpm,depth_m,n_win,n_kept,n_stale,rms_rpm,delay_raw_s,slew_rpm_per_s
+EVENT,evt_162918,,,,2026-06-24 16:29:18.452916,3000.0,fit,fit,30.0,3003.0,3.78,62.0,62.0,0.0,67.8814,1.4431,528.4729
+EVENT,evt_163218,,,,2026-06-24 16:32:18.927507,3000.0,fit,fit,12.1657,3003.0,-0.01,62.0,30.0,32.0,86.6327,1.1544,450.0581
+EVENT,evt_164224,,,,2026-06-24 16:42:24.674888,-3000.0,fit,fit,30.0,3040.0,-0.0,60.0,39.0,21.0,84.9375,1.4708,546.7658
+EVENT,evt_172323,,,,2026-06-24 17:23:23.801856,3000.0,fit,fit,24.1365,3003.0,5.39,62.0,29.0,33.0,96.635,1.2535,472.8992
+EVENT,evt_173059,,,,2026-06-24 17:30:59.868995,-3000.0,fit,fit,30.0,3003.0,-0.01,61.0,60.0,1.0,104.4428,0.975,467.5158
+EVENT,evt_173318,,,,2026-06-24 17:33:18.848935,3000.0,fit,fit,19.7791,3003.0,10.37,64.0,64.0,0.0,63.5789,1.3546,531.4094
+EVENT,evt_174642,,,,2026-06-24 17:46:42.845616,-3000.0,heldout,heldout,30.0,3076.0,-0.01,61.0,39.0,22.0,73.2429,1.3312,521.088
+EVENT,evt_174810,,,,2026-06-24 17:48:10.323967,-3000.0,heldout,dropped_aborted,2.6082,,1.22,62.0,62.0,0.0,2304.9275,0.2129,1500.0
+EVENT,evt_174818,,,,2026-06-24 17:48:18.818192,-3000.0,heldout,heldout,26.4856,3003.0,1.92,63.0,40.0,23.0,186.445,1.4857,556.8027
+EVENT,evt_174947,,,,2026-06-24 17:49:47.592441,-3000.0,heldout,dropped_aborted,4.8152,,14.2,63.0,40.0,23.0,149.0687,1.1311,538.021
+EVENT,evt_175050,,,,2026-06-24 17:50:50.854495,3000.0,heldout,heldout,30.0,3003.0,19.95,62.0,61.0,1.0,87.2397,1.1921,513.0288
+EVENT,evt_175243,,,,2026-06-24 17:52:43.087069,3000.0,heldout,heldout,30.0,3003.0,25.51,63.0,26.0,37.0,287.7946,0.2619,457.0182
+EVENT,evt_180127,,,,2026-06-24 18:01:27.330825,3000.0,excluded,excluded_post_recovery,30.0,3003.0,0.14,62.0,33.0,29.0,490.9137,2.317,435.351
+TARGET,pump_delay_s,1.0572,0.7238,1.2196,,,,,,,,,,,,,
+TARGET,pump_slew_rpm_per_s,512.1425,450.0581,546.7658,,,,,,,,,,,,,
+TARGET,tank_rise_10s_pa,3035.7143,2600.0,3471.4286,,,,,,,,,,,,,
+TARGET,tank_rise_20s_pa,10511.9048,10166.6667,10857.1429,,,,,,,,,,,,,
+TARGET,tank_rise_30s_pa,18678.5714,18057.1429,19300.0,,,,,,,,,,,,,
+TARGET,t_submerge_s,47.131,35.3483,58.9138,,,,,,,,,,,,,
+TARGET,ddepth_30s_m,2.1087,1.5816,2.6359,,,,,,,,,,,,,
+TARGET,ddepth_60s_m,5.4679,4.1009,6.8349,,,,,,,,,,,,,
+TIMELINE,dive4_cmd1_t_rel_s,0.0,,,,,,,,,,,,,,,
+TIMELINE,dive4_cmd1_rpm,-3000.0,,,,,,,,,,,,,,,
+TIMELINE,dive4_cmd1_duration_s,30.0,,,,,,,,,,,,,,,
+TIMELINE,dive4_cmd2_t_rel_s,30.57,,,,,,,,,,,,,,,
+TIMELINE,dive4_cmd2_rpm,-3000.0,,,,,,,,,,,,,,,
+TIMELINE,dive4_cmd2_duration_s,30.0,,,,,,,,,,,,,,,
+TIMELINE,dive4_valve_open_t_rel_s,-1.809,,,,,,,,,,,,,,,
+TIMELINE,dive4_valve_close_t_rel_s,62.942,,,,,,,,,,,,,,,

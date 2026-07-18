@@ -1,0 +1,102 @@
+# Nominal-only synthetic dataset, v2: transient-calibrated envelope around
+# the 2026-06-24 lake test.
+#
+# Two structural changes vs nominal_lake_envelope_jun24:
+#
+# 1. CORRELATED BUOYANCY (sampler >= 1.2.0): the jun24 sweep's independent
+#    fluid_density [878, 1112] x near-pinned trim lost 59% of its runs to
+#    the downstream oscillation gate (sinkers/floaters). Here density and
+#    the neutral bladder volume are the sampled pair — density in a
+#    physically plausible lake band — and trim_mass_bow/stern +
+#    bladder_spawn_volume_m3 are DERIVED per-run (scenarios/buoyancy.py)
+#    so every plant is oscillation-viable by construction. Spec-corner
+#    margins: dive = 2.055e-3 - 1.2e-3 = 8.55e-4; climb = 2.35e-3 -
+#    2.135e-3 = 2.15e-4 (minima 2.0e-4 / 1.5e-4).
+#    KNOWN INCONSISTENCY (accepted): the world buoyancy plugin's static
+#    hull density is hardcoded at 1000 kg/m^3 (dave_ocean_waves.world),
+#    so sampled fluid_density drives only bladder force, drag, and fin
+#    forces; the derivation compensates trim against this actual mixed
+#    budget. The narrow band keeps the inconsistency negligible.
+#
+# 2. TRANSIENT PLANT DIMS (pump_transient_fit.json): pump dead time +
+#    slew and the gas-law tank cushion are sampled around their fitted
+#    defaults so the dataset spans plausible pump/tank transient
+#    behavior instead of the old instantaneous plant. tank_map_shape
+#    stays "gaslaw" (scenario default). Railed tank readings can
+#    modestly exceed tank_pressure_full_pa for wide-span corner draws
+#    (free-cushion map; the dataset scaler is refit on sim data anyway).
+#
+# Surfaced start: runs begin floating awash like the real deployments
+# (spawn volume = each run's bladder_max via spawn_policy, z at the
+# awash equilibrium). No faults, lake-fitted sensor noise ON.
+#
+#   run_sweep.py ... --launch sawtooth_sim.launch.py \
+#       --per-run-timeout 4800 --launch-args angle_rad:=0.0 z:=-0.115
+#
+# angle_rad 0.0: real nominal dives were flown level (ACU not in sim).
+# z -0.115: awash float equilibrium for a full-bladder spawn (validated
+# stable; the vehicle settles within seconds).
+
+description: >
+  V2 nominal envelope: physics-knob hydrodynamics + correlated
+  density/neutral-volume sampling with derived trim (oscillation-viable
+  by construction) + lake-fitted pump/tank transient spread, per-run
+  sawtooth missions over 4-20 m targets. Faults off, lake noise on,
+  surfaced start.
+
+n_samples: 256
+seed: 726
+base_scenario: "nominal_with_hydrodynamics.yaml"
+sampling_mode: "physics"
+isotropic_jitter_sigma: 0.05
+
+buoyancy_derivation:
+  spawn_policy: bladder_max        # pre-dive bladder-full float
+  min_dive_margin_m3: 2.0e-4       # >= 0.067 m/s descent authority
+  min_climb_margin_m3: 1.5e-4
+
+dimensions:
+  # --- hull / fin geometry causes (identical bands to jun24) ---
+  - { path: L,                  distribution: loguniform, low: 1.470,   high: 1.530 }
+  - { path: D,                  distribution: loguniform, low: 0.1455,  high: 0.1545 }
+  - { path: nabla,              distribution: loguniform, low: 0.01782, high: 0.01818 }
+  - { path: b_f,                distribution: loguniform, low: 0.3135,  high: 0.3465 }
+  - { path: c_f,                distribution: loguniform, low: 0.2090,  high: 0.2310 }
+  - { path: x_f,                distribution: loguniform, low: 0.6650,  high: 0.7350 }
+  - { path: b_r,                distribution: loguniform, low: 0.2090,  high: 0.2310 }
+  - { path: c_r,                distribution: loguniform, low: 0.1045,  high: 0.1155 }
+  - { path: x_r,                distribution: loguniform, low: 0.89205, high: 0.98595 }
+  - { path: t_over_c,           distribution: loguniform, low: 0.0840,  high: 0.1560 }
+  - { path: alpha_stall_horiz,  distribution: loguniform, low: 0.1360,  high: 0.2040 }
+  - { path: alpha_stall_rudder, distribution: loguniform, low: 0.1360,  high: 0.2040 }
+  - { path: C_d_c,              distribution: loguniform, low: 0.9350,  high: 1.2650 }
+  - { path: one_plus_k,         distribution: loguniform, low: 1.0200,  high: 1.3800 }
+  - { path: C_p_base,           distribution: loguniform, low: 0.0560,  high: 0.1040 }
+  - { path: C_La_mult,          distribution: loguniform, low: 0.8250,  high: 1.3750 }
+
+  # --- correlated buoyancy pair (replaces jun24's trim_mass_bow/stern) ---
+  # Physical lake density band; trim masses + spawn volume are derived.
+  - { path: rig.hydrodynamics.fluid_density, distribution: uniform, low: 996.0, high: 1002.0 }
+  # Neutral bladder volume target, bracketing both real ballast configs
+  # (A 2065 mL, B 2097 mL) with the jun24 envelope's spread.
+  - { path: derive.neutral_volume_m3, distribution: uniform, low: 2.055e-3, high: 2.135e-3 }
+
+  # --- BCU plant truth (controller beliefs stay at nominal on purpose) ---
+  - { path: rig.plant.tank_pressure_empty_pa, distribution: uniform, low: 97000.0,  high: 99000.0 }
+  - { path: rig.plant.tank_pressure_full_pa,  distribution: uniform, low: 165000.0, high: 195000.0 }
+  - { path: rig.plant.volume_per_rev_m3, distribution: loguniform, low: 2.88e-7, high: 3.52e-7 }
+  - { path: rig.plant.bladder_min_m3, distribution: uniform, low: 0.0008,  high: 0.0012 }
+  - { path: rig.plant.bladder_max_m3, distribution: uniform, low: 0.00235, high: 0.0025 }
+
+  # --- pump/tank transients: x/1.5 around the 2026-06-24 fit ---
+  # (fitted: delay 1.057 s, slew 512.1 rpm/s, cushion 3.041e-3 m^3;
+  # per-event spreads sat inside these bands). Cushion low corner
+  # 2.03e-3 stays above the widest bladder span draw (1.7e-3) — the
+  # bridge validates this at startup.
+  - { path: rig.plant.pump_response_delay_s, distribution: loguniform, low: 0.705, high: 1.586 }
+  - { path: rig.plant.pump_slew_rpm_per_s,   distribution: loguniform, low: 341.4, high: 768.2 }
+  - { path: rig.plant.tank_air_volume_m3,    distribution: loguniform, low: 2.027e-3, high: 4.562e-3 }
+
+  # --- per-run mission (launch args via manifest.json, not scenario fields) ---
+  - { path: mission.target_pressure_pa, distribution: uniform, low: 39224.0, high: 196120.0 }
+  - { path: mission.n_oscillations, distribution: uniform, low: 1.0, high: 4.0, integer: true }

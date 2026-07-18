@@ -1,0 +1,19 @@
+# Scenario for test_pump_transient_sim — the pump/tank transient
+# acceptance test (2026-06-24 lake fit, pump_transient_targets.csv).
+#
+# Surfaced-entry configuration: the bladder spawns FULL (0.00245 =
+# bladder_max operating clamp) so the vehicle floats awash exactly like
+# the real pre-dive state (tank at the empty rail, ~97.8 kPa), and the
+# test replays dive 4's deflate command timeline against it. The
+# rig.hydrodynamics block exists only to move the spawn volume — every
+# other coefficient stays at the canonical value, and the pump/tank
+# transient parameters inherit the fitted PlantSpec defaults.
+
+seed: 4
+
+rig:
+  faults:
+    bcu_rpm:
+      mttf_sec: 0.0
+  hydrodynamics:
+    bladder_spawn_volume_m3: 0.00245

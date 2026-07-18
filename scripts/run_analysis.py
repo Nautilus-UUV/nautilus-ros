@@ -2,8 +2,10 @@
 """`run_analysis` CLI: summarise + plot a ros-collected sweep dataset.
 
 Discovers the runs in a dataset dir (form of `sim_data/bcu_fault_dataset/`), drops
-the ones that failed on startup (floated at the surface, never dived), then always
-writes a markdown statistics report and, on top of that, the requested plot(s).
+the non-viable ones (surface-floaters that never dived, continuous sinkers that
+never climbed back, runs without odometry), then always writes a markdown
+statistics report — including the per-reason run-viability breakdown — and, on
+top of that, the requested plot(s).
 """
 
 from __future__ import annotations
@@ -26,7 +28,7 @@ from analysis.sweep_loader import (
     discover_sweep,
     read_launch_args,
     read_scenario_faults,
-    select_dived_runs,
+    select_oscillated_runs,
 )
 
 _CHOICES = ("pose_multi_plot", "error_box_plot", "all")
@@ -59,20 +61,19 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     # All runs in these fixed-duration sweeps are SIGTERM'd at the time limit
-    # (exit_code=-15), so keep them and let the floater filter be the quality gate.
+    # (exit_code=-15), so keep them and let the viability filter be the quality gate.
     entries = discover_sweep(input_path, include_failed=True)
     if not entries:
         print(f"no runs found in {input_path}", file=sys.stderr)
         return 1
 
-    kept, dropped = select_dived_runs(entries)
+    kept, dropped = select_oscillated_runs(entries)
     if dropped:
-        print(
-            f"dropped {len(dropped)} startup-failed (surface-floater) runs: {', '.join(dropped)}"
-        )
+        drops = ", ".join(f"{rid} ({reason})" for rid, reason in dropped.items())
+        print(f"dropped {len(dropped)} non-viable runs: {drops}")
     if not kept:
         print(
-            "no runs survived the startup-failure filter; nothing to analyse",
+            "no runs survived the viability filter; nothing to analyse",
             file=sys.stderr,
         )
         return 1
@@ -92,7 +93,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # The statistics report runs by default, whichever plots were requested.
     stats_md = summarize_dataset(
-        kept, faults, title=sweep, n_dropped=len(dropped), fault_cfgs=fault_cfgs
+        kept, faults, title=sweep, dropped=dropped, fault_cfgs=fault_cfgs
     )
     stats_path = out_dir / f"{sweep}_stats.md"
     stats_path.write_text(stats_md)

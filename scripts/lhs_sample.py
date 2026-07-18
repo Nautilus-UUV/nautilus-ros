@@ -16,9 +16,17 @@ the container via `py_pkg.scenarios.loader.load_scenario` (Pydantic
 pre-flight on the first sample before queueing the rest.
 
 Dimensions whose path starts with `mission.` are *launch dimensions*:
-mission knobs (target_pressure_pa, n_oscillations, ...) are launch args, 
+mission knobs (target_pressure_pa, n_oscillations, ...) are launch args,
 so their sampled values are recorded in
 manifest.json only
+
+Dimensions whose path starts with `derive.` are *derivation targets*:
+`derive.neutral_volume_m3` is sampled jointly with the row and fed —
+together with the run's effective fluid_density — to the correlated
+buoyancy derivation (`py_pkg.scenarios.buoyancy`), which computes the
+trim masses and bladder spawn volume written into rig.hydrodynamics so
+every emitted plant is oscillation-viable by construction. The optional
+`buoyancy_derivation:` spec block tunes spawn policy and margins.
 
 Example:
     lhs_sample.py --spec sweeps/example_hydro_faults_pump.yaml \\
@@ -33,7 +41,7 @@ import hashlib
 import json
 import math
 import sys
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field, fields, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -43,15 +51,41 @@ import yaml
 from scipy.stats import qmc
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src/py_pkg"))
+from py_pkg.scenarios import buoyancy
 from py_pkg.scenarios.compile import forward_map
-from py_pkg.scenarios.spec.rig import FinAeroSpec, HydrodynamicsSpec, PhysicsKnobs
+from py_pkg.scenarios.spec.rig import (
+    FinAeroSpec,
+    HydrodynamicsSpec,
+    PhysicsKnobs,
+    RigScenario,
+)
 
-SAMPLER_VERSION = "1.1.0"
+SAMPLER_VERSION = "1.2.0"
 
 # Dimensions under this prefix are launch args (mission knobs), not scenario
 # fields: they are recorded in the manifest but never written into the
 # scenario YAML, whose schema (`extra="forbid"`) would reject them.
 MISSION_PREFIX = "mission."
+
+# Dimensions under this prefix are *derivation targets*: sampled jointly
+# with the rest of the row but consumed by the correlated buoyancy
+# derivation (py_pkg.scenarios.buoyancy) rather than written to the
+# scenario as-is. The only recognized path is DERIVE_NEUTRAL_VOLUME; the
+# derivation computes trim_mass_bow / trim_mass_stern /
+# bladder_spawn_volume_m3 from (fluid_density, neutral-volume target) so
+# every emitted plant is oscillation-viable by construction.
+DERIVE_PREFIX = "derive."
+DERIVE_NEUTRAL_VOLUME = "derive.neutral_volume_m3"
+
+# Scenario path -> DerivedBuoyancy attribute the derivation writes. One
+# mapping drives both the write-back and the authoring-conflict check:
+# sampling any of these paths alongside a derive.* dimension is a
+# spec-authoring conflict (two authorities for the same field).
+_DERIVED_FIELDS = {
+    "rig.hydrodynamics.trim_mass_bow": "trim_mass_bow",
+    "rig.hydrodynamics.trim_mass_stern": "trim_mass_stern",
+    "rig.hydrodynamics.bladder_spawn_volume_m3": "bladder_spawn_volume_m3",
+}
 
 # The bare-name dimensions a "physics" sweep feeds to the deterministic
 # forward map. Any dimension whose path is *not* one of these is treated as a
@@ -123,6 +157,42 @@ class Dimension:
         return int(value) if self.integer else float(value)
 
 
+_SPAWN_POLICIES = ("offset", "bladder_max")
+
+
+@dataclass(frozen=True)
+class BuoyancyDerivationConfig:
+    """Tuning for the correlated buoyancy derivation.
+
+    The derivation itself is enabled by the presence of a `derive.*`
+    dimension, never by this block — the block only tunes it. Spawn
+    policies: "offset" spawns at neutral + spawn_offset_m3 (the gentle
+    surface float the canonical SDF encodes); "bladder_max" spawns at
+    the run's effective bladder ceiling (bladder-full float).
+    """
+
+    spawn_policy: str = "offset"
+    spawn_offset_m3: float = buoyancy.SPAWN_OFFSET_M3
+    min_dive_margin_m3: float = buoyancy.DEFAULT_MIN_DIVE_MARGIN_M3
+    min_climb_margin_m3: float = buoyancy.DEFAULT_MIN_CLIMB_MARGIN_M3
+
+    def __post_init__(self) -> None:
+        if self.spawn_policy not in _SPAWN_POLICIES:
+            raise ValueError(
+                f"buoyancy_derivation: unsupported spawn_policy "
+                f"{self.spawn_policy!r}; expected one of {_SPAWN_POLICIES}"
+            )
+
+    @classmethod
+    def from_dict(cls, raw: dict) -> "BuoyancyDerivationConfig":
+        unknown = set(raw) - {f.name for f in fields(cls)}
+        if unknown:
+            raise ValueError(f"buoyancy_derivation: unknown keys {sorted(unknown)}")
+        return cls(
+            **{k: v if k == "spawn_policy" else float(v) for k, v in raw.items()}
+        )
+
+
 @dataclass(frozen=True)
 class SweepSpec:
     description: str
@@ -132,6 +202,15 @@ class SweepSpec:
     dimensions: tuple[Dimension, ...]
     sampling_mode: str = "lhs"
     isotropic_jitter_sigma: float = 0.0
+    # Always the *effective* config (defaults when the spec has no
+    # block), so consumers never re-resolve a None fallback.
+    buoyancy_derivation: BuoyancyDerivationConfig = field(
+        default_factory=BuoyancyDerivationConfig
+    )
+
+    @property
+    def derivation_enabled(self) -> bool:
+        return any(d.path.startswith(DERIVE_PREFIX) for d in self.dimensions)
 
     @classmethod
     def load(cls, path: Path) -> "SweepSpec":
@@ -142,6 +221,7 @@ class SweepSpec:
             raise ValueError(f"{path}: sweep spec missing 'dimensions'") from e
         if not dims:
             raise ValueError(f"{path}: 'dimensions' must be non-empty")
+        _validate_derive_dims(path, dims)
         return cls(
             description=raw.get("description", ""),
             n_samples=int(raw["n_samples"]),
@@ -150,7 +230,28 @@ class SweepSpec:
             dimensions=dims,
             sampling_mode=raw.get("sampling_mode", "lhs"),
             isotropic_jitter_sigma=float(raw.get("isotropic_jitter_sigma", 0.0)),
+            buoyancy_derivation=BuoyancyDerivationConfig.from_dict(
+                raw.get("buoyancy_derivation") or {}
+            ),
         )
+
+
+def _validate_derive_dims(path: Path, dims: tuple[Dimension, ...]) -> None:
+    derive_paths = [d.path for d in dims if d.path.startswith(DERIVE_PREFIX)]
+    for p in derive_paths:
+        if p != DERIVE_NEUTRAL_VOLUME:
+            raise ValueError(
+                f"{path}: unrecognized derive dimension {p!r}; the only "
+                f"supported derive path is {DERIVE_NEUTRAL_VOLUME!r}"
+            )
+    if derive_paths:
+        conflicts = sorted(d.path for d in dims if d.path in _DERIVED_FIELDS)
+        if conflicts:
+            raise ValueError(
+                f"{path}: {conflicts} sampled alongside "
+                f"{DERIVE_NEUTRAL_VOLUME!r} — the derivation owns those "
+                "fields (conflicting authorities); drop one side"
+            )
 
 
 def resolve_base_scenario(name_or_path: str) -> Path:
@@ -256,20 +357,27 @@ def jitter_hydrodynamics(
 
 def render_scenario(
     base: dict, spec: SweepSpec, row: Sequence[float], idx: int
-) -> dict:
-    """Deep-copy the base, overlay the row's perturbations, set per-run seed."""
+) -> tuple[dict, dict | None]:
+    """Deep-copy the base, overlay the row's perturbations, set per-run seed.
+
+    Returns (scenario, derived) where `derived` is the per-run buoyancy
+    derivation record for the manifest, or None when the spec has no
+    derive dimensions.
+    """
     scenario = copy.deepcopy(base)
     # Each run gets its own fault-RNG seed so MC outcomes are
     # decorrelated across samples while still being deterministic. Mix
     # the spec seed with the sample index to keep reproducibility.
     scenario["seed"] = (spec.seed * 1_000_003 + idx) & 0xFFFFFFFF
 
-    # Launch dimensions (mission.*) are launch args, not scenario fields —
-    # they live in the manifest only, so drop them before writing anything.
+    # Launch dimensions (mission.*) are launch args and derive dimensions
+    # (derive.*) are derivation targets — neither is a scenario field, so
+    # drop both before writing anything (the schema's `extra="forbid"`
+    # would reject them; their sampled values live in the manifest).
     scenario_dims = [
         (dim, value)
         for dim, value in zip(spec.dimensions, row)
-        if not dim.path.startswith(MISSION_PREFIX)
+        if not dim.path.startswith((MISSION_PREFIX, DERIVE_PREFIX))
     ]
 
     if spec.sampling_mode == "lhs":
@@ -303,7 +411,86 @@ def render_scenario(
     else:
         raise ValueError(f"Unsupported sampling_mode: {spec.sampling_mode}")
 
-    return scenario
+    # Correlated buoyancy derivation runs *after* the mode branch so all
+    # overlays — including a sampled rig.hydrodynamics.fluid_density and
+    # per-run bladder clamps — are already visible in the scenario.
+    derived = None
+    if spec.derivation_enabled:
+        derived = _apply_buoyancy_derivation(scenario, spec, row, idx)
+
+    return scenario, derived
+
+
+def _apply_buoyancy_derivation(
+    scenario: dict, spec: SweepSpec, row: Sequence[float], idx: int
+) -> dict:
+    """Derive trim masses/spawn for one run and write them into the scenario.
+
+    Viability failures HARD-FAIL: the derivation makes every plant
+    neutral-by-construction, so a failed margin means the sweep spec's
+    bands are mis-authored (e.g. bladder clamps too tight for the
+    sampled neutral-volume band). Abort generation — never resample,
+    which would silently bias the sweep distribution.
+    """
+    v_n_target = next(
+        float(value)
+        for dim, value in zip(spec.dimensions, row)
+        if dim.path == DERIVE_NEUTRAL_VOLUME
+    )
+    cfg = spec.buoyancy_derivation
+
+    # Validate the overlaid rig subtree through the spec layer, so the
+    # effective values here (defaults included) are exactly what the
+    # container's load_scenario will hand the launch.
+    rig = RigScenario.model_validate(scenario.get("rig") or {})
+    if rig.hydrodynamics is None:
+        raise ValueError(
+            "buoyancy derivation requires physics mode or a base scenario "
+            "with rig.hydrodynamics (the derived trim masses and the "
+            "fluid_density they balance against live in that block)"
+        )
+    fluid_density = rig.hydrodynamics.fluid_density
+    bladder_min = rig.plant.bladder_min_m3
+    bladder_max = rig.plant.bladder_max_m3
+
+    derived = buoyancy.derive_trim_masses(
+        fluid_density,
+        v_n_target,
+        spawn_volume_m3=bladder_max if cfg.spawn_policy == "bladder_max" else None,
+        spawn_offset_m3=cfg.spawn_offset_m3,
+        trim_bladder=rig.hydrodynamics.trim_mass_bladder,
+    )
+
+    for path, attr in _DERIVED_FIELDS.items():
+        set_dotted(scenario, path, getattr(derived, attr))
+
+    viability = buoyancy.check_viability(
+        derived,
+        bladder_min,
+        bladder_max,
+        min_dive_margin_m3=cfg.min_dive_margin_m3,
+        min_climb_margin_m3=cfg.min_climb_margin_m3,
+    )
+    if not viability.ok:
+        raise RuntimeError(
+            f"run {idx}: derived plant not oscillation-viable: "
+            f"{'; '.join(viability.reasons)} "
+            f"[fluid_density={fluid_density:.4f}, "
+            f"neutral_volume_m3={v_n_target:.6e}, "
+            f"spawn={derived.bladder_spawn_volume_m3:.6e}, "
+            f"bladder_min={bladder_min:.6e}, bladder_max={bladder_max:.6e}, "
+            f"dive_margin={viability.dive_margin_m3:.6e}, "
+            f"climb_margin={viability.climb_margin_m3:.6e}] "
+            "HARD-FAIL: the sweep spec's bands are mis-authored; aborting "
+            "generation (never resampling)"
+        )
+
+    return {
+        **asdict(derived),
+        "fluid_density": fluid_density,
+        "dive_margin_m3": viability.dive_margin_m3,
+        "climb_margin_m3": viability.climb_margin_m3,
+    }
 
 
 def write_manifest(
@@ -312,6 +499,7 @@ def write_manifest(
     spec_path: Path,
     matrix: np.ndarray,
     run_ids: Iterable[str],
+    derived_records: Sequence[dict | None],
 ) -> None:
     spec_text = spec_path.read_text()
     manifest = {
@@ -336,10 +524,15 @@ def write_manifest(
             {
                 "run_id": rid,
                 "values": {d.path: d.emit(v) for d, v in zip(spec.dimensions, row)},
+                **({"derived": derived} if derived is not None else {}),
             }
-            for rid, row in zip(run_ids, matrix)
+            for rid, row, derived in zip(run_ids, matrix, derived_records)
         ],
     }
+    if spec.derivation_enabled:
+        # Echo the *effective* derivation config (defaults filled in) so
+        # post-hoc analyses don't have to reconstruct it from the spec.
+        manifest["buoyancy_derivation"] = asdict(spec.buoyancy_derivation)
     (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
 
@@ -355,9 +548,16 @@ def main(argv: list[str] | None = None) -> int:
         help="Output root; YAMLs land in <out>/<name>/.",
     )
     ap.add_argument("--name", help="Sweep name (defaults to the spec file's stem).")
+    ap.add_argument(
+        "--n-samples",
+        type=int,
+        help="Override the spec's n_samples (dry runs / smoke checks).",
+    )
     args = ap.parse_args(argv)
 
     spec = SweepSpec.load(args.spec)
+    if args.n_samples is not None:
+        spec = replace(spec, n_samples=args.n_samples)
     base_path = resolve_base_scenario(spec.base_scenario)
     base = yaml.safe_load(base_path.read_text()) or {}
 
@@ -369,12 +569,14 @@ def main(argv: list[str] | None = None) -> int:
     width = max(4, len(str(spec.n_samples - 1)))
     run_ids = [f"lhs_{i:0{width}d}" for i in range(spec.n_samples)]
 
+    derived_records: list[dict | None] = []
     for idx, (run_id, row) in enumerate(zip(run_ids, matrix)):
-        scenario = render_scenario(base, spec, row, idx)
+        scenario, derived = render_scenario(base, spec, row, idx)
+        derived_records.append(derived)
         out_path = out_dir / f"{run_id}.yaml"
         out_path.write_text(yaml.safe_dump(scenario, sort_keys=False))
 
-    write_manifest(out_dir, spec, args.spec, matrix, run_ids)
+    write_manifest(out_dir, spec, args.spec, matrix, run_ids, derived_records)
 
     print(f"wrote {spec.n_samples} scenarios + manifest.json to {out_dir}")
     return 0

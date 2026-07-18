@@ -58,7 +58,13 @@ from rclpy.node import Node
 from sensor_msgs.msg import Imu
 from std_msgs.msg import Bool, Int32
 
-from ._sim_helpers import reap_lingering_gz, sim_gui_enabled, spin_for, spin_until
+from ._sim_helpers import (
+    SIM_PA_PER_M,
+    reap_lingering_gz,
+    sim_gui_enabled,
+    spin_for,
+    spin_until,
+)
 
 # --- Lake anchors (dive 4, config B) --------------------------------------
 # Provenance: UG-anomaly_detection/lake_test_jun24/investigation/
@@ -82,9 +88,6 @@ DESCENT_V_BAND = (0.1045, 0.1445)  # 0.1245 +/- 0.020 (real steady leg)
 ASCENT_V_BAND = (0.030, 0.080)  # wide: asymmetry fidelity floor, see docstring
 DESCENT_CURVE_TOL = 0.15
 ASCENT_CURVE_TOL = 0.25
-
-# Depth from the sim's sea-pressure plugin gradient (9.80638 kPa/m).
-SIM_PA_PER_M = 9806.38
 
 # Deeper than dive 4's 14.68 m peak on purpose: terminal velocity is
 # depth-independent in this plant, and the extra runway stretches the

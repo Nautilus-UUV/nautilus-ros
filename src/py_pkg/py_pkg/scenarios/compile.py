@@ -241,6 +241,10 @@ def params_for_bcu_bridge(scen: RigScenario, parent_seed: int = 0) -> dict[str, 
         "publish_rate_hz": b.publish_rate_hz,
         "tank_pressure_empty_pa": p.tank_pressure_empty_pa,
         "tank_pressure_full_pa": p.tank_pressure_full_pa,
+        "pump_response_delay_s": p.pump_response_delay_s,
+        "pump_slew_rpm_per_s": p.pump_slew_rpm_per_s,
+        "tank_map_shape": p.tank_map_shape,
+        "tank_air_volume_m3": p.tank_air_volume_m3,
         "tank_noise_seed": derive_seed(parent_seed, "tank_pressure_noise"),
         "tank_noise_sigma_pa": n.tank_pressure.sigma_pa,
         "tank_noise_quantization_pa": n.tank_pressure.quantization_pa,
@@ -567,9 +571,9 @@ def _calibration() -> tuple[dict[str, float], dict[str, float]]:
 
     # A slot added to the physics but not the registry (or vice versa) is
     # caught here rather than producing a silently wrong SDF.
-    assert set(f_nom) == _ALL_SLOTS, (
-        f"closed-form/registry slot mismatch: {set(f_nom) ^ _ALL_SLOTS}"
-    )
+    assert (
+        set(f_nom) == _ALL_SLOTS
+    ), f"closed-form/registry slot mismatch: {set(f_nom) ^ _ALL_SLOTS}"
 
     scalars: dict[str, float] = {}
     for k, can_val in canonical.items():

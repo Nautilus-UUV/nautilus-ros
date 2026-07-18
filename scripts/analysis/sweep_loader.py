@@ -1,4 +1,5 @@
-"""Discover the runs in a sweep directory and drop the ones that failed on startup.
+"""Discover the runs in a sweep directory and classify each one's viability
+(oscillated / floater / sinker / no-odometry), keeping only the oscillated runs.
 
 A sweep on disk is `sim_data/{name}/` with one `{run_id}_{timestamp}/raw/` subdir
 per run, plus a `sweep_status.csv` keyed on `run_id` (its `yaml_path` column
@@ -17,6 +18,18 @@ import numpy as np
 import yaml
 
 _TIMESTAMP_SUFFIX = re.compile(r"_\d{4}_\d{2}_\d{2}-\d{2}_\d{2}_\d{2}$")
+
+# The non-viable verdicts `classify_run` can return (everything except
+# "oscillated"), in report order. Consumers (dataset_stats' viability
+# section) key off this tuple, so a new class added there is one edit here.
+NON_VIABLE_CLASSES = ("floater", "sinker", "no_odometry")
+
+# Default viability thresholds shared by `classify_run` and
+# `select_oscillated_runs`. The gap between the populations is wide
+# (floaters dive ~0 m, real runs >= 5 m; sinkers draw up ~0 m, real
+# climbs are metres), so the values are not delicate.
+MIN_DIVE_M = 2.0
+MIN_RETURN_M = 1.0
 
 
 @dataclass(frozen=True)
@@ -75,9 +88,7 @@ def discover_sweep(
             if nominal_run_id is not None
             else _looks_nominal(yaml_path)
         )
-        entries.append(
-            RunEntry(run_id, run_dir, bag_dir, yaml_path, is_nominal)
-        )
+        entries.append(RunEntry(run_id, run_dir, bag_dir, yaml_path, is_nominal))
 
     if nominal_run_id is not None and not any(e.is_nominal for e in entries):
         raise ValueError(
@@ -86,33 +97,75 @@ def discover_sweep(
     return entries
 
 
-def select_dived_runs(
+def classify_run(
+    z: np.ndarray, *, min_dive_m: float = MIN_DIVE_M, min_return_m: float = MIN_RETURN_M
+) -> str:
+    """Classify a run's vertical viability from its odometry z trace.
+
+    Returns one of:
+
+    - `"no_odometry"` — the bag recorded no odometry samples;
+    - `"floater"`     — never descended `min_dive_m` below its spawn depth
+                        (startup failure: bobs at the surface);
+    - `"sinker"`      — dived but never climbed back `min_return_m` from its
+                        running-deepest point (mis-buoyant plant, sinks forever);
+    - `"oscillated"`  — completed at least one dive + climb-back cycle.
+
+    Odometry z is negative-down, so dive depth is `z[0] - z.min()` and the
+    climb-back ("drawup") from the running-deepest is
+    `(z - np.minimum.accumulate(z)).max()`.
+
+    The thresholds are numerically identical to the downstream `_oscillated`
+    gate (`UG-anomaly_detection/src/data/build_dataset.py`), but the basis
+    differs deliberately: this classifier reads ground-truth odometry while the
+    downstream gate reads external-pressure-derived depth. Downstream stays the
+    final authority on what enters a dataset — this exists for generation-time
+    visibility into a sweep's viable-run yield.
+    """
+    if z.size == 0:
+        return "no_odometry"
+    if float(z[0] - z.min()) < min_dive_m:
+        return "floater"
+    drawup = float((z - np.minimum.accumulate(z)).max())
+    if drawup < min_return_m:
+        return "sinker"
+    return "oscillated"
+
+
+def select_oscillated_runs(
     entries: Iterable[RunEntry],
     *,
     model_name: str = "glider_nautilus",
-    min_dive_m: float = 2.0,
-) -> tuple[list[tuple[RunEntry, dict[str, np.ndarray]]], list[str]]:
-    """Drop runs that float at the surface and never dive — the startup-failure mode
-    in these sweeps (a run spawns at ~-5 m, fails to initialise, and bobs at the
-    surface instead of executing the dive). A run is kept when it descends at least
-    `min_dive_m` below its spawn depth; the gap between the two populations is wide
-    (floaters dive ~0 m, real runs >=5 m), so the threshold is not delicate.
+    min_dive_m: float = MIN_DIVE_M,
+    min_return_m: float = MIN_RETURN_M,
+) -> tuple[list[tuple[RunEntry, dict[str, np.ndarray]]], dict[str, str]]:
+    """Keep only runs that oscillated (dived and climbed back — `classify_run`),
+    dropping surface-floaters, continuous sinkers, and odometry-less runs.
 
-    Reads odometry once per run and returns `(kept_with_traj, dropped_ids)` so the
-    pose plot can reuse the trajectories without re-reading the bags.
+    Reads odometry once per run and returns `(kept_with_traj, dropped)` — where
+    `dropped` maps `run_id -> reason` — so the pose plot can reuse the
+    trajectories without re-reading the bags.
     """
     # Local import keeps this module's import light (rosbags/scipy load only here).
     from .bag_reader import read_odometry
 
     kept: list[tuple[RunEntry, dict[str, np.ndarray]]] = []
-    dropped: list[str] = []
+    dropped: dict[str, str] = {}
     for entry in entries:
-        traj = read_odometry(entry.bag_dir, model_name=model_name)
-        z = traj["z"]
-        if z.size and float(z[0] - z.min()) >= min_dive_m:
+        try:
+            traj = read_odometry(entry.bag_dir, model_name=model_name)
+        except FileNotFoundError:
+            # Truncated recording (mcap present, metadata.yaml never written —
+            # run killed mid-write): no readable odometry.
+            dropped[entry.run_id] = "no_odometry"
+            continue
+        verdict = classify_run(
+            traj["z"], min_dive_m=min_dive_m, min_return_m=min_return_m
+        )
+        if verdict == "oscillated":
             kept.append((entry, traj))
         else:
-            dropped.append(entry.run_id)
+            dropped[entry.run_id] = verdict
     return kept, dropped
 
 
@@ -126,9 +179,7 @@ def read_launch_args(sweep_dir: Path) -> dict[str, str]:
     p = Path(sweep_dir) / "launch_args.txt"
     if not p.is_file():
         return {}
-    return dict(
-        tok.split(":=", 1) for tok in p.read_text().split() if ":=" in tok
-    )
+    return dict(tok.split(":=", 1) for tok in p.read_text().split() if ":=" in tok)
 
 
 def read_scenario_faults(

@@ -1,6 +1,6 @@
 # bcu_fault_dataset — dataset statistics
 
-total runs: 125  (3 surface-floaters dropped)
+total runs: 125  (3 non-viable dropped — see run viability)
 total dive hours: 222.47
 dive time per run: 1.78 h
 MTBF interval: 1200–1799 s
@@ -13,3 +13,16 @@ MTBF interval: 1200–1799 s
 | 3 | 40% | 31.70 | 14.3 | 100 |
 | 4 | 20% | 21.73 | 9.8 | 87 |
 | 5 | 0% | 41.26 | 18.5 | 65 |
+
+## Run viability
+
+total runs: 128
+
+| class | runs | % of runs |
+|:------|-----:|----------:|
+| oscillated (kept) | 125 | 97.7 |
+| floater | 3 | 2.3 |
+| sinker | 0 | 0.0 |
+| no_odometry | 0 | 0.0 |
+
+dropped floater: lhs_0067, lhs_0090, lhs_0111

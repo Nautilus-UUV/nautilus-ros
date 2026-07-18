@@ -22,6 +22,12 @@ import time
 
 from nav_msgs.msg import Odometry
 
+# Depth conversion for the sim's sea-pressure plugin gradient
+# (9.80638 kPa/m — the plugin's own constant, deliberately distinct from
+# physics.WATER_PRESSURE_GRADIENT_PA_PER_M). Defined once here so the
+# lake-matching tests can't drift apart on it.
+SIM_PA_PER_M = 9806.38
+
 
 def spin_for(executor, duration_s: float, slice_s: float = 0.05) -> None:
     """Pump an executor for a fixed wall-clock window."""
