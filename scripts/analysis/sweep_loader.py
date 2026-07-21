@@ -17,19 +17,17 @@ from typing import Iterable
 import numpy as np
 import yaml
 
+# Viability thresholds live in the installed package (pure stdlib, no ROS) so
+# the sim run watchdog's early-abort rule and this offline classifier are the
+# same two numbers rather than two copies that must be edited in lockstep.
+from py_pkg.watchdog.plausibility import MIN_DIVE_M, MIN_RETURN_M
+
 _TIMESTAMP_SUFFIX = re.compile(r"_\d{4}_\d{2}_\d{2}-\d{2}_\d{2}_\d{2}$")
 
 # The non-viable verdicts `classify_run` can return (everything except
 # "oscillated"), in report order. Consumers (dataset_stats' viability
 # section) key off this tuple, so a new class added there is one edit here.
 NON_VIABLE_CLASSES = ("floater", "sinker", "no_odometry")
-
-# Default viability thresholds shared by `classify_run` and
-# `select_oscillated_runs`. The gap between the populations is wide
-# (floaters dive ~0 m, real runs >= 5 m; sinkers draw up ~0 m, real
-# climbs are metres), so the values are not delicate.
-MIN_DIVE_M = 2.0
-MIN_RETURN_M = 1.0
 
 
 @dataclass(frozen=True)
@@ -39,6 +37,10 @@ class RunEntry:
     bag_dir: Path
     scenario_yaml_path: str | None
     is_nominal: bool
+    # Run-watchdog verdict from sweep_status.csv ("mission_complete" /
+    # "abort_floater" / "abort_sinker"); "" for legacy sweeps and
+    # wall-clock kills — classify from the bag in that case.
+    verdict: str = ""
 
 
 def _looks_nominal(yaml_path: str | None) -> bool:
@@ -88,7 +90,16 @@ def discover_sweep(
             if nominal_run_id is not None
             else _looks_nominal(yaml_path)
         )
-        entries.append(RunEntry(run_id, run_dir, bag_dir, yaml_path, is_nominal))
+        entries.append(
+            RunEntry(
+                run_id,
+                run_dir,
+                bag_dir,
+                yaml_path,
+                is_nominal,
+                verdict=str(row.get("verdict", "") or "").strip(),
+            )
+        )
 
     if nominal_run_id is not None and not any(e.is_nominal for e in entries):
         raise ValueError(

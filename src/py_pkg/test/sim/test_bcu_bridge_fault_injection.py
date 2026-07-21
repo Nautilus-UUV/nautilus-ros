@@ -106,10 +106,42 @@ class _CommsProbe(_FaultProbe):
         )
 
 
+# Schedule-gated variants (v2): the same drawn severity felt through a
+# delayed step onset and through a linear ramp.
+FAULT_ONSET_S = 6.0  # large enough for the healthy echo to climb past 1500
+RAMP_S = 3.0
+RAMP_ONSET_S = 1.0
+
 rig_effectiveness = make_rig(
     _FaultProbe,
     init_args=["--ros-args", "-p", f"fault_effectiveness:={EFFECTIVENESS}"],
     name="rig_effectiveness",
+)
+rig_onset = make_rig(
+    _FaultProbe,
+    init_args=[
+        "--ros-args",
+        "-p",
+        f"fault_effectiveness:={EFFECTIVENESS}",
+        "-p",
+        f"fault_onset_s:={FAULT_ONSET_S}",
+    ],
+    name="rig_onset",
+)
+rig_ramp = make_rig(
+    _FaultProbe,
+    init_args=[
+        "--ros-args",
+        "-p",
+        f"fault_effectiveness:={EFFECTIVENESS}",
+        "-p",
+        "fault_shape:=ramp",
+        "-p",
+        f"fault_ramp_s:={RAMP_S}",
+        "-p",
+        f"fault_onset_s:={RAMP_ONSET_S}",
+    ],
+    name="rig_ramp",
 )
 rig_stuck = make_rig(
     _FaultProbe,
@@ -206,3 +238,98 @@ def test_comms_drop_silences_link_not_plant(rig_comms):
     assert probe.valve_fb_samples == [], "valve feedback leaked through"
     # ...while the ungated provenance stream kept flowing all along.
     assert len(probe.fault_samples) > 0
+
+
+def test_pump_fault_onset_delays_degradation(rig_onset):
+    """A delayed onset: the pump is HEALTHY until the onset fires, then
+    degrades to the drawn severity.
+
+    Discriminator vs an immediate fault: while healthy the feedback echo
+    tracks the full command and climbs ABOVE the faulted plateau it could
+    never exceed under a felt-from-t=0 fault (cf.
+    test_pump_effectiveness_scales_feedback, which asserts peak <= 1500)."""
+    probe, executor = rig_onset
+    wait_wired(probe, executor)
+
+    probe.valves_pub.publish(UInt8(data=BCU_MOTOR_VALVE_MASK))
+    probe.rpm_pub.publish(Int16(data=HELD_RPM))
+
+    # Before onset the echo tracks the healthy 3000 target and overshoots
+    # the faulted plateau (whether captured climbing pre-onset or still
+    # descending through it just after).
+    assert spin_until(
+        executor,
+        lambda: any(v > EXPECTED_PLATEAU for _, v in probe.fb_samples),
+        timeout_s=FAULT_ONSET_S + PLANT.pump_response_delay_s + 6.0,
+    ), (
+        "feedback echo never tracked the healthy command before onset;"
+        f" trailing: {[v for _, v in probe.fb_samples][-10:]}"
+    )
+    # The provenance stream read healthy (1.0) at the start of the run.
+    assert probe.fault_samples, "no /bcu/rpm/fault samples"
+    assert probe.fault_samples[0] == pytest.approx(1.0), (
+        f"provenance was not healthy before onset: {probe.fault_samples[:5]}"
+    )
+
+    # After onset the plant degrades: the echo settles at the faulted
+    # plateau and the provenance stream reads the drawn severity.
+    def _at_faulted_plateau() -> bool:
+        recent = [v for _, v in probe.fb_samples[-5:]]
+        return len(recent) == 5 and all(v == EXPECTED_PLATEAU for v in recent)
+
+    assert spin_until(
+        executor, _at_faulted_plateau, timeout_s=PLATEAU_BUDGET_S + FAULT_ONSET_S
+    ), (
+        f"echo never settled at the faulted plateau {EXPECTED_PLATEAU} after onset;"
+        f" trailing: {[v for _, v in probe.fb_samples][-10:]}"
+    )
+    assert probe.fault_samples[-1] == pytest.approx(EFFECTIVENESS), (
+        f"provenance did not reach the drawn severity: {probe.fault_samples[-5:]}"
+    )
+
+
+def test_pump_fault_ramp_traverses_intermediate_effectiveness(rig_ramp):
+    """A ramp shape: the /bcu/rpm/fault provenance stream sweeps strictly
+    intermediate effectiveness values (between 1.0 and the drawn severity)
+    over the ramp -- the mark of a ramp vs a step's instantaneous jump.
+
+    Driven off the provenance stream alone: e(t) is published every tick
+    regardless of the pump command, so no actuation is needed."""
+    probe, executor = rig_ramp
+    spin_for(executor, RAMP_ONSET_S + RAMP_S + 1.5)
+
+    vals = probe.fault_samples
+    assert vals, "no /bcu/rpm/fault samples"
+    # Healthy at the top (during the pre-onset delay)...
+    assert max(vals) >= 0.99, f"ramp never started from healthy: max={max(vals)}"
+    # ...reaches (and holds at) the drawn severity by the end...
+    assert vals[-1] == pytest.approx(EFFECTIVENESS), (
+        f"ramp did not reach the drawn severity: {vals[-5:]}"
+    )
+    assert min(vals) == pytest.approx(EFFECTIVENESS), (
+        f"ramp undershot the drawn severity: min={min(vals)}"
+    )
+    # ...and traverses strictly-intermediate effectiveness in between.
+    intermediate = [v for v in vals if EFFECTIVENESS < v < 1.0]
+    assert len(intermediate) >= 5, (
+        "ramp did not traverse intermediate effectiveness; distinct values: "
+        f"{sorted(set(round(v, 3) for v in vals))}"
+    )
+
+
+def test_default_schedule_is_a_step_not_a_ramp(rig_effectiveness):
+    """Regression for (c): with no schedule overrides the fault is the
+    whole-run step from t=0 -- the provenance is the constant drawn
+    severity, never a swept intermediate (contrast the ramp test)."""
+    probe, executor = rig_effectiveness
+    wait_wired(probe, executor)
+    spin_for(executor, 1.5)
+
+    vals = probe.fault_samples
+    assert vals, "no /bcu/rpm/fault samples"
+    assert all(v == pytest.approx(EFFECTIVENESS) for v in vals), (
+        f"default schedule was not a constant step: {sorted(set(vals))[:5]}"
+    )
+    assert not [v for v in vals if EFFECTIVENESS < v < 1.0], (
+        "default (step) schedule leaked intermediate ramp values"
+    )

@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 from py_pkg.plant_dynamics import (
     PumpDynamics,
@@ -229,3 +231,178 @@ def test_map_factory_validates_free_cushion_at_bind_time():
         make_tank_pressure_map(
             "gaslaw", V_MIN, V_MAX, P_EMPTY, P_FULL, air_volume_m3=V_MAX - V_MIN
         )
+
+
+# ---------------------------------------------------------------------------
+# gaslaw output clamp to [empty, full] (v2)
+# ---------------------------------------------------------------------------
+#
+# A free cushion smaller than the pinned one runs the hyperbola arbitrarily
+# far past the full endpoint at the bladder_min rail; v2 clamps the output to
+# the calibrated interval so the sim can never report a tank pressure the real
+# sensor cannot physically produce.
+
+# Config from the fault-injection spec: a finite cushion whose unclamped
+# bladder_min reading (~206 kPa) overshoots the full endpoint (190 kPa).
+_CLAMP_VMIN = 0.000866
+_CLAMP_VMAX = 0.002465
+_CLAMP_SPAN = _CLAMP_VMAX - _CLAMP_VMIN  # 1.599e-3
+_CLAMP_EMPTY = 97_800.0
+_CLAMP_FULL = 190_000.0
+_CLAMP_AIR = 3.041025e-3
+
+
+def _gaslaw_unclamped(volume_m3: float) -> float:
+    """The raw hyperbola, no output clamp -- the reference formula."""
+    oil_in_tank = _CLAMP_VMAX - volume_m3
+    return _CLAMP_EMPTY * _CLAMP_AIR / (_CLAMP_AIR - oil_in_tank)
+
+
+def test_gaslaw_clamps_bladder_min_rail_to_full_endpoint():
+    # At bladder_min the raw hyperbola reaches ~206 kPa, past the 190 kPa
+    # full endpoint; the clamp pulls it back to exactly full.
+    unclamped = _gaslaw_unclamped(_CLAMP_VMIN)
+    assert unclamped == pytest.approx(206_250.0, rel=1e-3)
+    assert unclamped > _CLAMP_FULL  # the raw curve genuinely overshoots
+    clamped = tank_pressure_gaslaw(
+        _CLAMP_VMIN,
+        _CLAMP_VMIN,
+        _CLAMP_VMAX,
+        _CLAMP_EMPTY,
+        _CLAMP_FULL,
+        air_volume_m3=_CLAMP_AIR,
+    )
+    assert clamped == _CLAMP_FULL  # exact, not merely <= full
+
+
+def test_gaslaw_mid_fill_below_clamp_is_bit_identical_to_hyperbola():
+    # Where the raw curve sits inside [empty, full], the clamp is a no-op:
+    # the returned value must equal the inline hyperbola bit-for-bit.
+    for v in (0.0015, 0.002, _CLAMP_VMAX):
+        raw = _gaslaw_unclamped(v)
+        assert _CLAMP_EMPTY <= raw < _CLAMP_FULL  # precondition: not clamped
+        got = tank_pressure_gaslaw(
+            v,
+            _CLAMP_VMIN,
+            _CLAMP_VMAX,
+            _CLAMP_EMPTY,
+            _CLAMP_FULL,
+            air_volume_m3=_CLAMP_AIR,
+        )
+        assert got == raw
+
+
+def test_gaslaw_pinned_branch_hits_both_endpoints_exactly_under_clamp():
+    # The clamp must not perturb the pinned cushion: air None (and the
+    # ROS-wire 0.0 encoding via the factory) still passes through BOTH
+    # calibrated endpoints exactly.
+    assert tank_pressure_gaslaw(
+        _CLAMP_VMAX, _CLAMP_VMIN, _CLAMP_VMAX, _CLAMP_EMPTY, _CLAMP_FULL
+    ) == pytest.approx(_CLAMP_EMPTY, abs=1e-9)
+    assert tank_pressure_gaslaw(
+        _CLAMP_VMIN, _CLAMP_VMIN, _CLAMP_VMAX, _CLAMP_EMPTY, _CLAMP_FULL
+    ) == pytest.approx(_CLAMP_FULL, abs=1e-9)
+    pinned = make_tank_pressure_map(
+        "gaslaw", _CLAMP_VMIN, _CLAMP_VMAX, _CLAMP_EMPTY, _CLAMP_FULL, air_volume_m3=0.0
+    )
+    assert pinned(_CLAMP_VMAX) == pytest.approx(_CLAMP_EMPTY, abs=1e-9)
+    assert pinned(_CLAMP_VMIN) == pytest.approx(_CLAMP_FULL, abs=1e-9)
+
+
+def test_map_factory_warns_when_free_cushion_overshoots_full():
+    # Binding a finite cushion whose bladder_min reading exceeds full is a
+    # config smell: the map still works (clamped) but warns once at bind
+    # time so the inconsistency surfaces off the telemetry hot path. A local
+    # handler is used rather than caplog -- the sourced ROS env installs its
+    # own logging config, which makes the propagation-based caplog flaky.
+    logger = logging.getLogger("py_pkg.plant_dynamics")
+    records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    handler = _Capture()
+    prev_level = logger.level
+    logger.addHandler(handler)
+    logger.setLevel(logging.WARNING)
+    try:
+        fn = make_tank_pressure_map(
+            "gaslaw",
+            _CLAMP_VMIN,
+            _CLAMP_VMAX,
+            _CLAMP_EMPTY,
+            _CLAMP_FULL,
+            air_volume_m3=_CLAMP_AIR,
+        )
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(prev_level)
+
+    assert any(
+        "clamped" in r.getMessage() and r.levelno == logging.WARNING
+        for r in records
+    )
+    assert fn(_CLAMP_VMIN) == _CLAMP_FULL  # and the bound map does clamp
+
+
+# ---------------------------------------------------------------------------
+# PumpDynamics overshoot crest (v2)
+# ---------------------------------------------------------------------------
+#
+# overshoot_frac > 0 makes a new nonzero target crest past it by a fraction
+# of the step (the EPOS4 velocity-loop overshoot on hardware) then settle
+# back to the target; frac <= 0 leaves every path bit-identical to the plain
+# delay+slew model; a stop command never overshoots.
+
+
+def _ramp(pump: PumpDynamics, target: float, n: int, dt: float = 0.1) -> list[float]:
+    """Feed a constant target for n ticks at fixed dt; return the eff-RPM trace."""
+    return [pump.step(round(dt * i, 3), target, dt) for i in range(1, n + 1)]
+
+
+def test_overshoot_crests_then_settles_to_target():
+    frac = 0.0377
+    pump = PumpDynamics(delay_s=0.0, slew_rpm_per_s=1000.0, overshoot_frac=frac)
+    trace = _ramp(pump, 3000.0, 60)
+    peak = 3000.0 + frac * 3000.0  # aims past by frac of the step -> 3113.1
+    assert max(trace) == pytest.approx(peak, abs=1.0)  # crest within a slew step
+    assert max(trace) <= peak + 1e-6  # never past the intended crest
+    # After the crest it settles back to EXACTLY the target and holds there.
+    assert trace[-1] == pytest.approx(3000.0, abs=1e-9)
+    for v in trace[-5:]:
+        assert v == pytest.approx(3000.0, abs=1e-9)
+
+
+def test_overshoot_frac_zero_matches_two_arg_tick_for_tick():
+    # frac <= 0 must be bit-identical to the plain delay+slew model: the new
+    # crest conditionals never fire. Drive a mixed command sequence (steps
+    # up, to zero, sign flip) through both and compare tick-for-tick.
+    a = PumpDynamics(delay_s=0.3, slew_rpm_per_s=800.0, overshoot_frac=0.0)
+    b = PumpDynamics(delay_s=0.3, slew_rpm_per_s=800.0)  # two-arg reference
+    seq = [
+        (0.0, 3000.0),
+        (0.1, 3000.0),
+        (0.4, 0.0),
+        (0.6, -1500.0),
+        (1.0, 2000.0),
+        (1.5, 2000.0),
+        (2.0, 0.0),
+    ]
+    last_t = seq[0][0]
+    for t, cmd in seq:
+        dt = t - last_t
+        assert a.step(t, cmd, dt) == b.step(t, cmd, dt)
+        last_t = t
+
+
+def test_stop_command_never_overshoots_or_undershoots_zero():
+    # A target change to 0 must ramp straight down: monotonically
+    # non-increasing, never below 0, never a crest above the current value.
+    pump = PumpDynamics(delay_s=0.0, slew_rpm_per_s=1000.0, overshoot_frac=0.05)
+    _ramp(pump, 3000.0, 60)  # ramp up and settle at 3000
+    down = [pump.step(round(6.0 + 0.1 * i, 3), 0.0, 0.1) for i in range(40)]
+    assert down[0] <= 3000.0  # no crest above the pre-stop value
+    assert min(down) == 0.0  # reaches exactly 0
+    assert all(v >= 0.0 for v in down)  # never undershoots below 0
+    assert all(a >= b - 1e-9 for a, b in zip(down, down[1:]))  # monotone down

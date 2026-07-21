@@ -21,13 +21,22 @@ We publish ``PATH`` exactly once and never on a repeat timer on purpose:
 *every* message, so periodically re-publishing would clobber an already-running
 mission back to LOADED. Latch-and-hold delivers the sample to late joiners
 without that side effect.
+
+When the launch supplies the scenario's tank endpoints
+(``dive_init_tank_empty_pa`` / ``dive_init_tank_full_pa``), one latched
+``DiveInit`` goes out before ``PATH`` -- the sim surrogate for the operator
+UI's Initialize button, arming ``bcu_node``'s tank-limit clamp through the
+same wire path hardware uses. ``surface_pressure_pa`` rides as 0.0, which
+``SurfaceReference.register`` rejects, so the standard-atmosphere gauge
+reference stays untouched. Defaults (0.0/0.0) publish nothing.
 """
 
 import rclpy
-from nautilus_msgs.msg import MissionCommand
+from nautilus_msgs.msg import DiveInit, MissionCommand
 from rclpy.node import Node
 from std_msgs.msg import Bool
 
+from py_pkg.math_utils import tank_limits_valid
 from py_pkg.uuv_ros_core import UUVTopics, create_publisher_for_topic, spin_node
 
 
@@ -41,6 +50,10 @@ class AutoMission(Node):
         self.declare_parameter("target_pressure_pa", 0.0)
         self.declare_parameter("angle_rad", 0.0)
         self.declare_parameter("n_oscillations", 0)
+        self.declare_parameter("dwell_s", 0.0)
+        self.declare_parameter("n_steps", 1)
+        self.declare_parameter("dive_init_tank_empty_pa", 0.0)
+        self.declare_parameter("dive_init_tank_full_pa", 0.0)
         # Gap between /path and /command so the mission is loaded before the
         # start lands. Order isn't strictly required -- pathfinding re-checks
         # its preconditions on every /path and pressure message -- but it keeps
@@ -55,6 +68,18 @@ class AutoMission(Node):
         n_oscillations = (
             self.get_parameter("n_oscillations").get_parameter_value().integer_value
         )
+        dwell_s = self.get_parameter("dwell_s").get_parameter_value().double_value
+        n_steps = self.get_parameter("n_steps").get_parameter_value().integer_value
+        tank_empty_pa = (
+            self.get_parameter("dive_init_tank_empty_pa")
+            .get_parameter_value()
+            .double_value
+        )
+        tank_full_pa = (
+            self.get_parameter("dive_init_tank_full_pa")
+            .get_parameter_value()
+            .double_value
+        )
         start_delay_s = (
             self.get_parameter("start_delay_s").get_parameter_value().double_value
         )
@@ -62,17 +87,34 @@ class AutoMission(Node):
         self._path_pub = create_publisher_for_topic(self, UUVTopics.PATH)
         self._command_pub = create_publisher_for_topic(self, UUVTopics.COMMAND)
 
+        # The publisher must outlive the publish for the latch to persist --
+        # created unconditionally so the attribute always exists.
+        self._dive_init_pub = create_publisher_for_topic(self, UUVTopics.DIVE_INIT)
+        if tank_limits_valid(tank_empty_pa, tank_full_pa):
+            init = DiveInit()
+            init.surface_pressure_pa = 0.0
+            init.tank_empty_pa = float(tank_empty_pa)
+            init.tank_full_pa = float(tank_full_pa)
+            self._dive_init_pub.publish(init)
+            self.get_logger().info(
+                f"Published latched DiveInit on {UUVTopics.DIVE_INIT}: "
+                f"tank_empty_pa={init.tank_empty_pa}, tank_full_pa={init.tank_full_pa}"
+            )
+
         cmd = MissionCommand()
         cmd.mission_id = int(mission_id)
         cmd.target_pressure_pa = float(target_pressure_pa)
         cmd.angle_rad = float(angle_rad)
         # MissionCommand still carries the pre-rename field name on the wire.
         cmd.n_resurfaces = int(n_oscillations)
+        cmd.dwell_s = float(dwell_s)
+        cmd.n_steps = int(n_steps)
         self._path_pub.publish(cmd)
         self.get_logger().info(
             f"Published latched MissionCommand on {UUVTopics.PATH}: "
             f"mission_id={cmd.mission_id}, target_pressure_pa={cmd.target_pressure_pa}, "
-            f"angle_rad={cmd.angle_rad}, n_oscillations={cmd.n_resurfaces}"
+            f"angle_rad={cmd.angle_rad}, n_oscillations={cmd.n_resurfaces}, "
+            f"dwell_s={cmd.dwell_s}, n_steps={cmd.n_steps}"
         )
 
         # One-shot: a periodic timer we cancel on first fire.

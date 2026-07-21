@@ -19,7 +19,9 @@ from py_pkg.scenarios import load_scenario
 from py_pkg.scenarios.spec.rig import (
     BcuPumpFaultSpec,
     CommsFaultSpec,
+    FaultScheduleSpec,
     FaultsSpec,
+    PlantSpec,
     RigScenario,
     SensorFaultKind,
     SensorFaultSpec,
@@ -238,3 +240,142 @@ def test_no_fault_library_yamls_stay_nominal(library_scenario_path, library_yaml
     scen = load_scenario(library_scenario_path(library_yaml))
     assert scen.rig.faults == FaultsSpec()
     assert scen.anomaly.anomaly_class == "nominal"
+
+
+# ---------------------------------------------------------------------------
+# FaultScheduleSpec: onset/progression envelope validator matrix (v2)
+# ---------------------------------------------------------------------------
+
+
+def test_fault_schedule_default_is_default():
+    assert FaultScheduleSpec().is_default
+    assert FaultScheduleSpec(onset_s=5.0).is_default is False
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {},  # default step-at-t=0
+        {"shape": "step", "onset_s": 5.0},
+        {"shape": "ramp", "ramp_s": 4.0},
+        {"shape": "ramp", "ramp_s": 4.0, "onset_s": 2.0},
+        {"shape": "intermittent", "period_s": 10.0, "duty": 0.3},
+        {"shape": "intermittent", "period_s": 10.0, "duty": 0.3, "onset_s": 5.0},
+    ],
+)
+def test_fault_schedule_valid_combinations(fields):
+    FaultScheduleSpec(**fields)
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"shape": "ramp"},  # ramp without ramp_s
+        {"shape": "ramp", "ramp_s": 0.0},  # ramp_s must be > 0
+        {"shape": "ramp", "ramp_s": 4.0, "period_s": 5.0},  # ramp with period_s
+        {"shape": "intermittent", "duty": 0.5},  # intermittent without period_s
+        {"shape": "intermittent", "period_s": 0.0, "duty": 0.5},
+        {"shape": "intermittent", "period_s": 10.0, "duty": 0.0},  # duty out of (0,1)
+        {"shape": "intermittent", "period_s": 10.0, "duty": 1.0},
+        {"shape": "intermittent", "period_s": 10.0, "duty": 1.5},
+        {  # intermittent with ramp_s
+            "shape": "intermittent",
+            "period_s": 10.0,
+            "duty": 0.5,
+            "ramp_s": 2.0,
+        },
+        {"shape": "step", "ramp_s": 2.0},  # step with ramp_s
+        {"shape": "step", "period_s": 5.0},  # step with period_s
+        {"onset_s": -1.0},  # negative onset
+    ],
+)
+def test_fault_schedule_invalid_combinations_raise(fields):
+    with pytest.raises(ValueError):
+        FaultScheduleSpec(**fields)
+
+
+# ---------------------------------------------------------------------------
+# Schedule attachment rules on the fault specs (v2)
+# ---------------------------------------------------------------------------
+
+
+def test_healthy_pump_rejects_non_default_schedule():
+    # effectiveness == 1.0 is a no-op fault; a schedule on it is meaningless.
+    with pytest.raises(ValueError, match="healthy pump"):
+        BcuPumpFaultSpec(effectiveness=1.0, schedule={"onset_s": 5.0})
+
+
+def test_degraded_pump_accepts_schedule():
+    spec = BcuPumpFaultSpec(
+        effectiveness=0.5, schedule={"shape": "ramp", "onset_s": 30.0, "ramp_s": 60.0}
+    )
+    assert spec.schedule.shape == "ramp"
+    assert spec.schedule.onset_s == 30.0
+
+
+def test_sensor_none_rejects_schedule():
+    with pytest.raises(ValueError, match="none"):
+        SensorFaultSpec(kind="none", schedule={"onset_s": 5.0})
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        # drift is already a rate-ramp; only a step schedule (epoch shift) is
+        # meaningful, so a shaped schedule is rejected.
+        {
+            "kind": "drift",
+            "magnitude": 5.0,
+            "schedule": {"shape": "intermittent", "period_s": 10.0, "duty": 0.5},
+        },
+        {"kind": "drift", "magnitude": 5.0, "schedule": {"shape": "ramp", "ramp_s": 4.0}},
+        # stuck has no unambiguous latch point under a shaped schedule.
+        {"kind": "stuck", "schedule": {"shape": "ramp", "ramp_s": 4.0}},
+        {
+            "kind": "stuck",
+            "schedule": {"shape": "intermittent", "period_s": 10.0, "duty": 0.5},
+        },
+    ],
+)
+def test_sensor_drift_stuck_reject_non_step_schedules(fields):
+    with pytest.raises(ValueError, match="step"):
+        SensorFaultSpec(**fields)
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        # drift + step: the schedule only shifts the drift epoch -- allowed.
+        {"kind": "drift", "magnitude": 5.0, "schedule": {"shape": "step", "onset_s": 20.0}},
+        # dropout may carry any schedule shape, including intermittent.
+        {
+            "kind": "dropout",
+            "drop_prob": 0.5,
+            "schedule": {"shape": "intermittent", "period_s": 10.0, "duty": 0.5},
+        },
+        # bias + ramp: the schedule scales the offset -- allowed.
+        {"kind": "bias", "magnitude": 1000.0, "schedule": {"shape": "ramp", "ramp_s": 4.0}},
+    ],
+)
+def test_sensor_fault_schedule_valid_combinations(fields):
+    SensorFaultSpec(**fields)
+
+
+def test_plant_pump_overshoot_frac_defaults_to_zero():
+    assert PlantSpec().pump_overshoot_frac == 0.0
+
+
+@pytest.mark.parametrize(
+    "library_yaml",
+    ["nominal.yaml", "baseline.yaml", "nominal_with_hydrodynamics.yaml"],
+)
+def test_library_yamls_carry_default_schedules_everywhere(
+    library_scenario_path, library_yaml
+):
+    # The shipped library scenarios (including baseline's degraded pump) all
+    # use the inert step-at-t=0 schedule -- the whole-run behavior.
+    scen = load_scenario(library_scenario_path(library_yaml))
+    faults = scen.rig.faults
+    assert faults.bcu_pump.schedule.is_default
+    assert faults.sensors.external_pressure.schedule.is_default
+    assert faults.sensors.tank_pressure.schedule.is_default

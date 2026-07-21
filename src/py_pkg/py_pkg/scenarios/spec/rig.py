@@ -79,6 +79,12 @@ class PlantSpec(StrictModel):
     # acceptance PASSED (pooled RMS 83 rpm, held-out 1.91x fit RMS).
     pump_response_delay_s: float = 1.057
     pump_slew_rpm_per_s: float = 512.1
+    # EPOS4 velocity-loop crest: the real shaft overshoots a step command
+    # by this fraction of the step before settling (lake feedback peaks at
+    # 3113 rpm on a 3000 command -> ~0.038). 0.0 disables (exact
+    # delay+slew model, the pre-v2 behavior); sweeps sample it so sim
+    # feedback can exceed the command rail the way hardware does.
+    pump_overshoot_frac: float = 0.0
     # Tank sensor curve shape: "linear" is the legacy straight-line oil
     # map; "gaslaw" is the isothermal air-cushion hyperbola the lake
     # traces show (flat near tank-empty, steep near tank-full). Default
@@ -99,19 +105,76 @@ class PlantSpec(StrictModel):
 
 SensorFaultKind = Literal["none", "bias", "drift", "stuck", "dropout"]
 
+# Wire spelling of sensor_faults.FAULT_SCHEDULE_SHAPES (kept a literal so
+# it stays statically checkable; test_fault_schedule locks the two
+# together, and anomaly.ONSET_SHAPES derives from this one).
+FaultScheduleShape = Literal["step", "ramp", "intermittent"]
+
+
+class FaultScheduleSpec(StrictModel):
+    """Onset + progression envelope for one fault (sensor_faults.FaultSchedule).
+
+    ``m(t)`` in [0, 1] scales the fault's one drawn severity:
+
+      step         -> 0 before `onset_s` (seconds from bridge start),
+                      1 after. The default (`onset_s == 0`) is the
+                      original whole-run behavior.
+      ramp         -> 0 before onset, linear to 1 over `ramp_s`, then 1.
+      intermittent -> after onset, on for the first `duty * period_s`
+                      of each period, off otherwise.
+
+    Severity itself never changes mid-run — the envelope gates when the
+    one drawn magnitude is felt.
+    """
+
+    onset_s: float = 0.0
+    shape: FaultScheduleShape = "step"
+    ramp_s: float = 0.0
+    period_s: float = 0.0
+    duty: float = 0.5
+
+    @model_validator(mode="after")
+    def _check_shape_fields(self) -> "FaultScheduleSpec":
+        if self.onset_s < 0.0:
+            raise ValueError(f"onset_s must be >= 0, got {self.onset_s}")
+        if self.shape == "step":
+            if self.ramp_s != 0.0 or self.period_s != 0.0:
+                raise ValueError("shape='step' uses neither ramp_s nor period_s")
+        elif self.shape == "ramp":
+            if self.ramp_s <= 0.0:
+                raise ValueError("shape='ramp' requires ramp_s > 0")
+            if self.period_s != 0.0:
+                raise ValueError("shape='ramp' does not use period_s")
+        else:  # intermittent
+            if self.period_s <= 0.0:
+                raise ValueError("shape='intermittent' requires period_s > 0")
+            if not (0.0 < self.duty < 1.0):
+                raise ValueError(
+                    f"shape='intermittent' requires 0 < duty < 1, got {self.duty}"
+                )
+            if self.ramp_s != 0.0:
+                raise ValueError("shape='intermittent' does not use ramp_s")
+        return self
+
+    @property
+    def is_default(self) -> bool:
+        return self == FaultScheduleSpec()
+
 
 class BcuPumpFaultSpec(StrictModel):
     """Persistent whole-run pump degradation.
 
-    The commanded pump RPM is multiplied by `effectiveness` for the
-    entire run, before the pump transient (PumpDynamics). Constant
-    severity from t=0 — no onset, no escalation. 1.0 is a healthy pump.
-    A degraded pump *transient* (longer dead time, slower slew) is
-    authored through the existing `PlantSpec.pump_response_delay_s` /
+    The commanded pump RPM is multiplied by `effectiveness`, before the
+    pump transient (PumpDynamics). The drawn severity is constant for
+    the run; `schedule` gates when it is felt (default: step at t=0 —
+    the original whole-run behavior). 1.0 is a healthy pump. A degraded
+    pump *transient* (longer dead time, slower slew) is authored through
+    the existing `PlantSpec.pump_response_delay_s` /
     `pump_slew_rpm_per_s` knobs instead.
     """
 
     effectiveness: float = 1.0
+    schedule: FaultScheduleSpec = Field(default_factory=FaultScheduleSpec)
 
     @model_validator(mode="after")
     def _check_range(self) -> "BcuPumpFaultSpec":
@@ -119,14 +182,19 @@ class BcuPumpFaultSpec(StrictModel):
             raise ValueError(
                 f"effectiveness must be in (0, 1], got {self.effectiveness}"
             )
+        if self.effectiveness == 1.0 and not self.schedule.is_default:
+            raise ValueError(
+                "a healthy pump (effectiveness == 1.0) cannot carry a schedule"
+            )
         return self
 
 
 class SensorFaultSpec(StrictModel):
     """One persistent measurement-fault archetype on one pressure channel.
 
-    Active from the first published sample for the whole run (constant
-    severity). Kind semantics:
+    The drawn severity is constant for the run; `schedule` gates when it
+    is felt (default: from the first published sample — the original
+    whole-run behavior). Kind semantics:
 
       bias    -> `magnitude` is a signed additive offset [Pa]
       drift   -> `magnitude` is a signed ramp rate [Pa/s] from bridge start
@@ -143,6 +211,7 @@ class SensorFaultSpec(StrictModel):
     kind: SensorFaultKind = "none"
     magnitude: float = 0.0
     drop_prob: float = 0.0
+    schedule: FaultScheduleSpec = Field(default_factory=FaultScheduleSpec)
 
     @model_validator(mode="after")
     def _check_kind_fields(self) -> "SensorFaultSpec":
@@ -161,6 +230,15 @@ class SensorFaultSpec(StrictModel):
                 raise ValueError("kind='dropout' requires 0 < drop_prob <= 1")
             if self.magnitude != 0.0:
                 raise ValueError("kind='dropout' does not use magnitude")
+        if not self.schedule.is_default:
+            if self.kind == "none":
+                raise ValueError("kind='none' cannot carry a schedule")
+            # drift is already a rate-ramp (its schedule only shifts the
+            # epoch) and a shaped "stuck" has no unambiguous latch point.
+            if self.kind in ("drift", "stuck") and self.schedule.shape != "step":
+                raise ValueError(
+                    f"kind={self.kind!r} supports only shape='step' schedules"
+                )
         return self
 
 
@@ -195,12 +273,15 @@ class CommsFaultSpec(StrictModel):
 
 
 class FaultsSpec(StrictModel):
-    """Persistent whole-run faults at constant severity, active from t=0.
+    """Persistent per-run faults at one constant drawn severity.
 
     Replaces the old Poisson-MTTF escalation ladder: a run is either
-    healthy or carries its fault for the entire duration. The anomaly
-    class of a run is recorded in `Scenario.anomaly` (validated for
-    consistency against these blocks).
+    healthy or carries its fault, whose severity never changes mid-run.
+    Pump and sensor faults may carry a `schedule` (onset + step/ramp/
+    intermittent envelope) gating WHEN the severity is felt; the default
+    schedule is the original active-from-t=0 whole-run behavior. The
+    anomaly class of a run is recorded in `Scenario.anomaly` (validated
+    for consistency against these blocks).
     """
 
     bcu_pump: BcuPumpFaultSpec = Field(default_factory=BcuPumpFaultSpec)

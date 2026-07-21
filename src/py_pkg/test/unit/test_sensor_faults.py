@@ -15,6 +15,7 @@ import random
 import pytest
 from py_pkg.sensor_faults import (
     VALUE_FAULT_KINDS,
+    FaultSchedule,
     FaultyChannel,
     GatedPublisher,
     MessageDrop,
@@ -184,3 +185,91 @@ def test_gate_publisher_drops_per_message_reproducibly():
     assert 0 < len(sent) < 200  # some dropped, some through
     # Messages that do arrive are unmodified and in order.
     assert sent == sorted(sent)
+
+
+# ---------------------------------------------------------------------------
+# Scheduled value faults: the FaultSchedule envelope gates archetypes in time
+# ---------------------------------------------------------------------------
+
+
+def _started(schedule: FaultSchedule) -> FaultSchedule:
+    """Pin the epoch to t=0 so the tests reason in absolute node-clock time."""
+    schedule.start(0.0)
+    return schedule
+
+
+def test_bias_scaled_by_ramp_schedule():
+    # onset 5 s, then a 10 s linear ramp to full severity. Noise off so the
+    # scaled offset is exact: pre-onset clean, mid-ramp half the offset,
+    # post-ramp the full offset.
+    sched = _started(FaultSchedule(onset_s=5.0, shape="ramp", ramp_s=10.0))
+    chan = FaultyChannel(_noise(), kind="bias", magnitude=5000.0, schedule=sched)
+    assert chan.sample(100_000.0, t_s=2.0) == 100_000.0  # pre-onset: m=0, clean
+    assert chan.sample(100_000.0, t_s=10.0) == 102_500.0  # mid-ramp: m=0.5
+    assert chan.sample(100_000.0, t_s=15.0) == 105_000.0  # ramp done: m=1
+
+
+def test_drift_epoch_shifts_to_schedule_onset():
+    # Scheduled drift accumulates from the schedule onset, not the first
+    # sample: clean before onset, then magnitude * seconds-since-onset.
+    sched = _started(FaultSchedule(onset_s=5.0, shape="step"))
+    chan = FaultyChannel(_noise(), kind="drift", magnitude=10.0, schedule=sched)
+    assert chan.sample(50_000.0, t_s=2.0) == 50_000.0  # pre-onset: no drift
+    assert chan.sample(50_000.0, t_s=5.0) == 50_000.0  # onset: elapsed 0
+    assert chan.sample(50_000.0, t_s=8.0) == 50_000.0 + 10.0 * 3.0  # +30
+    assert chan.sample(50_000.0, t_s=15.0) == 50_000.0 + 10.0 * 10.0  # +100
+
+
+def test_stuck_pre_onset_is_plain_noise_then_latches_first_post_onset():
+    # A scheduled stuck channel is the live noise chain until the onset
+    # fires, then freezes on the FIRST post-onset reading. Bare noise with
+    # the same seed tracks it draw-for-draw pre-onset, so the latched value
+    # equals what bare noise reports at the onset sample.
+    sched = _started(FaultSchedule(onset_s=5.0, shape="step"))
+    chan = FaultyChannel(
+        _noise(sigma=353.0, step=600.0, seed=7), kind="stuck", schedule=sched
+    )
+    bare = _noise(sigma=353.0, step=600.0, seed=7)
+
+    # Pre-onset: identical to the plain noise chain, one RNG draw per call.
+    for i in range(4):
+        t = 1.0 + i
+        v = 120_000.0 + 50.0 * i
+        assert chan.sample(v, t_s=t) == bare.apply(v)
+
+    # First post-onset reading latches; bare (same RNG state) gives the
+    # same value at that sample.
+    latched = chan.sample(121_000.0, t_s=5.0)
+    assert latched == bare.apply(121_000.0)
+    assert latched % 600.0 == 0.0  # post-chain, on the quantization comb
+
+    # Every later reading returns the latched value, whatever the input.
+    for i in range(50):
+        assert chan.sample(130_000.0 + 111.0 * i, t_s=6.0 + i) == latched
+
+
+def test_scheduled_dropout_pre_onset_consumes_no_rng():
+    # Pre-onset (m=0) the effective probability is 0, so should_drop returns
+    # False WITHOUT touching the RNG. Proof: after any number of pre-onset
+    # calls, the post-onset drop sequence is identical to a fresh
+    # schedule-free MessageDrop with the same seed and probability.
+    sched = _started(FaultSchedule(onset_s=5.0, shape="step"))
+    scheduled = MessageDrop(p=0.3, rng=random.Random(2024), schedule=sched)
+    plain = MessageDrop(p=0.3, rng=random.Random(2024))
+
+    pre = [scheduled.should_drop(t_s=t) for t in (0.5, 1.0, 2.0, 3.0, 4.0, 4.9)]
+    assert pre == [False] * len(pre)  # nothing dropped pre-onset
+
+    post_scheduled = [scheduled.should_drop(t_s=5.0 + 0.1 * i) for i in range(200)]
+    post_plain = [plain.should_drop() for _ in range(200)]
+    assert post_scheduled == post_plain  # RNG stream untouched pre-onset
+
+
+def test_scheduled_dropout_no_arg_treats_multiplier_as_one():
+    # Backward-compat callers that call should_drop() with no timestamp must
+    # see the fault at full strength (m=1), ignoring the schedule -- while a
+    # timestamped pre-onset call still gates it off.
+    sched = FaultSchedule(onset_s=1000.0, shape="step")
+    gate = MessageDrop(p=1.0, rng=random.Random(1), schedule=sched)
+    assert gate.should_drop() is True  # no arg -> m=1 -> p_eff=1.0
+    assert gate.should_drop(t_s=0.0) is False  # timestamped, pre-onset -> gated off

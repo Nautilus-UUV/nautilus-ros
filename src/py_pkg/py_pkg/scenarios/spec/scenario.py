@@ -112,3 +112,20 @@ class Scenario(StrictModel):
                     f" the configured kind {spec.kind!r}"
                 )
         return self
+
+    @property
+    def labeled_fault(self):
+        """The `rig.faults` block `anomaly` points at, or None.
+
+        Label -> fault-block resolution lives next to the validator that
+        already walks it, so consumers (`compile.params_for_anomaly_label`)
+        read the mapping rather than restating it. None for the classes
+        with no schedulable block: nominal, comms, biofouling.
+        """
+        if self.anomaly.anomaly_class == "bcu_pump":
+            return self.rig.faults.bcu_pump
+        if self.anomaly.anomaly_class == "sensor":
+            # `_check_label_matches_faults` has already proven this channel
+            # exists and is the faulted one.
+            return getattr(self.rig.faults.sensors, self.anomaly.channel)
+        return None

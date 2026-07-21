@@ -18,7 +18,10 @@ pre-flight on the first sample before queueing the rest.
 Dimensions whose path starts with `mission.` are *launch dimensions*:
 mission knobs (target_pressure_pa, n_oscillations, ...) are launch args,
 so their sampled values are recorded in
-manifest.json only
+manifest.json only. A `mission_mix:` block replaces those dimensions
+entirely (authoring both is rejected): per-run mission profiles are
+assigned/drawn off-matrix (`py_pkg.scenarios.mission_mix`) and their
+flat mission.* values ride the manifest the same way.
 
 Dimensions whose path starts with `derive.` are *derivation targets*:
 `derive.neutral_volume_m3` is sampled jointly with the row and fed —
@@ -41,6 +44,7 @@ import hashlib
 import json
 import math
 import sys
+from collections import Counter
 from dataclasses import asdict, dataclass, field, fields, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -62,6 +66,13 @@ from py_pkg.scenarios.anomaly import (
     fouled_neutral_volume,
 )
 from py_pkg.scenarios.compile import forward_map
+from py_pkg.scenarios.mission_mix import (
+    MissionAssignment,
+    MissionMixSpec,
+    assign_profiles,
+    draw_mission,
+    expected_mission_duration_s,
+)
 from py_pkg.scenarios.spec.rig import (
     FinAeroSpec,
     HydrodynamicsSpec,
@@ -71,7 +82,10 @@ from py_pkg.scenarios.spec.rig import (
 
 # 2.0.0: persistent-fault schema (rig.faults.bcu_pump/sensors/comms) +
 # per-run anomaly_mix class assignment; the Poisson-ladder schema is gone.
-SAMPLER_VERSION = "2.0.0"
+# 2.1.0: additive — per-run mission_mix profile sampling (mission.* values
+# + a per-sample `mission` record in the manifest) and sampled fault
+# onsets (a rig.faults.*.schedule block on non-immediate anomalous runs).
+SAMPLER_VERSION = "2.1.0"
 
 # Dimensions under this prefix are launch args (mission knobs), not scenario
 # fields: they are recorded in the manifest but never written into the
@@ -135,9 +149,13 @@ class Dimension:
                 f"expected one of {SUPPORTED_DISTRIBUTIONS}"
             )
         low, high = float(raw["low"]), float(raw["high"])
-        if not (high > low):
+        # A zero-width band (high == low) PINS the value: `scale`
+        # degenerates to the constant. Uniform only — a loguniform pin
+        # buys nothing over a uniform one, so it keeps the strict check.
+        if high < low or (high == low and dist != "uniform"):
             raise ValueError(
-                f"dimension {raw['path']!r}: high ({high}) must be > low ({low})"
+                f"dimension {raw['path']!r}: high ({high}) must be > low "
+                f"({low}); a low == high pin is allowed for uniform only"
             )
         if dist == "loguniform" and low <= 0:
             raise ValueError(
@@ -224,6 +242,11 @@ class SweepSpec:
     # the sweep seed, so adding/editing the mix never reshuffles the
     # nominal LHS draws.
     anomaly_mix: AnomalyMixSpec | None = None
+    # Per-run mission-profile mix (v2 sweeps). None = mission knobs ride
+    # plain mission.* dimensions (legacy sweeps byte-identical). Same
+    # off-matrix seeded-stream design as anomaly_mix; a spec authoring
+    # BOTH a mission_mix and mission.* dimensions is rejected at load.
+    mission_mix: MissionMixSpec | None = None
 
     @property
     def derivation_enabled(self) -> bool:
@@ -255,7 +278,22 @@ class SweepSpec:
                 if raw.get("anomaly_mix")
                 else None
             ),
+            mission_mix=(
+                MissionMixSpec.model_validate(raw["mission_mix"])
+                if raw.get("mission_mix")
+                else None
+            ),
         )
+        if spec.mission_mix is not None:
+            conflicts = sorted(
+                d.path for d in dims if d.path.startswith(MISSION_PREFIX)
+            )
+            if conflicts:
+                raise ValueError(
+                    f"{path}: {conflicts} sampled alongside a mission_mix "
+                    "block — two authorities for the run's mission "
+                    "(conflicting authorities); drop one side"
+                )
         if (
             spec.anomaly_mix is not None
             and spec.anomaly_mix.weights.get("biofouling", 0.0) > 0.0
@@ -395,14 +433,17 @@ def render_scenario(
     row: Sequence[float],
     idx: int,
     anomaly_class: str | None = None,
+    expected_duration_s: float | None = None,
 ) -> tuple[dict, dict | None, AnomalyAssignment | None]:
     """Deep-copy the base, overlay the row's perturbations, set per-run seed.
 
     `anomaly_class` is this run's stratified class assignment (None when
-    the spec has no anomaly_mix). Returns (scenario, derived, anomaly)
-    where `derived` is the per-run buoyancy derivation record for the
-    manifest (None without derive dimensions) and `anomaly` is the
-    resolved AnomalyAssignment (None without a mix).
+    the spec has no anomaly_mix) and `expected_duration_s` its drawn
+    mission's optimistic duration (None without a mission_mix) — the
+    scale a non-immediate fault onset resolves against. Returns
+    (scenario, derived, anomaly) where `derived` is the per-run buoyancy
+    derivation record for the manifest (None without derive dimensions)
+    and `anomaly` is the resolved AnomalyAssignment (None without a mix).
     """
     scenario = copy.deepcopy(base)
     # Each run gets its own fault-RNG seed so MC outcomes are
@@ -460,7 +501,13 @@ def render_scenario(
     if spec.anomaly_mix is not None:
         if anomaly_class is None:
             raise ValueError("anomaly_mix configured but no class assigned")
-        assignment = draw_assignment(spec.anomaly_mix, spec.seed, idx, anomaly_class)
+        assignment = draw_assignment(
+            spec.anomaly_mix,
+            spec.seed,
+            idx,
+            anomaly_class,
+            expected_duration_s=expected_duration_s,
+        )
         apply_anomaly(scenario, assignment)
 
     # Correlated buoyancy derivation runs *after* the mode branch so all
@@ -582,7 +629,10 @@ def write_manifest(
     run_ids: Iterable[str],
     derived_records: Sequence[dict | None],
     anomaly_records: Sequence[AnomalyAssignment | None],
+    mission_records: Sequence[MissionAssignment | None] | None = None,
 ) -> None:
+    if mission_records is None:
+        mission_records = [None] * len(anomaly_records)
     spec_text = spec_path.read_text()
     manifest = {
         "sampler_version": SAMPLER_VERSION,
@@ -605,14 +655,21 @@ def write_manifest(
         "samples": [
             {
                 "run_id": rid,
-                "values": {d.path: d.emit(v) for d, v in zip(spec.dimensions, row)},
+                # A mission_mix's drawn mission.* values merge into the
+                # same flat values dict as the LHS dimensions, so
+                # run_sweep.load_mission_args picks them up unchanged.
+                "values": {
+                    **{d.path: d.emit(v) for d, v in zip(spec.dimensions, row)},
+                    **(mission.values if mission is not None else {}),
+                },
                 **({"derived": derived} if derived is not None else {}),
                 # Explicit per-run label, nominal included — downstream
                 # dataset builders join on this, never on absence.
                 **({"anomaly": anomaly.record()} if anomaly is not None else {}),
+                **({"mission": mission.record()} if mission is not None else {}),
             }
-            for rid, row, derived, anomaly in zip(
-                run_ids, matrix, derived_records, anomaly_records
+            for rid, row, derived, anomaly, mission in zip(
+                run_ids, matrix, derived_records, anomaly_records, mission_records
             )
         ],
     }
@@ -622,6 +679,8 @@ def write_manifest(
         manifest["buoyancy_derivation"] = asdict(spec.buoyancy_derivation)
     if spec.anomaly_mix is not None:
         manifest["anomaly_mix"] = spec.anomaly_mix.model_dump()
+    if spec.mission_mix is not None:
+        manifest["mission_mix"] = spec.mission_mix.model_dump()
     (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
 
@@ -658,37 +717,61 @@ def main(argv: list[str] | None = None) -> int:
     width = max(4, len(str(spec.n_samples - 1)))
     run_ids = [f"lhs_{i:0{width}d}" for i in range(spec.n_samples)]
 
-    # Stratified per-run class assignment (exact counts, seeded shuffle)
-    # — resolved before rendering so a truncated --n-samples dry run
-    # still splits its n exactly by the mix weights.
+    # Stratified per-run class/profile assignment (exact counts, seeded
+    # shuffles) — resolved before rendering so a truncated --n-samples
+    # dry run still splits its n exactly by the mix weights.
     classes = (
         assign_classes(spec.anomaly_mix, spec.seed, spec.n_samples)
         if spec.anomaly_mix is not None
         else None
     )
+    profiles = (
+        assign_profiles(spec.mission_mix, spec.seed, spec.n_samples)
+        if spec.mission_mix is not None
+        else None
+    )
 
     derived_records: list[dict | None] = []
     anomaly_records: list[AnomalyAssignment | None] = []
+    mission_records: list[MissionAssignment | None] = []
     for idx, (run_id, row) in enumerate(zip(run_ids, matrix)):
+        mission = (
+            draw_mission(spec.mission_mix, spec.seed, idx, profiles[idx])
+            if profiles is not None
+            else None
+        )
         scenario, derived, anomaly = render_scenario(
             base,
             spec,
             row,
             idx,
             anomaly_class=classes[idx] if classes is not None else None,
+            expected_duration_s=(
+                expected_mission_duration_s(mission.values)
+                if mission is not None
+                else None
+            ),
         )
         derived_records.append(derived)
         anomaly_records.append(anomaly)
+        mission_records.append(mission)
         out_path = out_dir / f"{run_id}.yaml"
         out_path.write_text(yaml.safe_dump(scenario, sort_keys=False))
 
     write_manifest(
-        out_dir, spec, args.spec, matrix, run_ids, derived_records, anomaly_records
+        out_dir,
+        spec,
+        args.spec,
+        matrix,
+        run_ids,
+        derived_records,
+        anomaly_records,
+        mission_records,
     )
 
+    if profiles is not None:
+        print(f"mission mix: {dict(Counter(profiles))}")
     if classes is not None:
-        from collections import Counter
-
         print(f"anomaly mix: {dict(Counter(classes))}")
     print(f"wrote {spec.n_samples} scenarios + manifest.json to {out_dir}")
     return 0

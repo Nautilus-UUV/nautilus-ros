@@ -16,6 +16,8 @@ import time
 import pytest
 from py_pkg.path.missions import MissionId
 from py_pkg.path.missions import surface as surface_mod
+from py_pkg.uuv_ros_core import UUVTopics, create_subscription_for_topic
+from rclpy.node import Node
 
 # Mission ids used by the tests below.
 SAWTOOTH = int(MissionId.SAWTOOTH)
@@ -368,3 +370,132 @@ class TestTickGating:
         h.spin_for(0.7)
         assert h.received_targets == []
         assert h.node._mission is not None and h.node._mission_t0_s is None
+
+
+class _CompleteSubscriber(Node):
+    """Captures every latched Bool on MISSION_COMPLETE."""
+
+    def __init__(self, name: str):
+        super().__init__(name)
+        self.received: list[bool] = []
+        create_subscription_for_topic(
+            self, UUVTopics.MISSION_COMPLETE, self._on_complete
+        )
+
+    def _on_complete(self, msg) -> None:
+        self.received.append(bool(msg.data))
+
+
+class TestMissionComplete:
+    """pathfinding publishes ONE latched Bool(true) on MISSION_COMPLETE exactly
+    when the running mission's is_done fires -- and never on an operator stop.
+
+    MISSION_COMPLETE rides UUVQoS.COMMAND (RELIABLE + TRANSIENT_LOCAL), so a
+    subscriber that joins after completion still sees the latched event.
+    """
+
+    # A deep sawtooth extremum well above the surface/at-depth tolerance bands.
+    SAWTOOTH_TARGET_PA = 60_000.0
+
+    def _drive_sawtooth_to_completion(self, h) -> None:
+        # Load a one-resurface sawtooth and start it.
+        h.publish_mission_command(
+            SAWTOOTH, target_pressure_pa=self.SAWTOOTH_TARGET_PA, n_resurfaces=1
+        )
+        h.publish_depth_gauge(GAUGE_AT_SURFACE_PA)
+        h.spin_until(
+            lambda: (
+                h.node._mission is not None and h.node._current_pressure_pa is not None
+            ),
+            timeout=1.0,
+        )
+        h.publish_command(True)
+        h.spin_until(lambda: h.node._mission_t0_s is not None, timeout=1.0)
+
+        # Descend leg: feed deep pressure until the mission flips to ascending.
+        deadline = time.monotonic() + 3.0
+        while (
+            time.monotonic() < deadline
+            and h.node._mission is not None
+            and h.node._mission._descending
+        ):
+            h.publish_depth_gauge(GAUGE_AT_DEPTH_PA)
+            h.spin_for(0.05)
+        assert h.node._mission is not None and not h.node._mission._descending, (
+            "sawtooth did not flip to the ascend leg"
+        )
+
+        # Ascend leg: feed surface pressure until the resurface fires is_done,
+        # which publishes MISSION_COMPLETE and resets the node to idle.
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and h.node._mission is not None:
+            h.publish_depth_gauge(GAUGE_AT_SURFACE_PA)
+            h.spin_for(0.05)
+        assert h.node._mission is None, "sawtooth did not run to completion"
+
+    def test_completion_publishes_one_latched_true_seen_by_late_subscriber(
+        self, pathfinding_node_harness
+    ):
+        h = pathfinding_node_harness
+        early = _CompleteSubscriber("mc_early")
+        h.executor.add_node(early)
+        extra = [early]
+        try:
+            self._drive_sawtooth_to_completion(h)
+
+            # Exactly one True on the wire, caught by the always-on subscriber.
+            h.spin_until(lambda: len(early.received) >= 1, timeout=1.0)
+            assert early.received == [True]
+
+            # A subscriber created AFTER completion still receives the latched
+            # event (TRANSIENT_LOCAL), and still exactly once.
+            late = _CompleteSubscriber("mc_late")
+            h.executor.add_node(late)
+            extra.append(late)
+            h.spin_until(lambda: len(late.received) >= 1, timeout=2.0)
+            assert late.received == [True]
+        finally:
+            for node in extra:
+                try:
+                    h.executor.remove_node(node)
+                except Exception:
+                    pass
+                node.destroy_node()
+
+    def test_operator_stop_publishes_nothing_on_complete(self, pathfinding_node_harness):
+        h = pathfinding_node_harness
+        watcher = _CompleteSubscriber("mc_stop_watch")
+        h.executor.add_node(watcher)
+        try:
+            # Start a two-resurface sawtooth so a single stop is genuinely
+            # mid-mission (nowhere near completion).
+            h.publish_mission_command(
+                SAWTOOTH, target_pressure_pa=self.SAWTOOTH_TARGET_PA, n_resurfaces=2
+            )
+            h.publish_depth_gauge(GAUGE_AT_SURFACE_PA)
+            h.spin_until(
+                lambda: (
+                    h.node._mission is not None
+                    and h.node._current_pressure_pa is not None
+                ),
+                timeout=1.0,
+            )
+            h.publish_command(True)
+            h.spin_until(lambda: h.node._mission_t0_s is not None, timeout=1.0)
+
+            # Run a few descend ticks, then stop before any resurface.
+            for _ in range(4):
+                h.publish_depth_gauge(GAUGE_AT_DEPTH_PA)
+                h.spin_for(0.05)
+            h.publish_command(False)
+            h.spin_until(lambda: h.node._mission is None, timeout=1.0)
+
+            # An operator stop is not a completion: nothing on MISSION_COMPLETE.
+            h.spin_for(0.5)
+            assert watcher.received == []
+        finally:
+            try:
+                h.executor.remove_node(watcher)
+            except Exception:
+                pass
+            watcher.destroy_node()

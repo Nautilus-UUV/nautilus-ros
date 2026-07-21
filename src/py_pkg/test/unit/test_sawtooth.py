@@ -246,3 +246,105 @@ class TestQuaternionUnitNorm:
         q = m.reference(0.0).orientation
         norm = math.sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w)
         assert norm == pytest.approx(1.0, abs=1e-9)
+
+
+def _make_dwell_state(dwell_s, target_pa=200_000.0, angle_rad=0.4, n_resurfaces=1):
+    return MissionState(
+        target_pressure_pa=target_pa,
+        angle_rad=angle_rad,
+        n_resurfaces=n_resurfaces,
+        dwell_s=dwell_s,
+    )
+
+
+class TestDwellAtDepth:
+    """`dwell_s > 0` station-keeps level at the deep extremum before the
+    ascend leg. The timer runs from FIRST band entry with no restart on a
+    bob out of the band (unlike SurfaceMission's surface dwell), so every
+    hold is bounded at `dwell_s`."""
+
+    def test_dwell_holds_target_depth_level(self):
+        m = SawtoothMission()
+        m.start(_make_dwell_state(dwell_s=30.0))
+        m.update(200_000.0)  # entered the band -> dwelling
+        pose = m.reference(100.0)
+        assert pose.position.z == pytest.approx(200_000.0)
+        assert _pitch_of(pose) == pytest.approx(0.0)
+
+    def test_flip_to_ascend_exactly_at_dwell_elapse(self):
+        m = SawtoothMission()
+        m.start(_make_dwell_state(dwell_s=30.0))
+        m.update(200_000.0)
+        m.reference(100.0)  # first reference stamps the timer
+        # Just short of the hold — still station-keeping.
+        pose = m.reference(129.9)
+        assert pose.position.z == pytest.approx(200_000.0)
+        assert _pitch_of(pose) == pytest.approx(0.0)
+        # `>=` predicate — the boundary itself flips to the ascend leg.
+        pose = m.reference(130.0)
+        assert pose.position.z == pytest.approx(0.0)
+        assert _pitch_of(pose) == pytest.approx(+0.4)
+
+    def test_bob_during_dwell_does_not_restart_timer(self):
+        m = SawtoothMission()
+        m.start(_make_dwell_state(dwell_s=30.0))
+        m.update(200_000.0)
+        m.reference(100.0)  # timer stamped at t=100
+        # Bob shallow of the band mid-hold — the timer must keep running
+        # from first entry, so the flip still lands at t=130.
+        m.update(200_000.0 - DESCEND_TOLERANCE_PA - 5_000.0)
+        assert _pitch_of(m.reference(115.0)) == pytest.approx(0.0)
+        assert m.reference(130.0).position.z == pytest.approx(0.0)
+
+    def test_bob_during_dwell_does_not_trigger_resurface(self):
+        # Even a full surface reading mid-hold must not count as a
+        # resurface or terminate the mission — the state machine is frozen.
+        m = SawtoothMission()
+        m.start(_make_dwell_state(dwell_s=30.0, n_resurfaces=1))
+        m.update(200_000.0)
+        m.reference(100.0)
+        m.update(0.0)
+        assert m._resurface_count == 0
+        assert m.is_done(115.0) is False
+        pose = m.reference(115.0)
+        assert pose.position.z == pytest.approx(200_000.0)
+        assert _pitch_of(pose) == pytest.approx(0.0)
+
+    def test_full_cycle_with_dwell_terminates(self):
+        # depth -> hold -> ascend -> surface completes a 1-resurface mission.
+        m = SawtoothMission()
+        m.start(_make_dwell_state(dwell_s=30.0, n_resurfaces=1))
+        m.update(200_000.0)
+        m.reference(100.0)
+        m.reference(130.0)  # dwell elapsed -> ascending
+        m.update(0.0)  # resurfaced, count=1
+        assert m._resurface_count == 1
+        assert m.is_done(131.0) is True
+
+    def test_dwell_quat_is_unit(self):
+        m = SawtoothMission()
+        m.start(_make_dwell_state(dwell_s=30.0))
+        m.update(200_000.0)
+        q = m.reference(0.0).orientation
+        norm = math.sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w)
+        assert norm == pytest.approx(1.0, abs=1e-9)
+
+    def test_dwell_zero_flips_immediately(self):
+        # `dwell_s=0` (the `MissionState` default) preserves the historical
+        # contract: band entry flips straight to the ascend leg with no
+        # station-keep tick in between.
+        m = SawtoothMission()
+        m.start(_make_state())  # default dwell_s=0.0
+        m.update(200_000.0)
+        pose = m.reference(0.0)
+        assert pose.position.z == pytest.approx(0.0)
+        assert _pitch_of(pose) == pytest.approx(+0.4)
+
+    def test_dwell_zero_full_cycle_unchanged(self):
+        m = SawtoothMission()
+        m.start(_make_state(target_pa=200_000.0, n_resurfaces=1))
+        assert not m.is_done(0.0)
+        m.update(200_000.0)  # depth reached, ascending
+        assert not m.is_done(0.0)
+        m.update(0.0)  # resurfaced, count=1
+        assert m.is_done(0.0) is True

@@ -14,7 +14,7 @@ production topic names overlap.
 
 import pytest
 
-from ._sim_helpers import spin_until
+from ._sim_helpers import spin_for, spin_until
 
 pytestmark = pytest.mark.sim
 
@@ -64,6 +64,50 @@ rig_pump = make_rig(
     _LabelProbe,
     init_args=["--ros-args", "-p", "anomaly_class:=bcu_pump"],
     name="rig_pump",
+    bridge_cls=AnomalyLabelBridge,
+)
+
+# Schedule-gated sensor labels (v2): active is onset-aware. Archetype is a
+# passthrough label here (the label bridge never applies the fault), so
+# bias -- which supports every schedule shape -- keeps the rigs uniform.
+SENSOR_ONSET_S = 3.0
+INTERMITTENT_PERIOD_S = 2.0
+INTERMITTENT_DUTY = 0.5
+
+rig_sensor_onset = make_rig(
+    _LabelProbe,
+    init_args=[
+        "--ros-args",
+        "-p",
+        "anomaly_class:=sensor",
+        "-p",
+        "channel:=tank_pressure",
+        "-p",
+        "archetype:=bias",
+        "-p",
+        f"schedule_onset_s:={SENSOR_ONSET_S}",
+    ],
+    name="rig_sensor_onset",
+    bridge_cls=AnomalyLabelBridge,
+)
+rig_sensor_intermittent = make_rig(
+    _LabelProbe,
+    init_args=[
+        "--ros-args",
+        "-p",
+        "anomaly_class:=sensor",
+        "-p",
+        "channel:=tank_pressure",
+        "-p",
+        "archetype:=bias",
+        "-p",
+        "schedule_shape:=intermittent",
+        "-p",
+        f"schedule_period_s:={INTERMITTENT_PERIOD_S}",
+        "-p",
+        f"schedule_duty:={INTERMITTENT_DUTY}",
+    ],
+    name="rig_sensor_intermittent",
     bridge_cls=AnomalyLabelBridge,
 )
 
@@ -126,6 +170,52 @@ def test_bcu_pump_active_gates_on_rpm_and_motor_valve(rig_pump):
         lambda: probe.labels and probe.labels[-1].active is False,
         timeout_s=10.0,
     ), "label never went inactive after rpm 0"
+
+
+def test_sensor_onset_gates_active_false_then_true(rig_sensor_onset):
+    """A delayed onset (step): sensor labels carry the class the whole run
+    but `active` is False before the onset and latches True after it."""
+    probe, executor = rig_sensor_onset
+
+    # Before onset: labeled but not yet influencing data.
+    early = _wait_fresh_labels(probe, executor)
+    assert all(l.anomaly_class == "sensor" for l in early)
+    assert all(l.channel == "tank_pressure" for l in early)
+    assert all(l.active is False for l in early), (
+        f"sensor active before onset: {[l.active for l in early]}"
+    )
+
+    # After the onset fires, active goes True and holds.
+    assert spin_until(
+        executor,
+        lambda: probe.labels and probe.labels[-1].active is True,
+        timeout_s=SENSOR_ONSET_S + 3.0,
+    ), "sensor label never went active after the onset"
+    late = _wait_fresh_labels(probe, executor)
+    assert all(l.active is True for l in late), (
+        f"sensor active did not hold after onset: {[l.active for l in late]}"
+    )
+
+
+def test_intermittent_schedule_toggles_active(rig_sensor_intermittent):
+    """An intermittent schedule: `active` toggles with the duty window --
+    both on- and off-windows occur and the label transitions repeatedly
+    (a step would show a single False->True edge at most)."""
+    probe, executor = rig_sensor_intermittent
+
+    start = len(probe.labels)
+    spin_for(executor, 2.5 * INTERMITTENT_PERIOD_S)
+    labels = probe.labels[start:]
+
+    assert len(labels) >= 20, f"too few labels to resolve the duty cycle: {len(labels)}"
+    actives = [l.active for l in labels]
+    assert any(a is True for a in actives), "intermittent schedule never activated"
+    assert any(a is False for a in actives), "intermittent schedule never deactivated"
+    transitions = sum(1 for a, b in zip(actives, actives[1:]) if a != b)
+    assert transitions >= 2, (
+        f"intermittent schedule did not toggle (transitions={transitions});"
+        f" active pattern: {actives}"
+    )
 
 
 def test_unknown_class_fails_fast():

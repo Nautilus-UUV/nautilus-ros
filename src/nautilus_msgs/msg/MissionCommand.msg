@@ -15,3 +15,11 @@ float32 angle_rad
 
 # SAWTOOTH: number of resurface events before the mission terminates.
 uint16 n_resurfaces
+
+# SAWTOOTH: seconds to station-keep at the deep extremum before ascending
+# (0 = flip immediately, the legacy profile). STAIRCASE: per-step dwell.
+float32 dwell_s
+
+# STAIRCASE: number of ladder steps between surface and target_pressure_pa
+# (0 is treated as 1). Ignored by every other mission.
+uint16 n_steps

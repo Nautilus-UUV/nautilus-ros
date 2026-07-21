@@ -1,4 +1,4 @@
-"""Mission profile contract.
+"""Mission profile contract, plus the pieces every profile builds it from.
 
 A mission turns time-since-start into a `POSITION_TARGET` Pose. The
 executor (`pathfinding_node`) owns the clock and the publisher; the
@@ -9,6 +9,52 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from geometry_msgs.msg import Pose
+
+from py_pkg.math_utils import rpy_to_quaternion
+
+
+def depth_pitch_pose(depth_pa: float, pitch_rad: float) -> Pose:
+    """The setpoint encoding every profile emits: gauge Pa in `position.z`,
+    a level-roll/zero-yaw pitch quaternion in `orientation`."""
+    pose = Pose()
+    pose.position.z = depth_pa
+    qx, qy, qz, qw = rpy_to_quaternion(0.0, pitch_rad, 0.0)
+    pose.orientation.x = qx
+    pose.orientation.y = qy
+    pose.orientation.z = qz
+    pose.orientation.w = qw
+    return pose
+
+
+class DwellTimer:
+    """Bounded hold at a station, stamped on first use and never restarted.
+
+    `SawtoothMission` and `StaircaseMission` share this: the hold runs
+    `dwell_s` from the FIRST `expired()` call after entering the band —
+    deliberately unlike `SurfaceMission`'s restart-on-bob dwell — so every
+    hold is bounded and a sweep's wall-clock budget stays computable.
+    Callers freeze their own state machine while holding, so a pressure bob
+    can neither restart the hold nor advance the mission.
+    """
+
+    def __init__(self, dwell_s: float = 0.0) -> None:
+        self.dwell_s = dwell_s
+        self._start_t: float | None = None
+
+    def reset(self) -> None:
+        """Forget any stamp, so the next `expired()` starts a fresh hold."""
+        self._start_t = None
+
+    def expired(self, mission_t: float) -> bool:
+        """True once `dwell_s` has elapsed since the first call of this hold.
+
+        Lazy-stamps on that first call, so `dwell_s <= 0` expires on it —
+        a staircase with no dwell advances a leg per tick, as it did before
+        dwell existed.
+        """
+        if self._start_t is None:
+            self._start_t = mission_t
+        return mission_t - self._start_t >= self.dwell_s
 
 
 @dataclass
@@ -24,6 +70,8 @@ class MissionState:
     target_pressure_pa: float = 0.0  # TRIM_AND_NEUTRAL_BUOYANCY hold-depth
     angle_rad: float = 0.0  # SAWTOOTH glide pitch magnitude
     n_resurfaces: int = 0  # SAWTOOTH termination count
+    dwell_s: float = 0.0  # SAWTOOTH/STAIRCASE hold time at depth (0 = no hold)
+    n_steps: int = 1  # STAIRCASE descent step count
 
 
 class MissionProfile(Protocol):

@@ -50,6 +50,9 @@ class UUVTopics:
     POSITION_ESTIMATION = "/position/estimation"
     PATH = "/path"
     COMMAND = "/command"
+    # Published once (latched) by pathfinding when the active mission's
+    # is_done fires; consumed by the sim run watchdog.
+    MISSION_COMPLETE = "/mission/complete"
 
     # Operator initialization. One latched message carries the pre-dive
     # registrations (surface pressure + tank empty/full endpoints) -- a

@@ -40,6 +40,7 @@ setup(
             "stm_com_node = py_pkg.stm_com.stm_com_node:main",
             "can_com_node = py_pkg.stm_com.can_com_node:main",
             "liveness_node = py_pkg.liveness.liveness_node:main",
+            "run_watchdog = py_pkg.watchdog.run_watchdog_node:main",
             "bcu_debug_node = py_pkg.debug.bcu_debug_node:main",
             "acu_debug_node = py_pkg.debug.acu_debug_node:main",
             "auto_mission = py_pkg.debug.auto_mission:main",

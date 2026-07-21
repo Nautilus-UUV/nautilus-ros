@@ -17,3 +17,8 @@ rig:
   plant:
     bladder_min_m3: 0.000866
     bladder_max_m3: 0.002465
+    # 0.0 = pin the gas-law cushion through both calibrated endpoints.
+    # The widened bladder span above pushes the nominal free cushion's
+    # bladder-min reading ~16 kPa past tank_pressure_full_pa; pinning
+    # keeps this scenario off the map's interval clamp.
+    tank_air_volume_m3: 0.0

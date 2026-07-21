@@ -37,6 +37,7 @@ from .spec.control import (
     PIDPressureSpec,
 )
 from .spec.rig import (
+    FaultScheduleSpec,
     FinAeroSpec,
     HydrodynamicsSpec,
     ImuNoiseSpec,
@@ -227,6 +228,22 @@ def _effective_noise(scen: RigScenario) -> NoiseSpec:
     return scen.noise if scen.noise.enabled else _NOISE_OFF
 
 
+def _fault_schedule_params(prefix: str, s: FaultScheduleSpec) -> dict[str, Any]:
+    """Wire params for one fault's onset/progression envelope.
+
+    Emitted unconditionally (defaults are the inert step-at-t=0
+    schedule) so the wire shape never depends on whether a run is
+    faulted.
+    """
+    return {
+        f"{prefix}onset_s": s.onset_s,
+        f"{prefix}shape": s.shape,
+        f"{prefix}ramp_s": s.ramp_s,
+        f"{prefix}period_s": s.period_s,
+        f"{prefix}duty": s.duty,
+    }
+
+
 def _sensor_fault_params(
     prefix: str, f: SensorFaultSpec, parent_seed: int, component_id: str
 ) -> dict[str, Any]:
@@ -240,6 +257,7 @@ def _sensor_fault_params(
         f"{prefix}fault_magnitude": f.magnitude,
         f"{prefix}fault_drop_prob": f.drop_prob,
         f"{prefix}fault_seed": derive_seed(parent_seed, component_id),
+        **_fault_schedule_params(f"{prefix}fault_", f.schedule),
     }
 
 
@@ -254,11 +272,13 @@ def params_for_bcu_bridge(scen: RigScenario, parent_seed: int = 0) -> dict[str, 
         "bladder_min_m3": p.bladder_min_m3,
         "bladder_max_m3": p.bladder_max_m3,
         "fault_effectiveness": f.bcu_pump.effectiveness,
+        **_fault_schedule_params("fault_", f.bcu_pump.schedule),
         "publish_rate_hz": b.publish_rate_hz,
         "tank_pressure_empty_pa": p.tank_pressure_empty_pa,
         "tank_pressure_full_pa": p.tank_pressure_full_pa,
         "pump_response_delay_s": p.pump_response_delay_s,
         "pump_slew_rpm_per_s": p.pump_slew_rpm_per_s,
+        "pump_overshoot_frac": p.pump_overshoot_frac,
         "tank_map_shape": p.tank_map_shape,
         "tank_air_volume_m3": p.tank_air_volume_m3,
         "tank_noise_seed": derive_seed(parent_seed, "tank_pressure_noise"),
@@ -319,8 +339,34 @@ def params_for_anomaly_label(scen: Scenario) -> dict[str, Any]:
     wire params (the bridge re-validates them through AnomalyLabelSpec
     and broadcasts them verbatim, plus its per-class `active` gating),
     so a field added to the spec reaches the wire without re-listing.
+
+    The labeled class's fault schedule rides along under a `schedule_`
+    prefix so the bridge's `active` flag can honor the onset. Which block
+    the label points at is `Scenario.labeled_fault` (the schedule's
+    authority is `rig.faults`, and that property sits beside the
+    validator enforcing the mapping); nominal/biofouling/comms have no
+    such block and carry the inert default.
     """
-    return scen.anomaly.model_dump()
+    fault = scen.labeled_fault
+    sched = fault.schedule if fault is not None else FaultScheduleSpec()
+    return {
+        **scen.anomaly.model_dump(),
+        **_fault_schedule_params("schedule_", sched),
+    }
+
+
+def params_for_auto_mission(scen: Scenario) -> dict[str, Any]:
+    """Wire params for the sim mission autostart (debug/auto_mission).
+
+    The tank endpoints arm bcu_node's `clamp_to_tank_limits` through the
+    same DIVE_INIT path the operator UI uses on hardware. Sampled plant
+    truth on purpose: the hardware value is a pre-dive *measurement* of
+    the actual tank, so the sim surrogate measures the sampled plant.
+    """
+    return {
+        "dive_init_tank_empty_pa": scen.rig.plant.tank_pressure_empty_pa,
+        "dive_init_tank_full_pa": scen.rig.plant.tank_pressure_full_pa,
+    }
 
 
 # ---------------------------------------------------------------------------

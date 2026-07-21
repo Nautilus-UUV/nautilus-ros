@@ -58,6 +58,9 @@ TOPIC_MESSAGE_MAP = {
     # Mission run/stop: true = start the loaded mission, false = stop and reset
     # the stack to its clean initial state.
     UUVTopics.COMMAND: Bool,
+    # Mission completion flag: one latched True from pathfinding when the
+    # active mission's is_done fires.
+    UUVTopics.MISSION_COMPLETE: Bool,
     UUVTopics.DIVE_INIT: DiveInit,
     UUVTopics.DEBUG_BCU_RPM: BcuPumpCommand,
     UUVTopics.DEBUG_BCU_RPM_UNTIL_PRESSURE: BcuPumpUntilPressureCommand,

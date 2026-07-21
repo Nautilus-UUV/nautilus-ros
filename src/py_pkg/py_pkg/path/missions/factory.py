@@ -4,6 +4,7 @@ from enum import IntEnum
 
 from .profile import MissionProfile
 from .sawtooth import SawtoothMission
+from .staircase import StaircaseMission
 from .surface import SurfaceMission
 from .trim_and_neutral import TrimAndNeutralBuoyancyMission
 
@@ -12,12 +13,14 @@ class MissionId(IntEnum):
     TRIM_AND_NEUTRAL_BUOYANCY = 0
     SAWTOOTH = 1
     SURFACE = 2
+    STAIRCASE = 3
 
 
 _REGISTRY: dict[int, type[MissionProfile]] = {
     MissionId.TRIM_AND_NEUTRAL_BUOYANCY: TrimAndNeutralBuoyancyMission,
     MissionId.SAWTOOTH: SawtoothMission,
     MissionId.SURFACE: SurfaceMission,
+    MissionId.STAIRCASE: StaircaseMission,
 }
 
 

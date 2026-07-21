@@ -12,11 +12,14 @@ dynamics directly (same split as `sensor_noise.py`).
 """
 
 import functools
+import logging
 from collections import deque
 from typing import Callable
 
 from py_pkg.math_utils import clamp
 from py_pkg.robot_specs import BCU_MOTOR_VALVE_MASK
+
+_LOG = logging.getLogger(__name__)
 
 
 class PumpDynamics:
@@ -30,15 +33,33 @@ class PumpDynamics:
     ``delay_s <= 0`` disables the dead time; ``slew_rpm_per_s <= 0``
     disables the ramp. Both disabled is exact passthrough (the
     pre-calibration bridge behavior).
+
+    ``overshoot_frac > 0`` adds the EPOS4 velocity-loop crest the lake
+    feedback shows on hardware (shaft peaks at 3113 on a 3000 command,
+    frac ~= 0.038): on a new nonzero delayed target the ramp aims past
+    it by ``overshoot_frac`` of the step, crests, then settles back to
+    the target at the same slew rate. Spin-down to 0 never overshoots.
+    ``overshoot_frac <= 0`` leaves every code path bit-identical to the
+    plain delay+slew model.
     """
 
-    def __init__(self, delay_s: float, slew_rpm_per_s: float):
+    def __init__(
+        self,
+        delay_s: float,
+        slew_rpm_per_s: float,
+        overshoot_frac: float = 0.0,
+    ):
         self.delay_s = float(delay_s)
         self.slew_rpm_per_s = float(slew_rpm_per_s)
+        self.overshoot_frac = float(overshoot_frac)
         # (t_s, commanded_rpm) samples awaiting the dead time. Before any
         # sample is old enough the delayed target is 0.0 (pump at rest).
         self._history: deque[tuple[float, float]] = deque()
         self._eff_rpm = 0.0
+        # Overshoot state: the last delayed target we aimed for and, while
+        # an excursion is in flight, the crest the ramp is heading to.
+        self._prev_target = 0.0
+        self._peak: float | None = None
 
     def step(self, t_s: float, commanded_rpm: float, dt_s: float) -> float:
         """Advance to time ``t_s`` with the current command; return eff RPM.
@@ -63,12 +84,28 @@ class PumpDynamics:
             else:
                 target = 0.0
 
+        if self.overshoot_frac > 0.0:
+            if target != self._prev_target:
+                # New setpoint: aim past a nonzero target by a fraction of
+                # the step; a stop command ramps straight to 0.
+                self._peak = (
+                    target + self.overshoot_frac * (target - self._eff_rpm)
+                    if target != 0.0
+                    else None
+                )
+                self._prev_target = target
+            slew_to = self._peak if self._peak is not None else target
+        else:
+            slew_to = target
+
         if self.slew_rpm_per_s <= 0.0:
-            self._eff_rpm = target
+            self._eff_rpm = slew_to
         else:
             budget = self.slew_rpm_per_s * max(dt_s, 0.0)
-            error = target - self._eff_rpm
+            error = slew_to - self._eff_rpm
             self._eff_rpm += clamp(error, -budget, budget)
+        if self._peak is not None and abs(self._peak - self._eff_rpm) < 1e-9:
+            self._peak = None  # crest reached; settle back toward the target
         return self._eff_rpm
 
 
@@ -132,6 +169,12 @@ def tank_pressure_gaslaw(
     bladder_min``. A finite ``air_volume_m3`` frees the curvature (one
     fitted dof); it must exceed ``span`` or the cushion would vanish
     inside the operating range.
+
+    The return value is clamped to ``[empty, full]``: the calibrated
+    endpoints are the physical range of the real tank (~97.8–195.5 kPa
+    on hardware), and a free cushion smaller than the pinned one would
+    otherwise run the hyperbola arbitrarily far past ``full`` at the
+    ``bladder_min`` rail.
     """
     span = bladder_max_m3 - bladder_min_m3
     if span <= 0:
@@ -151,7 +194,10 @@ def tank_pressure_gaslaw(
         )
     volume_m3 = clamp(volume_m3, bladder_min_m3, bladder_max_m3)
     oil_in_tank = bladder_max_m3 - volume_m3
-    return tank_pressure_empty_pa * air_volume_m3 / (air_volume_m3 - oil_in_tank)
+    p = tank_pressure_empty_pa * air_volume_m3 / (air_volume_m3 - oil_in_tank)
+    if tank_pressure_full_pa > tank_pressure_empty_pa:
+        p = clamp(p, tank_pressure_empty_pa, tank_pressure_full_pa)
+    return p
 
 
 def make_tank_pressure_map(
@@ -194,5 +240,27 @@ def make_tank_pressure_map(
         # Probe call: surfaces a too-small free cushion (the guard in
         # tank_pressure_gaslaw) at startup instead of on the first tick.
         fn(bladder_min_m3)
+        # A free cushion below the pinned one would drive the hyperbola
+        # past the full endpoint at the bladder_min rail; the map clamps
+        # that, but the config is inconsistent — say so once at bind time.
+        span = bladder_max_m3 - bladder_min_m3
+        if (
+            air_volume_m3 is not None
+            and span > 0
+            and tank_pressure_full_pa > tank_pressure_empty_pa
+        ):
+            unclamped = (
+                tank_pressure_empty_pa * air_volume_m3 / (air_volume_m3 - span)
+            )
+            if unclamped > tank_pressure_full_pa:
+                _LOG.warning(
+                    "gaslaw tank map: air_volume_m3=%.4e reaches %.0f Pa at "
+                    "bladder_min, past tank_pressure_full_pa=%.0f — output "
+                    "clamped to the calibrated interval (use 0.0 to pin the "
+                    "cushion through both endpoints)",
+                    air_volume_m3,
+                    unclamped,
+                    tank_pressure_full_pa,
+                )
         return fn
     raise ValueError(f"unknown tank_map_shape {shape!r}; expected linear or gaslaw")

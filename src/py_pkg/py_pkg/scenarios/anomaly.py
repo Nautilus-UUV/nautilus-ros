@@ -23,6 +23,11 @@ Design contracts (each Tier-1 tested):
 - **apply_anomaly** writes only ``rig.faults.*`` / the biofouling
   hydro multipliers / the ``anomaly:`` label block — the label is
   validated against the faults by the Scenario schema at load time.
+- **Append-only onset draws**: a class's optional ``onset:`` block is
+  drawn strictly AFTER its severity bands on the same stream, so adding
+  (or removing) the block never changes the severities a seed produces.
+  Immediate onsets keep the default schedule — the emitted YAML stays
+  byte-identical to a v1 whole-run fault.
 
 The biofouling buoyancy offset (fouling mass -> neutral-volume shift)
 is computed here (``fouled_neutral_volume``) but *applied* by the
@@ -39,7 +44,8 @@ from pydantic import Field, model_validator
 
 from .seed import derive_seed
 from .spec._shared import StrictModel
-from .spec.rig import SensorFaultKind, SensorFaultsSpec
+from .spec.rig import FaultScheduleShape, SensorFaultKind, SensorFaultsSpec
+from .stratify import check_weights, stratified_assignment, stratified_counts
 
 # Kept explicit (not derived from the AnomalyLabelSpec Literal): this
 # tuple's ORDER feeds the seeded class shuffle, so it must never move
@@ -107,6 +113,72 @@ class Band(StrictModel):
         return float(v)
 
 
+# Cumulative-weight shape draw order — derived from the wire schema so
+# the sampler can't drift from FaultScheduleSpec, and ORDER-LOCKED like
+# ANOMALY_CLASSES: get_args preserves the Literal's order, and
+# reordering it would re-map the same uniform draw to a different shape
+# under identical weights, silently rewriting every seeded sweep.
+ONSET_SHAPES = tuple(get_args(FaultScheduleShape))
+
+
+class OnsetMix(StrictModel):
+    """When (and how) a fault class turns on, per anomalous run.
+
+    ``p_immediate`` is the probability the fault keeps v1 whole-run
+    semantics (default schedule, active from t=0). Otherwise the fault
+    starts at ``onset_frac`` of the run's expected mission duration with
+    a shape drawn from ``shape_weights``. Each shape-parameter band is
+    required iff its shape carries weight — authoring one for a
+    zero-weight shape is a dead config and rejected loudly.
+    """
+
+    p_immediate: float
+    onset_frac: Band
+    shape_weights: dict[str, float]
+    ramp_s: Optional[Band] = None
+    period_s: Optional[Band] = None
+    duty: Optional[Band] = None
+
+    @model_validator(mode="after")
+    def _check_weights_and_params(self) -> "OnsetMix":
+        if not (0.0 <= self.p_immediate <= 1.0):
+            raise ValueError(
+                f"onset: p_immediate must be in [0, 1], got {self.p_immediate}"
+            )
+        if self.onset_frac.signed or not (
+            0.0 <= self.onset_frac.low and self.onset_frac.high <= 1.0
+        ):
+            raise ValueError(
+                "onset: onset_frac band must be unsigned and sit inside [0, 1]"
+            )
+        check_weights(self.shape_weights, ONSET_SHAPES, block="onset", noun="shapes")
+        needs = {
+            "ramp_s": "ramp",
+            "period_s": "intermittent",
+            "duty": "intermittent",
+        }
+        for name, shape in needs.items():
+            band: Optional[Band] = getattr(self, name)
+            weighted = self.shape_weights.get(shape, 0.0) > 0.0
+            if weighted and band is None:
+                raise ValueError(
+                    f"onset: shape {shape!r} has weight > 0 but no {name} band"
+                )
+            if not weighted and band is not None:
+                raise ValueError(
+                    f"onset: {name} band authored but shape {shape!r} has no weight"
+                )
+            if band is not None and band.signed:
+                raise ValueError(f"onset: {name} band cannot be signed")
+        for name in ("ramp_s", "period_s"):
+            band = getattr(self, name)
+            if band is not None and band.low <= 0.0:
+                raise ValueError(f"onset: {name} band must be positive")
+        if self.duty is not None and not (0.0 < self.duty.low and self.duty.high < 1.0):
+            raise ValueError("onset: duty band must sit inside (0, 1)")
+        return self
+
+
 class BcuPumpMix(StrictModel):
     """Severity bands for the persistent pump fault.
 
@@ -119,6 +191,7 @@ class BcuPumpMix(StrictModel):
     effectiveness: Band
     response_delay_s: Optional[Band] = None
     slew_rpm_per_s: Optional[Band] = None
+    onset: Optional[OnsetMix] = None
 
 
 class SensorMix(StrictModel):
@@ -137,6 +210,7 @@ class SensorMix(StrictModel):
         min_length=1
     )
     bands: dict[str, dict[str, Band]] = Field(default_factory=dict)
+    onset: Optional[OnsetMix] = None
 
     @model_validator(mode="after")
     def _check_complete(self) -> "SensorMix":
@@ -219,14 +293,9 @@ class AnomalyMixSpec(StrictModel):
 
     @model_validator(mode="after")
     def _check_weights_and_blocks(self) -> "AnomalyMixSpec":
-        unknown = set(self.weights) - set(ANOMALY_CLASSES)
-        if unknown:
-            raise ValueError(f"anomaly_mix: unknown classes {sorted(unknown)}")
-        if any(w < 0 for w in self.weights.values()):
-            raise ValueError("anomaly_mix: weights must be >= 0")
-        total = sum(self.weights.values())
-        if abs(total - 1.0) > 1e-9:
-            raise ValueError(f"anomaly_mix: weights must sum to 1, got {total}")
+        check_weights(
+            self.weights, ANOMALY_CLASSES, block="anomaly_mix", noun="classes"
+        )
         for cls in ("bcu_pump", "sensor", "comms", "biofouling"):
             if self.weights.get(cls, 0.0) > 0.0 and getattr(self, cls) is None:
                 raise ValueError(
@@ -237,57 +306,72 @@ class AnomalyMixSpec(StrictModel):
 
 @dataclass(frozen=True)
 class AnomalyAssignment:
-    """One run's resolved class + severity draw."""
+    """One run's resolved class + severity (and optional onset) draw.
+
+    ``onset`` is empty for nominal runs and for mixes without an
+    ``onset:`` block (v1 semantics); ``{"immediate": True}`` for a
+    fault that keeps the default whole-run schedule; otherwise the
+    resolved ``onset_frac`` / ``onset_s`` / ``shape`` (+ shape params),
+    enough to reconstruct the emitted schedule from the manifest alone.
+    """
 
     anomaly_class: str
     channel: str = ""
     archetype: str = ""
     severity: dict = field(default_factory=dict)
+    onset: dict = field(default_factory=dict)
 
     def record(self) -> dict:
-        """Manifest record — explicit for every run, nominal included."""
-        return {
+        """Manifest record — explicit for every run, nominal included.
+
+        ``onset`` is included only when the mix drew one, so onset-free
+        sweeps keep byte-identical manifests (absence == v1 whole-run
+        semantics; an immediate draw is still recorded explicitly).
+        """
+        record = {
             "class": self.anomaly_class,
             "channel": self.channel,
             "archetype": self.archetype,
             "severity": dict(self.severity),
         }
+        if self.onset:
+            record["onset"] = dict(self.onset)
+        return record
 
 
 def class_counts(mix: AnomalyMixSpec, n: int) -> dict[str, int]:
-    """Largest-remainder rounding of ``weights * n`` to exact counts.
+    """Exact per-class counts (`stratify.stratified_counts`).
 
-    Ties break in fixed ANOMALY_CLASSES order so the split is a pure
-    function of (weights, n).
+    Ties break in fixed ANOMALY_CLASSES order, so ``nominal`` — first in
+    the tuple — takes the tie.
     """
-    quotas = {cls: mix.weights.get(cls, 0.0) * n for cls in ANOMALY_CLASSES}
-    counts = {cls: int(quotas[cls]) for cls in ANOMALY_CLASSES}
-    leftover = n - sum(counts.values())
-    # sorted() is stable over the canonical tuple, so equal remainders
-    # keep ANOMALY_CLASSES order without an explicit tie-break key.
-    by_remainder = sorted(ANOMALY_CLASSES, key=lambda cls: -(quotas[cls] - counts[cls]))
-    for cls in by_remainder[:leftover]:
-        counts[cls] += 1
-    return counts
+    return stratified_counts(mix.weights, ANOMALY_CLASSES, n)
 
 
 def assign_classes(mix: AnomalyMixSpec, parent_seed: int, n: int) -> list[str]:
     """Stratified class assignment: exact counts, seeded permutation."""
-    counts = class_counts(mix, n)
-    vector = [cls for cls in ANOMALY_CLASSES for _ in range(counts[cls])]
-    rng = random.Random(derive_seed(parent_seed, "anomaly_class_assignment"))
-    rng.shuffle(vector)
-    return vector
+    return stratified_assignment(
+        mix.weights, ANOMALY_CLASSES, parent_seed, "anomaly_class_assignment", n
+    )
 
 
 def draw_assignment(
-    mix: AnomalyMixSpec, parent_seed: int, idx: int, anomaly_class: str
+    mix: AnomalyMixSpec,
+    parent_seed: int,
+    idx: int,
+    anomaly_class: str,
+    expected_duration_s: Optional[float] = None,
 ) -> AnomalyAssignment:
-    """Severity draw for run ``idx`` given its assigned class.
+    """Severity (and onset) draw for run ``idx`` given its assigned class.
 
     Every run gets its own derived RNG stream; the draw order inside a
     class is fixed (documented per branch), so same seed + same mix
-    config => identical severities forever.
+    config => identical severities forever. Onset draws are APPEND-ONLY
+    — they run after every severity draw on the same stream, so a mix
+    gaining an ``onset:`` block keeps its severity values seed-for-seed.
+    ``expected_duration_s`` (the run's optimistic mission duration) is
+    what a non-immediate ``onset_frac`` scales into ``onset_s``; the
+    caller must supply it whenever a mix carries onset blocks.
     """
     if anomaly_class not in ANOMALY_CLASSES:
         raise ValueError(f"unknown anomaly class {anomaly_class!r}")
@@ -298,17 +382,19 @@ def draw_assignment(
 
     if anomaly_class == "bcu_pump":
         m = _require(mix.bcu_pump, "bcu_pump")
-        # Draw order: effectiveness, then the optional transient bands.
+        # Draw order: effectiveness, then the optional transient bands,
+        # then the onset.
         severity = {"effectiveness": m.effectiveness.draw(rng)}
         if m.response_delay_s is not None:
             severity["response_delay_s"] = m.response_delay_s.draw(rng)
         if m.slew_rpm_per_s is not None:
             severity["slew_rpm_per_s"] = m.slew_rpm_per_s.draw(rng)
-        return AnomalyAssignment("bcu_pump", severity=severity)
+        onset = _draw_onset(m.onset, rng, expected_duration_s)
+        return AnomalyAssignment("bcu_pump", severity=severity, onset=onset)
 
     if anomaly_class == "sensor":
         m = _require(mix.sensor, "sensor")
-        # Draw order: channel, archetype, then the severity band.
+        # Draw order: channel, archetype, the severity band, then the onset.
         channel = m.channels[rng.randrange(len(m.channels))]
         archetype = m.archetypes[rng.randrange(len(m.archetypes))]
         if archetype == "stuck":
@@ -317,8 +403,21 @@ def draw_assignment(
             severity = {"drop_prob": m.bands[channel][archetype].draw(rng)}
         else:  # bias / drift
             severity = {"magnitude": m.bands[channel][archetype].draw(rng)}
+        onset = _draw_onset(
+            m.onset,
+            rng,
+            expected_duration_s,
+            # drift is already a rate-ramp and stuck has no unambiguous
+            # latch point, so the schema accepts only step schedules for
+            # them: the drawn shape is FORCED to step.
+            force_step=archetype in ("drift", "stuck"),
+        )
         return AnomalyAssignment(
-            "sensor", channel=channel, archetype=archetype, severity=severity
+            "sensor",
+            channel=channel,
+            archetype=archetype,
+            severity=severity,
+            onset=onset,
         )
 
     if anomaly_class == "comms":
@@ -343,6 +442,79 @@ def _require(block, cls: str):
     return block
 
 
+def _draw_shape(weights: dict[str, float], rng: random.Random) -> str:
+    """One shape by cumulative weight over the FIXED ONSET_SHAPES order."""
+    u = rng.random()
+    acc = 0.0
+    for shape in ONSET_SHAPES:
+        acc += weights.get(shape, 0.0)
+        if u < acc:
+            return shape
+    # Float-sum edge (u lands past the accumulated total): the last
+    # weighted shape takes it, keeping the map total-preserving.
+    return next(s for s in reversed(ONSET_SHAPES) if weights.get(s, 0.0) > 0.0)
+
+
+def _draw_onset(
+    onset: Optional[OnsetMix],
+    rng: random.Random,
+    expected_duration_s: Optional[float],
+    force_step: bool = False,
+) -> dict:
+    """One fault's onset record; ``{}`` when the mix has no onset block.
+
+    Fixed draw order — immediate gate, onset_frac, shape (cumulative
+    weights over ONSET_SHAPES), then the drawn shape's params (ramp_s;
+    or period_s then duty) — so a band edit never desynchronizes the
+    earlier draws. ``force_step`` (drift/stuck) overrides the drawn
+    shape AFTER its params are consumed: the stream stays aligned with
+    what the other archetypes on the same seed would have drawn.
+    """
+    if onset is None:
+        return {}
+    if rng.random() < onset.p_immediate:
+        # Whole-run fault, v1 semantics: default schedule, explicit record.
+        return {"immediate": True}
+    frac = onset.onset_frac.draw(rng)
+    shape = _draw_shape(onset.shape_weights, rng)
+    params: dict[str, float] = {}
+    if shape == "ramp":
+        params["ramp_s"] = onset.ramp_s.draw(rng)
+    elif shape == "intermittent":
+        params["period_s"] = onset.period_s.draw(rng)
+        params["duty"] = onset.duty.draw(rng)
+    if force_step:
+        shape = "step"
+        params = {}
+    if expected_duration_s is None:
+        raise ValueError(
+            "non-immediate onset drawn but expected_duration_s is None — "
+            "the caller must supply the run's expected mission duration"
+        )
+    return {
+        "onset_frac": frac,
+        "onset_s": frac * expected_duration_s,
+        "shape": shape,
+        **params,
+    }
+
+
+def _onset_schedule(onset: dict) -> Optional[dict]:
+    """The ``rig.faults.*.schedule`` block for a drawn onset, or None.
+
+    Immediate (or absent) onsets write NOTHING: the fault keeps the
+    default schedule and the emitted YAML stays byte-identical to a v1
+    whole-run fault.
+    """
+    if not onset or onset.get("immediate"):
+        return None
+    schedule = {"onset_s": onset["onset_s"], "shape": onset["shape"]}
+    for key in ("ramp_s", "period_s", "duty"):
+        if key in onset:
+            schedule[key] = onset[key]
+    return schedule
+
+
 def apply_anomaly(scenario: dict, assignment: AnomalyAssignment) -> None:
     """Write one run's anomaly into its scenario dict, in place.
 
@@ -350,17 +522,23 @@ def apply_anomaly(scenario: dict, assignment: AnomalyAssignment) -> None:
     to a no-mix sweep's output). Anomalous assignments write the
     matching ``rig.faults`` block (or multiply the biofouling hydro
     slots) plus the top-level ``anomaly:`` label the schema validates
-    and the label bridge broadcasts.
+    and the label bridge broadcasts. A non-immediate onset additionally
+    writes the labeled fault's ``schedule:`` block; immediate onsets
+    write nothing extra (default schedule == v1 whole-run YAML).
     """
     if assignment.anomaly_class == "nominal":
         return
 
     rig = scenario.setdefault("rig", {})
     sev = assignment.severity
+    schedule = _onset_schedule(assignment.onset)
 
     if assignment.anomaly_class == "bcu_pump":
         faults = rig.setdefault("faults", {})
-        faults.setdefault("bcu_pump", {})["effectiveness"] = sev["effectiveness"]
+        pump = faults.setdefault("bcu_pump", {})
+        pump["effectiveness"] = sev["effectiveness"]
+        if schedule is not None:
+            pump["schedule"] = schedule
         plant = rig.setdefault("plant", {})
         if "response_delay_s" in sev:
             plant["pump_response_delay_s"] = sev["response_delay_s"]
@@ -374,6 +552,8 @@ def apply_anomaly(scenario: dict, assignment: AnomalyAssignment) -> None:
             channel["drop_prob"] = sev["drop_prob"]
         elif assignment.archetype in ("bias", "drift"):
             channel["magnitude"] = sev["magnitude"]
+        if schedule is not None:
+            channel["schedule"] = schedule
     elif assignment.anomaly_class == "comms":
         faults = rig.setdefault("faults", {})
         faults.setdefault("comms", {})["drop_prob"] = sev["drop_prob"]

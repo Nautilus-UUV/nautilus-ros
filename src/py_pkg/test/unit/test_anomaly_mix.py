@@ -3,8 +3,11 @@
 Locks the validation-sweep contracts: stratified exact class counts,
 seeded determinism, stream decoupling (band edits never reshuffle
 assignments or sibling classes), apply_anomaly writing exactly the
-schema-consistent fields, and the biofouling buoyancy interplay
-(fouling mass -> neutral shift -> relaxed climb margin).
+schema-consistent fields, the biofouling buoyancy interplay
+(fouling mass -> neutral shift -> relaxed climb margin), and the
+append-only fault-onset draws (an ``onset:`` block never moves a
+seed's severities; non-immediate onsets land as validating
+``schedule:`` blocks, drift/stuck forced to step).
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ from py_pkg.scenarios.anomaly import (
     FOULING_DRAG_SLOTS,
     AnomalyMixSpec,
     Band,
+    OnsetMix,
     apply_anomaly,
     assign_classes,
     class_counts,
@@ -80,6 +84,40 @@ def _mix(**edits) -> AnomalyMixSpec:
 MIX = _mix()
 
 
+def _pump_onset_dict(p_immediate: float = 0.5) -> dict:
+    return {
+        "p_immediate": p_immediate,
+        "onset_frac": {"low": 0.05, "high": 0.60},
+        "shape_weights": {"step": 0.5, "ramp": 0.3, "intermittent": 0.2},
+        "ramp_s": {"low": 30.0, "high": 300.0},
+        "period_s": {"low": 20.0, "high": 120.0},
+        "duty": {"low": 0.3, "high": 0.7},
+    }
+
+
+def _sensor_onset_dict(p_immediate: float = 0.5) -> dict:
+    # No ramp weight: drift/stuck accept only step schedules, so the
+    # sensor class never authors a ramp band (mirrors the v2 spec).
+    return {
+        "p_immediate": p_immediate,
+        "onset_frac": {"low": 0.05, "high": 0.60},
+        "shape_weights": {"step": 0.8, "intermittent": 0.2},
+        "period_s": {"low": 20.0, "high": 120.0},
+        "duty": {"low": 0.3, "high": 0.7},
+    }
+
+
+def _onset_mix(p_immediate: float = 0.5) -> AnomalyMixSpec:
+    d = _mix_dict()
+    d["bcu_pump"]["onset"] = _pump_onset_dict(p_immediate)
+    d["sensor"]["onset"] = _sensor_onset_dict(p_immediate)
+    return AnomalyMixSpec.model_validate(d)
+
+
+# Any positive stand-in for the run's expected mission duration.
+DURATION_S = 2000.0
+
+
 # ---------------------------------------------------------------------------
 # Validation
 # ---------------------------------------------------------------------------
@@ -91,9 +129,7 @@ def test_mix_validation_rejects_bad_configs():
     with pytest.raises(ValueError, match="unknown"):
         _mix(weights={"nominal": 0.5, "gremlins": 0.5})
     with pytest.raises(ValueError, match="config block"):
-        AnomalyMixSpec.model_validate(
-            {"weights": {"nominal": 0.9, "comms": 0.1}}
-        )
+        AnomalyMixSpec.model_validate({"weights": {"nominal": 0.9, "comms": 0.1}})
     bad_sensor = _mix_dict()
     del bad_sensor["sensor"]["bands"]["tank_pressure"]["drift"]
     with pytest.raises(ValueError, match="missing band"):
@@ -247,9 +283,9 @@ def test_fault_classes_write_schema_consistent_scenarios(cls):
 
     faults = scenario["rig"]["faults"]
     if cls == "bcu_pump":
-        assert faults["bcu_pump"]["effectiveness"] == assignment.severity[
-            "effectiveness"
-        ]
+        assert (
+            faults["bcu_pump"]["effectiveness"] == assignment.severity["effectiveness"]
+        )
         assert (
             scenario["rig"]["plant"]["pump_response_delay_s"]
             == assignment.severity["response_delay_s"]
@@ -293,6 +329,173 @@ def test_biofouling_without_hydro_block_raises():
 
 
 # ---------------------------------------------------------------------------
+# Fault onsets
+# ---------------------------------------------------------------------------
+
+
+def test_onset_mix_validation_rejects_bad_configs():
+    with pytest.raises(ValueError, match="p_immediate"):
+        OnsetMix.model_validate({**_pump_onset_dict(), "p_immediate": 1.5})
+    with pytest.raises(ValueError, match="onset_frac"):
+        OnsetMix.model_validate(
+            {**_pump_onset_dict(), "onset_frac": {"low": 0.05, "high": 1.2}}
+        )
+    with pytest.raises(ValueError, match="sum"):
+        OnsetMix.model_validate(
+            {**_pump_onset_dict(), "shape_weights": {"step": 0.5, "ramp": 0.4}}
+        )
+    # A weighted shape without its param band is unresolvable...
+    missing_ramp = _pump_onset_dict()
+    del missing_ramp["ramp_s"]
+    with pytest.raises(ValueError, match="no ramp_s band"):
+        OnsetMix.model_validate(missing_ramp)
+    # ...and a param band for a zero-weight shape is a dead config.
+    with pytest.raises(ValueError, match="no weight"):
+        OnsetMix.model_validate(
+            {**_sensor_onset_dict(), "ramp_s": {"low": 30.0, "high": 300.0}}
+        )
+
+
+def test_biofouling_mix_rejects_an_onset_block():
+    # Fouling is baked into the SDF at spawn — it cannot switch on
+    # mid-run, so BiofoulingMix has no onset field (StrictModel forbids).
+    d = _mix_dict()
+    d["biofouling"]["onset"] = _sensor_onset_dict()
+    with pytest.raises(ValueError):
+        AnomalyMixSpec.model_validate(d)
+
+
+def test_onset_block_is_append_only_for_severities():
+    # The load-bearing v2 contract: a given seed must produce identical
+    # severity values with and without the onset block.
+    onset_mix = _onset_mix()
+    for idx in range(60):
+        for cls in ("bcu_pump", "sensor"):
+            plain = draw_assignment(MIX, 813, idx, cls)
+            with_onset = draw_assignment(
+                onset_mix, 813, idx, cls, expected_duration_s=DURATION_S
+            )
+            assert with_onset.severity == plain.severity
+            assert with_onset.channel == plain.channel
+            assert with_onset.archetype == plain.archetype
+
+
+def test_p_immediate_boundary_semantics():
+    always = _onset_mix(p_immediate=1.0)
+    never = _onset_mix(p_immediate=0.0)
+    for idx in range(40):
+        for cls in ("bcu_pump", "sensor"):
+            a = draw_assignment(always, 813, idx, cls, expected_duration_s=DURATION_S)
+            assert a.onset == {"immediate": True}
+            b = draw_assignment(never, 813, idx, cls, expected_duration_s=DURATION_S)
+            assert "immediate" not in b.onset
+            assert 0.05 <= b.onset["onset_frac"] <= 0.60
+            assert b.onset["onset_s"] == pytest.approx(
+                b.onset["onset_frac"] * DURATION_S
+            )
+            assert b.onset["shape"] in ("step", "ramp", "intermittent")
+
+
+def test_non_immediate_onset_without_duration_raises():
+    with pytest.raises(ValueError, match="expected_duration_s"):
+        draw_assignment(_onset_mix(p_immediate=0.0), 813, 0, "bcu_pump")
+
+
+def test_drawn_onset_lands_in_the_labeled_fault_block():
+    never = _onset_mix(p_immediate=0.0)
+    for idx in range(30):
+        for cls in ("bcu_pump", "sensor"):
+            scenario = _base_scenario()
+            assignment = draw_assignment(
+                never, 813, idx, cls, expected_duration_s=DURATION_S
+            )
+            apply_anomaly(scenario, assignment)
+            faults = scenario["rig"]["faults"]
+            if cls == "bcu_pump":
+                schedule = faults["bcu_pump"]["schedule"]
+            else:
+                schedule = faults["sensors"][assignment.channel]["schedule"]
+            assert schedule["onset_s"] == pytest.approx(assignment.onset["onset_s"])
+            assert schedule["shape"] == assignment.onset["shape"]
+            # Shape params travel iff the shape needs them (the spec
+            # validators reject e.g. a ramp_s on a step).
+            if schedule["shape"] == "ramp":
+                assert schedule["ramp_s"] > 0.0
+                assert "period_s" not in schedule
+            elif schedule["shape"] == "intermittent":
+                assert schedule["period_s"] > 0.0
+                assert 0.0 < schedule["duty"] < 1.0
+                assert "ramp_s" not in schedule
+            else:
+                assert set(schedule) == {"onset_s", "shape"}
+            # The generated dict validates through the full Scenario
+            # schema — including the FaultScheduleSpec shape validators.
+            scen = Scenario.model_validate(scenario)
+            assert scen.anomaly.anomaly_class == cls
+
+
+def test_immediate_onset_keeps_the_v1_byte_identical_yaml():
+    always = _onset_mix(p_immediate=1.0)
+    for idx in (0, 7, 19):
+        for cls in ("bcu_pump", "sensor"):
+            plain, with_onset = _base_scenario(), _base_scenario()
+            apply_anomaly(plain, draw_assignment(MIX, 813, idx, cls))
+            apply_anomaly(
+                with_onset,
+                draw_assignment(always, 813, idx, cls, expected_duration_s=DURATION_S),
+            )
+            assert yaml.safe_dump(with_onset, sort_keys=False) == yaml.safe_dump(
+                plain, sort_keys=False
+            )
+
+
+def test_drift_and_stuck_archetypes_force_step_schedules():
+    # All weight on intermittent so the force is guaranteed to engage.
+    d = _mix_dict()
+    d["sensor"]["onset"] = {
+        "p_immediate": 0.0,
+        "onset_frac": {"low": 0.2, "high": 0.4},
+        "shape_weights": {"intermittent": 1.0},
+        "period_s": {"low": 20.0, "high": 120.0},
+        "duty": {"low": 0.3, "high": 0.7},
+    }
+    mix = AnomalyMixSpec.model_validate(d)
+    seen = set()
+    for idx in range(80):
+        a = draw_assignment(mix, 813, idx, "sensor", expected_duration_s=DURATION_S)
+        seen.add(a.archetype)
+        if a.archetype in ("drift", "stuck"):
+            assert a.onset["shape"] == "step"
+            assert "period_s" not in a.onset and "duty" not in a.onset
+        else:
+            assert a.onset["shape"] == "intermittent"
+        # Whatever the archetype, the emitted scenario must validate.
+        scenario = _base_scenario()
+        apply_anomaly(scenario, a)
+        Scenario.model_validate(scenario)
+    assert {"drift", "stuck"} <= seen
+
+
+def test_record_carries_the_onset():
+    never = _onset_mix(p_immediate=0.0)
+    rec = draw_assignment(
+        never, 813, 3, "bcu_pump", expected_duration_s=DURATION_S
+    ).record()
+    assert rec["onset"]["onset_s"] == pytest.approx(
+        rec["onset"]["onset_frac"] * DURATION_S
+    )
+    assert rec["onset"]["shape"] in ("step", "ramp", "intermittent")
+    # An immediate draw is still recorded explicitly...
+    always = _onset_mix(p_immediate=1.0)
+    rec = draw_assignment(
+        always, 813, 3, "bcu_pump", expected_duration_s=DURATION_S
+    ).record()
+    assert rec["onset"] == {"immediate": True}
+    # ...while onset-free (v1) mixes keep the v1 record shape exactly.
+    assert "onset" not in draw_assignment(MIX, 813, 3, "bcu_pump").record()
+
+
+# ---------------------------------------------------------------------------
 # Biofouling buoyancy interplay
 # ---------------------------------------------------------------------------
 
@@ -311,9 +514,7 @@ def test_worst_corner_fouled_run_needs_the_relaxed_climb_margin():
     # mass + band-min bladder ceiling (validation_mix_v1 values).
     v_n = fouled_neutral_volume(2.135e-3, 0.18, 1000.0)
     bladder_min, bladder_max = 0.0008, 0.00235
-    derived = buoyancy.derive_trim_masses(
-        1000.0, v_n, spawn_volume_m3=bladder_max
-    )
+    derived = buoyancy.derive_trim_masses(1000.0, v_n, spawn_volume_m3=bladder_max)
     relaxed = buoyancy.check_viability(
         derived,
         bladder_min,

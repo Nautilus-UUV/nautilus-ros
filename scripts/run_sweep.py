@@ -84,14 +84,20 @@ HOST_SIM_DATA = Path.cwd() / "sim_data"
 MISSION_PREFIX = "mission."
 
 # Per-run timeout scaling for runs whose manifest carries mission values.
-# Leg speeds are deliberately below the lake-calibrated plant's slowest
-# steady legs (sim ascents run ~0.04 m/s), so the budget expires well
-# after the mission finishes even at a poor real-time factor.
+# Leg speeds are deliberately below the plant's slowest steady legs, so
+# the budget expires well after the mission finishes even at a poor
+# real-time factor. Ascent is budgeted at the ARMED-tank-clamp speed:
+# with scenario:= arming bcu_node's clamp (v2 sweeps), inflation stops
+# at the tank guard band and steady ascent drops to ~0.015 m/s near it.
+# With watchdog:=true the budget is only a hang fallback — runs end at
+# mission completion or on a floater/sinker abort long before it.
 WATER_PRESSURE_GRADIENT_PA_PER_M = 9806.0  # physics.py, fresh water
 TIMEOUT_DESCENT_MPS = 0.10
-TIMEOUT_ASCENT_MPS = 0.035
+TIMEOUT_ASCENT_MPS = 0.012
 TIMEOUT_BRINGUP_SEC = 120.0
 TIMEOUT_SAFETY = 2.0
+# Dwell seconds are wall-clock already; 1.5 covers real-time-factor slip.
+TIMEOUT_DWELL_FACTOR = 1.5
 
 
 def load_mission_args(scenarios_dir: Path) -> dict[str, dict[str, object]]:
@@ -130,11 +136,23 @@ def _scaled_timeout(
     if target_pa is None:
         return cap
     depth_m = float(target_pa) / WATER_PRESSURE_GRADIENT_PA_PER_M
-    n_osc = max(1, int(mission.get("n_oscillations", 1)))
+    if "n_steps" in mission:
+        # A staircase is ONE round trip of vertical travel regardless of
+        # how many steps it pauses at; each step holds one dwell.
+        n_osc = 1
+        n_dwells = max(1, int(mission["n_steps"]))
+    else:
+        n_osc = max(1, int(mission.get("n_oscillations", 1)))
+        n_dwells = n_osc
+    dwell_s = float(mission.get("dwell_s", 0.0))
     round_trips_sec = (
         n_osc * depth_m * (1.0 / TIMEOUT_DESCENT_MPS + 1.0 / TIMEOUT_ASCENT_MPS)
     )
-    scaled = TIMEOUT_BRINGUP_SEC + TIMEOUT_SAFETY * round_trips_sec
+    scaled = (
+        TIMEOUT_BRINGUP_SEC
+        + TIMEOUT_SAFETY * round_trips_sec
+        + TIMEOUT_DWELL_FACTOR * n_dwells * dwell_s
+    )
     return min(cap, scaled) if cap is not None else scaled
 
 # Per-bag finalize: glob *.mcap in cwd, zstd each into *.mcap.zstd, drop
@@ -267,6 +285,11 @@ class StatusRow:
     yaml_path: str
     duration_sec: float
     timed_out: bool
+    # From the run watchdog's run_verdict.json (watchdog:=true launches):
+    # "mission_complete" / "abort_floater" / "abort_sinker". Empty for
+    # legacy runs and wall-clock kills — analysis treats empty as
+    # "classify from the bag".
+    verdict: str = ""
 
 
 @dataclass
@@ -305,6 +328,7 @@ class SweepRunner:
                         "yaml_path",
                         "duration_sec",
                         "timed_out",
+                        "verdict",
                     ]
                 )
         # Persist the mission knobs we forward to ros2 launch (e.g.
@@ -418,6 +442,20 @@ class SweepRunner:
         )
         end_ts = time.time()
         duration = end_ts - slot.start_ts
+        # The run watchdog (watchdog:=true) writes its verdict next to
+        # the bag before shutting the launch down; surface it in the
+        # status CSV so analysis can skip aborted runs without opening
+        # a single bag. Absent file = legacy run or wall-clock kill.
+        watchdog_verdict = ""
+        if slot.host_bag_path is not None:
+            verdict_path = slot.host_bag_path.parent / "run_verdict.json"
+            if verdict_path.is_file():
+                try:
+                    watchdog_verdict = str(
+                        json.loads(verdict_path.read_text()).get("verdict", "")
+                    )
+                except (OSError, ValueError):
+                    watchdog_verdict = ""
         row = StatusRow(
             run_id=slot.run_id,
             slot=slot.index,
@@ -427,6 +465,7 @@ class SweepRunner:
             yaml_path=str(slot.yaml_path),
             duration_sec=round(duration, 2),
             timed_out=timed_out,
+            verdict=watchdog_verdict,
         )
         self.status.append(row)
         with self.status_path.open("a", newline="") as f:
@@ -440,6 +479,7 @@ class SweepRunner:
                     row.yaml_path,
                     row.duration_sec,
                     row.timed_out,
+                    row.verdict,
                 ]
             )
         if slot.log_file is not None:
@@ -450,6 +490,8 @@ class SweepRunner:
             verdict = "OK"
         else:
             verdict = f"FAIL (exit {exit_code})"
+        if watchdog_verdict:
+            verdict += f" [{watchdog_verdict}]"
         print(f"[slot {slot.index}] {slot.run_id} {verdict} in {duration:.1f}s")
         if slot.host_bag_path is not None and slot.container_bag_path is not None:
             self._finalize_bag(

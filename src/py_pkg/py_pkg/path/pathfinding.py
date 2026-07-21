@@ -69,6 +69,11 @@ class PathfindingNode(Node):
         create_subscription_for_topic(self, UUVTopics.PATH, self._on_path)
 
         self._target_pub = create_publisher_for_topic(self, UUVTopics.POSITION_TARGET)
+        # Latched completion event (one per finished mission). An operator
+        # stop (/command=false) is NOT a completion and never publishes here.
+        self._complete_pub = create_publisher_for_topic(
+            self, UUVTopics.MISSION_COMPLETE
+        )
         self.create_timer(1.0 / REFERENCE_RATE_HZ, self._tick)
 
         self.get_logger().info("pathfinding_node started (mission-id dispatch).")
@@ -132,6 +137,8 @@ class PathfindingNode(Node):
                     target_pressure_pa=float(self._mission_cmd.target_pressure_pa),
                     angle_rad=float(self._mission_cmd.angle_rad),
                     n_resurfaces=int(self._mission_cmd.n_resurfaces),
+                    dwell_s=float(self._mission_cmd.dwell_s),
+                    n_steps=int(self._mission_cmd.n_steps),
                 )
             )
             self._mission_t0_s = now_s(self)
@@ -143,6 +150,9 @@ class PathfindingNode(Node):
         self._mission.update(self._current_pressure_pa)
         if self._mission.is_done(mission_t):
             self.get_logger().info("Mission complete.")
+            done = Bool()
+            done.data = True
+            self._complete_pub.publish(done)
             self._reset()
             return
         # A mission can choose not to issue a setpoint this tick (reference

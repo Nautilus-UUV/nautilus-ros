@@ -50,6 +50,9 @@ TOPIC_QOS_MAP = {
     # Commands
     UUVTopics.COMMAND: UUVQoS.COMMAND,
     UUVTopics.PATH: UUVQoS.COMMAND,
+    # Latched state from a long-lived node (RELIABLE + TRANSIENT_LOCAL): a
+    # run watchdog that discovers pathfinding late still sees completion.
+    UUVTopics.MISSION_COMPLETE: UUVQoS.COMMAND,
     # Pre-dive registration is state, not an event: TRANSIENT_LOCAL latches
     # the last Initialize so a controller that (re)starts mid-deployment
     # still sees the registered values.

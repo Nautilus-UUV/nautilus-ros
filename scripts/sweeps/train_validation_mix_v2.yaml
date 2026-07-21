@@ -1,0 +1,224 @@
+# Train and validation dataset v2: 1024 mixed-profile dives, 3-40 m,
+# with the stratified per-run anomaly mix (sampler >= 2.1.0).
+#
+# What changed vs train_validation_mix_v1 (and why):
+#
+#   - Mission shape is SAMPLED per run (`mission_mix:` below): plain
+#     2-cycle sawtooths (v1 continuity), sawtooth-with-dwell, staircase
+#     ladders, and station-keeps. Dwell plus the now-armed tank-limit
+#     clamp (the launch passes scenario:= into mission_autostart, so a
+#     DiveInit arms bcu_node's clamp exactly like the operator UI does
+#     on hardware) sweeps the pump duty cycle: v1's nominal runs railed
+#     ~92% / idled ~2% in-dive while the real glider idles ~62%.
+#     Acceptance gate: the per-run in-dive idle distribution must cover
+#     [0.40, 0.80] (scripts/run_gates.py, Gate A).
+#   - bcu_pump severities STRADDLE the nominal envelope instead of the
+#     v1 disjoint bands (which made the class ROC-1.000 separable by
+#     construction): the faint end is indistinguishable from nominal on
+#     purpose, the severe end exits the envelope, and the per-run
+#     severity scalar in the manifest supports detection-vs-severity
+#     curves. Sensor and biofouling bands are v1 byte-identical.
+#   - Faults get an onset and a shape (`onset:` sub-blocks): half of
+#     each fault class stays whole-run (p_immediate 0.5, v1 semantics),
+#     the rest starts at a sampled fraction of the expected mission
+#     with a step / ramp / intermittent envelope. /anomaly/label's
+#     `active` honors the onset, so per-window labels are meaningful.
+#   - comms is DROPPED (near-chance for every model in v1 — the 1 Hz
+#     record throttle + decoder ffill erase missingness); its 5% went
+#     to nominal (871/51/51/51 at 1024).
+#   - rig.plant.tank_air_volume_m3 is PINNED to 0.0 (wire convention
+#     for "derive the cushion through both calibrated endpoints"), so
+#     the synthesized tank pressure stays inside the physical
+#     [empty, full] interval. v1 sampled the cushion freely and reached
+#     469 kPa against a real-hardware max of 195.5 kPa.
+#   - rig.plant.pump_overshoot_frac is sampled: the real EPOS4 shaft
+#     overshoots the 3000 rpm command rail (lake max 3113, frac 0.038);
+#     v1's hard 3000 ceiling made 23.7% of real feedback samples fall
+#     outside the sim-fitted normalizer range.
+#
+# Guarded by test/unit/test_train_mix_v2_spec.py, which loads THIS file
+# (v1's train spec was never under test — its guard covered
+# validation_mix_v1.yaml and only transferred by band identity).
+#
+# Each run self-labels: the scenario YAML carries an `anomaly:` block
+# (validated against rig.faults at load), manifest.json carries per-run
+# `anomaly` + `mission` records nominal-included, and in-sim the
+# anomaly_label_bridge broadcasts /anomaly/label into the bag with
+# per-class, onset-aware `active` semantics.
+#
+#   run_sweep.py ... --launch sawtooth_sim.launch.py \
+#       --per-run-timeout 18000 \
+#       --launch-args angle_rad:=0.0 z:=-0.115 watchdog:=true
+#
+# Timeout: a rarely-binding hang fallback, not the expected run length —
+# watchdog:=true ends every run at mission completion (or aborts
+# floaters ~130 s / stalled sinkers ~dwell+240 s in). The worst corner
+# (40 m, 2 dwelled cycles, armed-clamp ascent budgeted at 0.012 m/s)
+# computes to ~16.9 ks under run_sweep's scaled-budget formula; 18000
+# covers it.
+
+description: >
+  Train and validation mix v2: 1024 dives with per-run mission-profile
+  sampling (plain/dwelled sawtooth, staircase, station-keep; depth
+  3-40 m), armed tank-limit clamp, pinned gas-law tank map, sampled
+  pump overshoot, and the stratified 85/5/5/5 per-run anomaly mix —
+  persistent bcu_pump / sensor / biofouling faults whose severities
+  straddle the normality envelope and carry sampled onsets/shapes
+  (comms dropped: unobservable at the 1 Hz record rate). Lake noise on,
+  surfaced start.
+
+n_samples: 1024
+seed: 2071
+base_scenario: "nominal_with_hydrodynamics.yaml"
+sampling_mode: "physics"
+isotropic_jitter_sigma: 0.05
+
+buoyancy_derivation:
+  spawn_policy: bladder_max        # pre-dive bladder-full float
+  min_dive_margin_m3: 2.0e-4       # >= 0.067 m/s descent authority
+  min_climb_margin_m3: 1.5e-4      # biofouling runs use the relaxed
+                                   # margin from the mix block below
+
+# Per-run mission profile, resolved outside the LHS matrix (seeded
+# derive_seed streams, largest-remainder stratified counts — the same
+# machinery as anomaly_mix, so editing a band here never reshuffles the
+# physics draws). Values ride manifest.json as mission.* launch args.
+mission_mix:
+  weights: {sawtooth_plain: 0.25, sawtooth_dwell: 0.30, staircase: 0.25, station_keep: 0.20}
+
+  sawtooth_plain:                  # v1-continuity stratum: byte-identical
+    mission_id: 1                  # mission semantics to the v1 campaign
+    target_pressure_pa: {low: 29418.0, high: 392240.0}    # 3-40 m
+    n_oscillations: {low: 2, high: 3, integer: true}      # pinned 2
+    dwell_s: 0.0
+
+  sawtooth_dwell:
+    mission_id: 1
+    # 5 m floor: a dwell needs a deep extremum clear of the surface band.
+    target_pressure_pa: {low: 49030.0, high: 392240.0}    # 5-40 m
+    n_oscillations: {low: 1, high: 3, integer: true}      # {1, 2}
+    dwell_s: {low: 120.0, high: 600.0}
+
+  staircase:
+    mission_id: 3
+    # 6 m floor: >= ~3 m per step at the shallowest 2-step draw.
+    target_pressure_pa: {low: 58836.0, high: 392240.0}    # 6-40 m deepest step
+    n_steps: {low: 2, high: 6, integer: true}             # {2..5}
+    dwell_s: {low: 60.0, high: 300.0}                     # per step
+
+  station_keep:
+    mission_id: 3                  # STAIRCASE with n_steps=1 IS
+    n_steps: {low: 1, high: 2, integer: true}             # dive-hold-surface
+    target_pressure_pa: {low: 49030.0, high: 392240.0}    # 5-40 m
+    dwell_s: {low: 300.0, high: 1200.0}
+
+anomaly_mix:
+  # comms dropped (v1: near-chance for all 7 models; missingness does
+  # not survive the 1 Hz record throttle) — its 5% goes to nominal.
+  weights: {nominal: 0.85, bcu_pump: 0.05, sensor: 0.05, biofouling: 0.05}
+
+  bcu_pump:
+    # STRADDLE, not separation (inverts v1's disjoint-band philosophy
+    # for this class only): flow envelope is x0.90..x1.10 of nominal
+    # via volume_per_rev, so the faint end 0.999 sits deep inside it
+    # while 0.55 x 1.10 = 0.605 < 0.90 exits it. 0.999 (not 1.0): the
+    # Scenario label validator reads effectiveness == 1.0 as fault-free.
+    effectiveness: {low: 0.55, high: 0.999}
+    # low 1.0 sits INSIDE the nominal envelope [0.705, 1.586] s; the
+    # high end keeps v1's severe ceiling.
+    response_delay_s: {low: 1.0, high: 5.0}
+    # high 500 sits INSIDE the nominal envelope [341.4, 768.2] rpm/s;
+    # the low end keeps v1's severe floor.
+    slew_rpm_per_s: {low: 100.0, high: 500.0}
+    onset:
+      p_immediate: 0.5             # half the class stays v1 whole-run
+      onset_frac: {low: 0.05, high: 0.60}   # of the expected mission —
+                                   # >= 40% of the run stays post-onset
+      shape_weights: {step: 0.5, ramp: 0.3, intermittent: 0.2}
+      ramp_s: {low: 30.0, high: 300.0}
+      period_s: {low: 20.0, high: 120.0}
+      duty: {low: 0.3, high: 0.7}
+
+  sensor:
+    # Bands v1 byte-identical (amplitude-separable by design — the
+    # sensor class is the marginal-detection stratum).
+    channels: [external_pressure, tank_pressure]
+    archetypes: [bias, drift, stuck, dropout]
+    bands:
+      external_pressure:
+        # Nominal channel: zero bias/drift, quantization 100 Pa
+        # (half-step 50 Pa) -> floors are >= 20x any nominal artifact.
+        bias:    {low: 1000.0, high: 10000.0, signed: true}   # Pa
+        drift:   {low: 1.0,    high: 10.0,    signed: true}   # Pa/s
+        dropout: {low: 0.2,    high: 0.8}                     # drop prob
+      tank_pressure:
+        # Nominal 3-sigma noise ~ 1.18 kPa (sigma 353 + 600 Pa comb);
+        # bias floor 5 kPa >= 4x that.
+        bias:    {low: 5000.0, high: 20000.0, signed: true}   # Pa
+        drift:   {low: 5.0,    high: 50.0,    signed: true}   # Pa/s
+        dropout: {low: 0.2,    high: 0.8}
+    onset:
+      p_immediate: 0.5
+      onset_frac: {low: 0.05, high: 0.60}
+      # No ramp: drift is already a rate-ramp and a ramped "stuck" has
+      # no unambiguous latch point (the spec validators reject both).
+      shape_weights: {step: 0.8, intermittent: 0.2}
+      period_s: {low: 20.0, high: 120.0}
+      duty: {low: 0.3, high: 0.7}
+
+  biofouling:
+    # v1 verbatim. No onset by contract: fouling is baked into the SDF
+    # at spawn, so it cannot switch on mid-run.
+    # Envelope worst multiplicative extremes incl. 3-sigma jitter
+    # (e^0.15 = 1.162): heave drag ~ x1.36, added mass ~ x1.21.
+    drag_mult:       {low: 1.6,  high: 2.5}
+    added_mass_mult: {low: 1.3,  high: 1.5}
+    # Neutral-volume band is 8.0e-5 m^3 wide (== 0.080 kg): 0.09 kg
+    # pushes every fouled run past the envelope ceiling; 0.18 kg caps
+    # the worst-corner climb margin at 3.5e-5 >= the relaxed minimum.
+    fouling_mass_kg: {low: 0.09, high: 0.18}
+    # A barely-climbing vehicle IS the biofouling signature.
+    min_climb_margin_m3: 3.0e-5
+
+dimensions:
+  # --- hull / fin geometry causes (identical bands to v1/jun24) ---
+  - { path: L,                  distribution: loguniform, low: 1.470,   high: 1.530 }
+  - { path: D,                  distribution: loguniform, low: 0.1455,  high: 0.1545 }
+  - { path: nabla,              distribution: loguniform, low: 0.01782, high: 0.01818 }
+  - { path: b_f,                distribution: loguniform, low: 0.3135,  high: 0.3465 }
+  - { path: c_f,                distribution: loguniform, low: 0.2090,  high: 0.2310 }
+  - { path: x_f,                distribution: loguniform, low: 0.6650,  high: 0.7350 }
+  - { path: b_r,                distribution: loguniform, low: 0.2090,  high: 0.2310 }
+  - { path: c_r,                distribution: loguniform, low: 0.1045,  high: 0.1155 }
+  - { path: x_r,                distribution: loguniform, low: 0.89205, high: 0.98595 }
+  - { path: t_over_c,           distribution: loguniform, low: 0.0840,  high: 0.1560 }
+  - { path: alpha_stall_horiz,  distribution: loguniform, low: 0.1360,  high: 0.2040 }
+  - { path: alpha_stall_rudder, distribution: loguniform, low: 0.1360,  high: 0.2040 }
+  - { path: C_d_c,              distribution: loguniform, low: 0.9350,  high: 1.2650 }
+  - { path: one_plus_k,         distribution: loguniform, low: 1.0200,  high: 1.3800 }
+  - { path: C_p_base,           distribution: loguniform, low: 0.0560,  high: 0.1040 }
+  - { path: C_La_mult,          distribution: loguniform, low: 0.8250,  high: 1.3750 }
+
+  # --- correlated buoyancy pair (trim masses + spawn volume derived) ---
+  - { path: rig.hydrodynamics.fluid_density, distribution: uniform, low: 996.0, high: 1002.0 }
+  - { path: derive.neutral_volume_m3, distribution: uniform, low: 2.055e-3, high: 2.135e-3 }
+
+  # --- BCU plant truth (controller beliefs stay at nominal on purpose) ---
+  - { path: rig.plant.tank_pressure_empty_pa, distribution: uniform, low: 97000.0,  high: 99000.0 }
+  - { path: rig.plant.tank_pressure_full_pa,  distribution: uniform, low: 165000.0, high: 195000.0 }
+  - { path: rig.plant.volume_per_rev_m3, distribution: loguniform, low: 2.88e-7, high: 3.52e-7 }
+  - { path: rig.plant.bladder_min_m3, distribution: uniform, low: 0.0008,  high: 0.0012 }
+  - { path: rig.plant.bladder_max_m3, distribution: uniform, low: 0.00235, high: 0.0025 }
+
+  # --- pump/tank transients: x/1.5 around the 2026-06-24 fit ---
+  - { path: rig.plant.pump_response_delay_s, distribution: loguniform, low: 0.705, high: 1.586 }
+  - { path: rig.plant.pump_slew_rpm_per_s,   distribution: loguniform, low: 341.4, high: 768.2 }
+  # EPOS4 shaft overshoot past the command rail (lake anchor 0.038 on
+  # the 3113-vs-3000 peak); 0 keeps the plain delay+slew plant.
+  - { path: rig.plant.pump_overshoot_frac, distribution: uniform, low: 0.0, high: 0.05 }
+
+  # Pin (low == high): 0.0 on the wire = derive the gas-law cushion
+  # through BOTH calibrated endpoints, so the synthesized tank pressure
+  # spans exactly [tank_pressure_empty_pa, tank_pressure_full_pa].
+  # Replaces v1's free cushion dim, which reached a nonphysical 469 kPa.
+  - { path: rig.plant.tank_air_volume_m3, distribution: uniform, low: 0.0, high: 0.0 }

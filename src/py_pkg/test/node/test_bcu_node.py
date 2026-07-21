@@ -16,6 +16,7 @@ time to see one or more emissions.
 
 import pytest
 
+from py_pkg.math_utils import span_band_guards
 from py_pkg.physics import (
     depth_to_pressure_pa,
     gauge_pressure_pa,
@@ -34,6 +35,21 @@ _PLANT = PlantSpec()
 TANK_EMPTY_PA = int(_PLANT.tank_pressure_empty_pa)
 TANK_FULL_PA = int(_PLANT.tank_pressure_full_pa)
 TANK_MID_PA = (TANK_EMPTY_PA + TANK_FULL_PA) // 2
+
+# The clamp insets each endpoint by 10% of the span (clamp_to_tank_limits'
+# default band): it fires once the tank is within the guard, before the raw
+# endpoint. Guards land at ~107020 (empty side) / ~180780 (full side).
+TANK_LOW_GUARD_PA, TANK_HIGH_GUARD_PA = span_band_guards(
+    float(TANK_EMPTY_PA), float(TANK_FULL_PA), 0.10
+)
+# Inside the empty-side band: ABOVE the empty endpoint but at/below the low
+# guard -> must still clamp (proves the inset, not merely the endpoint).
+TANK_IN_LOW_BAND_PA = int((TANK_EMPTY_PA + TANK_LOW_GUARD_PA) / 2)  # ~102410
+# Just clear of the low guard -> must NOT clamp (pins the guard boundary).
+TANK_ABOVE_LOW_GUARD_PA = int(TANK_LOW_GUARD_PA) + 3_000  # ~110020
+# Inside the full-side band: BELOW the full endpoint but at/above the high
+# guard -> must still clamp.
+TANK_IN_HIGH_BAND_PA = int((TANK_HIGH_GUARD_PA + TANK_FULL_PA) / 2)  # ~185390
 
 # Gauge Pa for current depth ~+50 m (Z-positive-down).
 GAUGE_FOR_DEEP_PA = gauge_pressure_pa(depth_to_pressure_pa(50.0))
@@ -405,6 +421,66 @@ class TestTankLimitClamp:
         assert any(r > 0 for r in h.received_rpm), (
             f"ascend command must resume once the tank recovers, "
             f"got {h.received_rpm}"
+        )
+
+    def test_low_guard_band_clamps_before_empty_endpoint(self, bcu_node_harness):
+        # A tank reading inside the empty-side band (above the 97800 endpoint
+        # but at/below the ~107020 guard) must clamp the drain-the-tank ascend
+        # command -- proving the clamp fires on the 10% inset, not just at the
+        # raw endpoint.
+        h = bcu_node_harness
+        self._register(h)
+        assert TANK_EMPTY_PA < TANK_IN_LOW_BAND_PA <= TANK_LOW_GUARD_PA
+        h.publish_tank_pressure(TANK_IN_LOW_BAND_PA)
+        h.publish_target_pressure(0.0)  # ascend: positive bus rpm, drains tank
+        h.publish_depth_gauge(GAUGE_FOR_DEEP_PA)
+        h.spin_until(lambda: len(h.received_rpm) >= 6, timeout=1.5)
+        tail_rpm = h.received_rpm[-3:]
+        tail_valves = h.received_valves[-3:]
+        assert all(r == 0 for r in tail_rpm), (
+            f"ascend inside the empty-side guard band must clamp to 0, "
+            f"got {h.received_rpm}"
+        )
+        assert all(v == 0 for v in tail_valves), (
+            f"clamp must close the valves, got {h.received_valves}"
+        )
+
+    def test_just_above_low_guard_does_not_clamp(self, bcu_node_harness):
+        # A hair above the low guard (~110020 > ~107020) is outside the band:
+        # the ascend command must flow. Pins the boundary at the guard, not
+        # somewhere between the guard and the endpoint.
+        h = bcu_node_harness
+        self._register(h)
+        assert TANK_ABOVE_LOW_GUARD_PA > TANK_LOW_GUARD_PA
+        h.publish_tank_pressure(TANK_ABOVE_LOW_GUARD_PA)
+        h.publish_target_pressure(0.0)  # ascend stimulus
+        h.publish_depth_gauge(GAUGE_FOR_DEEP_PA)
+        h.spin_until(lambda: len(h.received_rpm) >= 6, timeout=1.5)
+        assert any(r > 0 for r in h.received_rpm[-3:]), (
+            f"just above the guard the ascend must not clamp, got {h.received_rpm}"
+        )
+
+    def test_high_guard_band_gates_passive_vent_before_full_endpoint(
+        self, bcu_node_harness
+    ):
+        # Symmetric high-side case: a tank reading inside the full-side band
+        # (below the 190000 endpoint but at/above the ~180780 guard) must shut
+        # the deep-descend passive vent that would push more oil into the tank.
+        h = bcu_node_harness
+        self._register(h)
+        assert TANK_HIGH_GUARD_PA <= TANK_IN_HIGH_BAND_PA < TANK_FULL_PA
+        h.publish_tank_pressure(TANK_IN_HIGH_BAND_PA)
+        h.publish_target_pressure(TARGET_PA_100M)  # deep descend -> passive vent
+        h.publish_depth_gauge(GAUGE_FOR_DEEP_PA)
+        h.spin_until(lambda: len(h.received_valves) >= 6, timeout=1.5)
+        tail_rpm = h.received_rpm[-3:]
+        tail_valves = h.received_valves[-3:]
+        assert all(v == 0 for v in tail_valves), (
+            f"passive vent inside the full-side guard band must close, "
+            f"got {h.received_valves}"
+        )
+        assert all(r == 0 for r in tail_rpm), (
+            f"clamp must keep the pump idle, got {h.received_rpm}"
         )
 
 
