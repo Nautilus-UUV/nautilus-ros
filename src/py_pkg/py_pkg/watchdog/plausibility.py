@@ -26,18 +26,27 @@ MIN_RETURN_M = 1.0
 
 @dataclass(frozen=True)
 class PlausibilityConfig:
-    """Thresholds for the in-run floater/sinker verdicts."""
+    """Thresholds for the in-run floater/sinker/bad-start verdicts."""
 
     min_dive_m: float = MIN_DIVE_M
     min_return_m: float = MIN_RETURN_M
     dive_deadline_s: float = 120.0  # floater check, from arming
     stall_grace_s: float = 300.0  # sinker check
     deepen_epsilon_m: float = 0.05
+    # Bad-start guard: a mission must begin from (near) the surface. If
+    # the FIRST fed sample is already deeper than this, the run's init
+    # went wrong (e.g. the vehicle fell during bringup) and every later
+    # rule would misread it — dive_m is measured from that first sample.
+    # <= 0 disables the guard (the pre-v3 behavior).
+    max_start_depth_m: float = 0.0
 
 
 class RunPlausibility:
     """Streaming floater/sinker detector. Arms at the first ``feed()`` sample.
 
+    - ``"bad_start"`` -- the first sample is already deeper than
+      ``max_start_depth_m`` (guard enabled when > 0): the run did not
+      begin at the surface, so no later verdict can be trusted;
     - ``"floater"`` -- at/after ``dive_deadline_s`` since the first sample,
       the dive excursion never reached ``min_dive_m``;
     - ``"sinker"`` -- dived at least ``min_dive_m``, never drew up
@@ -86,6 +95,13 @@ class RunPlausibility:
             self._z_min = z_m
             self._z_at_last_deepen = z_m
             self._t_last_deepen = t_s
+            # z is negative-down: depth of the first sample is -z_m.
+            if (
+                self._config.max_start_depth_m > 0.0
+                and -z_m > self._config.max_start_depth_m
+            ):
+                self._verdict = "bad_start"
+                return self._verdict
 
         self._z_min = min(self._z_min, z_m)
         self._drawup_max = max(self._drawup_max, z_m - self._z_min)

@@ -94,10 +94,111 @@ MISSION_PREFIX = "mission."
 WATER_PRESSURE_GRADIENT_PA_PER_M = 9806.0  # physics.py, fresh water
 TIMEOUT_DESCENT_MPS = 0.10
 TIMEOUT_ASCENT_MPS = 0.012
-TIMEOUT_BRINGUP_SEC = 120.0
+# Bringup budget covers the sim_ready_gate's paused-spawn wait (its own
+# ready timeout is 600 s): under load the world now WAITS for the graph
+# instead of running away from it, so wall time spent here is bounded
+# and non-destructive.
+TIMEOUT_BRINGUP_SEC = 600.0
 TIMEOUT_SAFETY = 2.0
 # Dwell seconds are wall-clock already; 1.5 covers real-time-factor slip.
 TIMEOUT_DWELL_FACTOR = 1.5
+
+# Watchdog / gate verdicts that mean "the run's infrastructure failed
+# before or during init — the same YAML rerun should come back clean".
+# These are retried (up to --max-retries) instead of being recorded as
+# the run's final outcome; a genuine mission_complete never retries.
+RETRYABLE_VERDICTS = {
+    "abort_init",
+    "abort_bad_start",
+    "abort_floater",
+    "abort_sinker",
+}
+
+
+def should_retry(
+    verdict: str,
+    exit_code: int,
+    timed_out: bool,
+    bag_present: bool,
+    record: bool,
+    watchdog: bool,
+) -> bool:
+    """Pure retry policy for one reaped run.
+
+    - an infra verdict (RETRYABLE_VERDICTS) always retries;
+    - no verdict + a crash (nonzero exit that wasn't our own timeout
+      kill) retries;
+    - no verdict + timed out retries only when a watchdog was in play —
+      without one, the wall clock is the NORMAL end of a run;
+    - recording enabled but no .mcap on disk retries (the bag never
+      materialized).
+    A successful conclusion (verdict ``mission_complete``) never retries.
+    """
+    if verdict == "mission_complete":
+        return False
+    if verdict in RETRYABLE_VERDICTS:
+        return True
+    if verdict:
+        return False
+    if timed_out:
+        return watchdog
+    if exit_code != 0:
+        return True
+    return record and not bag_present
+
+
+# Fast DDS maps a domain's fixed ports as 7400 + 250*domainId (+ small
+# participant offsets). The Linux ephemeral port range starts at 32768
+# (/proc/sys/net/ipv4/ip_local_port_range), so domains >= 102 place
+# their fixed DDS ports where any transient client socket may already
+# be bound — sporadic "No unicast locators ... Problem creating
+# associated Reader" participant failures. The v2 campaign ran 64 slots
+# at base 50: slots 52-63 (domains 102-113) were exposed.
+_DDS_PORT_BASE = 7400
+_DDS_PORTS_PER_DOMAIN = 250
+_EPHEMERAL_PORT_START = 32768
+
+
+# Domain d owns ports 7400 + 250*d .. 7400 + 250*(d+1) - 1, so the
+# highest domain whose WHOLE block clears the ephemeral range is 100.
+MAX_SAFE_DOMAIN_ID = (
+    _EPHEMERAL_PORT_START - _DDS_PORT_BASE
+) // _DDS_PORTS_PER_DOMAIN - 1
+
+
+def max_safe_domain_base(n_slots: int) -> int:
+    """Highest --ros-domain-base whose whole slot window keeps every
+    domain's full port block below the ephemeral range."""
+    return MAX_SAFE_DOMAIN_ID - (n_slots - 1)
+
+
+def domain_window_collides_with_ephemeral(base: int, n_slots: int) -> bool:
+    """True when any slot's domain maps part of its fixed DDS port block
+    at/above the Linux ephemeral port range.
+
+    Defined in terms of max_safe_domain_base so the guard and the remedy
+    it prints can never disagree about where the boundary is.
+    """
+    return base > max_safe_domain_base(n_slots)
+
+
+def truncating_cap_runs(
+    mission_args: dict[str, dict[str, object]], cap: Optional[float]
+) -> list[tuple[str, float]]:
+    """Runs whose scaled wall budget the --per-run-timeout cap would cut.
+
+    Returns (run_id, scaled_seconds) pairs, worst first. The v2 campaign
+    was run with a 1800 s cap against ~17 ks scaled budgets — every long
+    mission was killed mid-write. Refuse that silently happening again.
+    """
+    if cap is None:
+        return []
+    offenders = [
+        (run_id, scaled)
+        for run_id, mission in mission_args.items()
+        if (scaled := _scaled_timeout(mission, None)) is not None and scaled > cap
+    ]
+    return sorted(offenders, key=lambda pair: -pair[1])
 
 
 def load_mission_args(scenarios_dir: Path) -> dict[str, dict[str, object]]:
@@ -273,6 +374,10 @@ class Slot:
     timeout_sec: Optional[float] = None
     host_bag_path: Optional[Path] = None
     container_bag_path: Optional[str] = None
+    # Which try this is (0 = first). Rides with the work item through the
+    # queue rather than living in a side map keyed by run_id, so the count
+    # and the run it describes cannot get out of step.
+    attempt: int = 0
 
 
 @dataclass
@@ -285,11 +390,14 @@ class StatusRow:
     yaml_path: str
     duration_sec: float
     timed_out: bool
-    # From the run watchdog's run_verdict.json (watchdog:=true launches):
-    # "mission_complete" / "abort_floater" / "abort_sinker". Empty for
+    # From the run watchdog's / sim gate's run_verdict.json
+    # (watchdog:=true launches): "mission_complete" / "abort_floater" /
+    # "abort_sinker" / "abort_bad_start" / "abort_init". Empty for
     # legacy runs and wall-clock kills — analysis treats empty as
     # "classify from the bag".
     verdict: str = ""
+    # 0 for the first try; retried runs append one row per attempt.
+    attempt: int = 0
 
 
 @dataclass
@@ -304,12 +412,16 @@ class SweepRunner:
     record: bool
     per_run_timeout: Optional[float]
     slots: list[Slot]
-    queue: list[tuple[str, Path]]
+    # (run_id, yaml_path, attempt); attempt is 0 for a fresh run.
+    queue: list[tuple[str, Path, int]]
     mission_args: dict[str, dict[str, object]] = field(default_factory=dict)
+    max_retries: int = 2
+    stagger_sec: float = 15.0
     status: list[StatusRow] = field(default_factory=list)
     status_path: Path = field(init=False)
     logs_dir: Path = field(init=False)
     _shutdown: bool = False
+    _last_launch_ts: float = 0.0
 
     def __post_init__(self) -> None:
         self.sweep_dir = self.sim_data_dir / self.sweep_name
@@ -329,8 +441,19 @@ class SweepRunner:
                         "duration_sec",
                         "timed_out",
                         "verdict",
+                        "attempt",
                     ]
                 )
+        # Retry-on-timeout only makes sense when a run watchdog concludes
+        # runs early — without one, the wall clock is the normal end.
+        # Parsed as key:=value rather than matched as one exact string, so
+        # `watchdog:=True` doesn't silently read as "no watchdog".
+        launch_arg_map = dict(
+            arg.split(":=", 1) for arg in self.extra_launch_args if ":=" in arg
+        )
+        self._watchdog_in_play = (
+            launch_arg_map.get("watchdog", "").strip().lower() == "true"
+        )
         # Persist the mission knobs we forward to ros2 launch (e.g.
         # target_pressure_pa:=147150.0). These don't live in the scenario YAML
         # so without this file post-hoc tooling has no way to recover them.
@@ -348,7 +471,9 @@ class SweepRunner:
         if manifest_src.is_file():
             shutil.copy2(manifest_src, self.sweep_dir / "manifest.json")
 
-    def launch_slot(self, slot: Slot, run_id: str, yaml_path: Path) -> None:
+    def launch_slot(
+        self, slot: Slot, run_id: str, yaml_path: Path, attempt: int = 0
+    ) -> None:
         log_path = self.logs_dir / f"{run_id}.log"
         log_file = log_path.open("w")
         scenario_in_container = f"/ros2_ws/scenarios/{yaml_path.name}"
@@ -421,6 +546,7 @@ class SweepRunner:
         slot.proc = proc
         slot.run_id = run_id
         slot.yaml_path = yaml_path
+        slot.attempt = attempt
         slot.log_file = log_file
         slot.start_ts = time.time()
         slot.timeout_sec = _scaled_timeout(run_mission, self.per_run_timeout)
@@ -439,7 +565,27 @@ class SweepRunner:
             slot.run_id is not None
             and slot.yaml_path is not None
             and slot.start_ts is not None
+            and slot.proc is not None
         )
+        # ALWAYS sweep the run's process group, clean exit included. On a
+        # normal watchdog-terminated shutdown, ros2 launch's SIGTERM
+        # escalation kills the `ruby gz` wrapper but the real `gz sim`
+        # grandchild survives, reparents to PID 1, and keeps stepping its
+        # world at a full core forever. Over a long sweep those orphans
+        # stack up run after run — a large part of the v2 campaign's
+        # load spiral (RTF collapse + DDS meltdown were downstream of
+        # it). The leader is already dead, but the process GROUP id
+        # lives as long as any member does; one SIGKILL to it reaps
+        # every straggler. ProcessLookupError = nothing survived: the
+        # good case.
+        try:
+            os.killpg(slot.proc.pid, signal.SIGKILL)
+            print(
+                f"[slot {slot.index}] {slot.run_id} swept surviving "
+                f"processes from group {slot.proc.pid}"
+            )
+        except ProcessLookupError:
+            pass
         end_ts = time.time()
         duration = end_ts - slot.start_ts
         # The run watchdog (watchdog:=true) writes its verdict next to
@@ -447,15 +593,17 @@ class SweepRunner:
         # status CSV so analysis can skip aborted runs without opening
         # a single bag. Absent file = legacy run or wall-clock kill.
         watchdog_verdict = ""
+        verdict_file: Optional[Path] = None
         if slot.host_bag_path is not None:
-            verdict_path = slot.host_bag_path.parent / "run_verdict.json"
-            if verdict_path.is_file():
+            verdict_file = slot.host_bag_path.parent / "run_verdict.json"
+            if verdict_file.is_file():
                 try:
                     watchdog_verdict = str(
-                        json.loads(verdict_path.read_text()).get("verdict", "")
+                        json.loads(verdict_file.read_text()).get("verdict", "")
                     )
                 except (OSError, ValueError):
                     watchdog_verdict = ""
+        attempt = slot.attempt
         row = StatusRow(
             run_id=slot.run_id,
             slot=slot.index,
@@ -466,6 +614,7 @@ class SweepRunner:
             duration_sec=round(duration, 2),
             timed_out=timed_out,
             verdict=watchdog_verdict,
+            attempt=attempt,
         )
         self.status.append(row)
         with self.status_path.open("a", newline="") as f:
@@ -480,6 +629,7 @@ class SweepRunner:
                     row.duration_sec,
                     row.timed_out,
                     row.verdict,
+                    row.attempt,
                 ]
             )
         if slot.log_file is not None:
@@ -493,7 +643,25 @@ class SweepRunner:
         if watchdog_verdict:
             verdict += f" [{watchdog_verdict}]"
         print(f"[slot {slot.index}] {slot.run_id} {verdict} in {duration:.1f}s")
-        if slot.host_bag_path is not None and slot.container_bag_path is not None:
+
+        bag_present = slot.host_bag_path is not None and any(
+            slot.host_bag_path.glob("*.mcap*")
+        )
+        retry = (
+            not self._shutdown
+            and attempt < self.max_retries
+            and should_retry(
+                verdict=watchdog_verdict,
+                exit_code=exit_code,
+                timed_out=timed_out,
+                bag_present=bag_present,
+                record=self.record,
+                watchdog=self._watchdog_in_play,
+            )
+        )
+        if retry:
+            self._requeue_for_retry(slot, watchdog_verdict, verdict_file)
+        elif slot.host_bag_path is not None and slot.container_bag_path is not None:
             self._finalize_bag(
                 slot.index,
                 slot.run_id,
@@ -509,6 +677,46 @@ class SweepRunner:
         slot.timeout_sec = None
         slot.host_bag_path = None
         slot.container_bag_path = None
+
+    def _requeue_for_retry(
+        self,
+        slot: Slot,
+        verdict: str,
+        verdict_file: Optional[Path],
+    ) -> None:
+        """Park the failed attempt's artifacts and requeue the run.
+
+        The failed bag directory is renamed ``raw.failed<N>`` (kept for
+        forensics, cheap — aborted runs die in ~2 min) and the stale
+        verdict file removed so the retry can't be misread. The run goes
+        to the BACK of the queue: the rest of the sweep drains first,
+        keeping a persistent failure from monopolizing a slot.
+        """
+        assert slot.run_id is not None and slot.yaml_path is not None
+        attempt = slot.attempt
+        if verdict_file is not None and verdict_file.is_file():
+            try:
+                verdict_file.unlink()
+            except OSError:
+                pass
+        if slot.host_bag_path is not None and slot.host_bag_path.is_dir():
+            parked = slot.host_bag_path.with_name(f"raw.failed{attempt}")
+            try:
+                if parked.exists():
+                    shutil.rmtree(parked)
+                slot.host_bag_path.rename(parked)
+            except OSError as exc:
+                print(
+                    f"[slot {slot.index}] {slot.run_id} could not park failed "
+                    f"bag ({exc}); removing it instead"
+                )
+                shutil.rmtree(slot.host_bag_path, ignore_errors=True)
+        self.queue.append((slot.run_id, slot.yaml_path, attempt + 1))
+        print(
+            f"[slot {slot.index}] {slot.run_id} retrying "
+            f"(attempt {attempt + 1}/{self.max_retries}, cause: "
+            f"{verdict or 'no verdict'})"
+        )
 
     def _finalize_bag(
         self,
@@ -646,11 +854,17 @@ class SweepRunner:
                 rc = self._kill_slot(slot)
                 self.reap_slot(slot, rc, timed_out=True)
 
-            # Refill idle slots from the queue.
+            # Refill idle slots from the queue, at most one launch per
+            # stagger window: N containers importing Python + running DDS
+            # discovery at the same instant is exactly the stampede that
+            # melted Fast DDS reader creation in the v2 campaign.
             for slot in self.slots:
                 if slot.proc is None and self.queue:
-                    run_id, yaml_path = self.queue.pop(0)
-                    self.launch_slot(slot, run_id, yaml_path)
+                    if time.time() - self._last_launch_ts < self.stagger_sec:
+                        break
+                    run_id, yaml_path, attempt = self.queue.pop(0)
+                    self.launch_slot(slot, run_id, yaml_path, attempt)
+                    self._last_launch_ts = time.time()
 
             if not self.queue and all(s.proc is None for s in self.slots):
                 break
@@ -751,8 +965,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--ros-domain-base",
         type=int,
-        default=50,
-        help="Slot i gets ROS_DOMAIN_ID = base + i (default base: 50).",
+        default=10,
+        help="Slot i gets ROS_DOMAIN_ID = base + i (default base: 10). Keep "
+        "base + concurrency - 1 <= 100: Fast DDS ports are 7400 + 250*domain, "
+        "and domains >= 102 land in the Linux ephemeral port range where "
+        "transient sockets cause sporadic participant-creation failures "
+        "(the v2 campaign's 64 slots at base 50 put slots 52-63 there).",
     )
     ap.add_argument(
         "--sim-data-dir",
@@ -784,7 +1002,34 @@ def main(argv: list[str] | None = None) -> int:
         "controller stack alive after the mission completes, so without a "
         "timeout the slot would hang forever. Pick this as roughly "
         "n_oscillations * single-cycle-wall-time with some headroom. Timed-out "
-        "runs are recorded with timed_out=true in sweep_status.csv.",
+        "runs are recorded with timed_out=true in sweep_status.csv. When the "
+        "manifest carries mission values, this acts as a CAP on the per-run "
+        "scaled budget — a cap below any run's scaled budget is refused "
+        "unless --allow-cap-below-scaled is given.",
+    )
+    ap.add_argument(
+        "--allow-cap-below-scaled",
+        action="store_true",
+        help="Permit a --per-run-timeout below some runs' scaled mission "
+        "budgets (they WILL be killed mid-mission). The v2 campaign lost "
+        "~40%% of its runs to exactly this; refuse it by default.",
+    )
+    ap.add_argument(
+        "--max-retries",
+        type=int,
+        default=2,
+        metavar="N",
+        help="Retry a run up to N times when it ends in an infrastructure "
+        "verdict (abort_init/abort_bad_start/abort_floater/abort_sinker), "
+        "crashes without a verdict, or leaves no bag. 0 disables (default: 2).",
+    )
+    ap.add_argument(
+        "--stagger-sec",
+        type=float,
+        default=15.0,
+        metavar="SECONDS",
+        help="Minimum spacing between slot launches, so N containers never "
+        "start their Python/DDS bringup at the same instant (default: 15).",
     )
     args = ap.parse_args(argv)
 
@@ -803,7 +1048,16 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"no lhs_*.yaml files found in {args.scenarios_dir}")
 
     sweep_name = args.sweep_name or args.scenarios_dir.name
-    queue = [(p.stem, p) for p in yamls]
+    queue = [(p.stem, p, 0) for p in yamls]
+
+    if domain_window_collides_with_ephemeral(args.ros_domain_base, args.concurrency):
+        raise SystemExit(
+            f"--ros-domain-base {args.ros_domain_base} with {args.concurrency} "
+            f"slots maps Fast DDS ports into the Linux ephemeral port range "
+            f"(domains >= 102): transient sockets will sporadically break "
+            f"participant creation. Use --ros-domain-base "
+            f"{max(0, max_safe_domain_base(args.concurrency))} or lower."
+        )
 
     if args.cpu_budget:
         budget = parse_cpu_list(args.cpu_budget)
@@ -822,6 +1076,23 @@ def main(argv: list[str] | None = None) -> int:
             f"{len(mission_args)} runs (e.g. {next(iter(mission_args.values()))})"
         )
 
+    offenders = truncating_cap_runs(mission_args, args.per_run_timeout)
+    if offenders:
+        worst_id, worst_scaled = offenders[0]
+        msg = (
+            f"--per-run-timeout {args.per_run_timeout:.0f}s caps BELOW the "
+            f"scaled mission budget of {len(offenders)} run(s) "
+            f"(worst: {worst_id} needs ~{worst_scaled:.0f}s) — those runs "
+            f"would be killed mid-mission and their bags truncated."
+        )
+        if not args.allow_cap_below_scaled:
+            raise SystemExit(
+                msg + " Raise the cap (or drop the flag to use per-run "
+                "scaled budgets), or pass --allow-cap-below-scaled to "
+                "truncate anyway."
+            )
+        print(f"WARNING: {msg} Proceeding (--allow-cap-below-scaled).")
+
     runner = SweepRunner(
         sif=args.sif.resolve(),
         scenarios_dir=args.scenarios_dir.resolve(),
@@ -835,6 +1106,8 @@ def main(argv: list[str] | None = None) -> int:
         slots=slots,
         queue=queue,
         mission_args=mission_args,
+        max_retries=max(0, args.max_retries),
+        stagger_sec=max(0.0, args.stagger_sec),
     )
     return runner.run()
 

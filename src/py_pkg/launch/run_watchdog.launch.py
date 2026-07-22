@@ -38,6 +38,19 @@ from launch_ros.actions import Node
 # genuinely stuck vehicle trips the sinker rule.
 _STALL_GRACE_MARGIN_S = 240.0
 
+# Floater deadline, derived like the stall grace rather than left at the
+# node's 120 s default. 360 s covers the slowest legitimate dive onset in
+# the sweep envelope: a 0.55-effectiveness pump behind the lake-fitted
+# delay/slew still deflating the full bladder (~150 s) plus sinking to
+# MIN_DIVE_M with degraded authority (a 0.6-effectiveness pilot run
+# reached only 1.4 m by the old 120 s deadline — a false floater). The
+# dwell term covers STAIRCASE profiles whose first step(s) sit shallower
+# than MIN_DIVE_M: the vehicle legitimately holds there for up to a few
+# dwells before ever crossing the dive threshold. Still a fast-fail next
+# to the multi-ks mission budgets.
+_DIVE_DEADLINE_BASE_S = 360.0
+_DIVE_DEADLINE_DWELL_FACTOR = 3.0
+
 
 def _wire_watchdog(context, *_args, **_kwargs):
     # OpaqueFunction so the grace arithmetic and verdict-path derivation can
@@ -46,6 +59,7 @@ def _wire_watchdog(context, *_args, **_kwargs):
     bag_path = LaunchConfiguration("bag_path").perform(context).strip()
 
     stall_grace_s = dwell_s + _STALL_GRACE_MARGIN_S
+    dive_deadline_s = _DIVE_DEADLINE_BASE_S + _DIVE_DEADLINE_DWELL_FACTOR * dwell_s
     verdict_path = str(Path(bag_path).parent / "run_verdict.json") if bag_path else ""
 
     watchdog_node = Node(
@@ -56,7 +70,11 @@ def _wire_watchdog(context, *_args, **_kwargs):
         parameters=[
             {
                 "stall_grace_s": stall_grace_s,
+                "dive_deadline_s": dive_deadline_s,
                 "verdict_path": verdict_path,
+                "max_start_depth_m": float(
+                    LaunchConfiguration("max_start_depth_m").perform(context)
+                ),
             }
         ],
     )
@@ -99,6 +117,17 @@ def generate_launch_description() -> LaunchDescription:
                     "The run's bag output directory; run_verdict.json is "
                     "written next to it (its parent). Empty writes no verdict "
                     "file."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "max_start_depth_m",
+                default_value="5.0",
+                description=(
+                    "Bad-start guard: abort (verdict abort_bad_start) if the "
+                    "first armed odometry sample is already deeper than this "
+                    "many metres — the vehicle fell during bringup and the "
+                    "run can never be a valid surface-start recording. "
+                    "0 disables the guard."
                 ),
             ),
             OpaqueFunction(

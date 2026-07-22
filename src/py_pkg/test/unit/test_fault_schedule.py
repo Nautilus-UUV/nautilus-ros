@@ -3,13 +3,15 @@
 The schedule is the deterministic ``m(t) in [0, 1]`` gate that scales a
 fault's one drawn severity in time. Every claim of its contract is pinned
 here:
-- the default schedule is constant 1.0 from the first call (v1 parity: a
-  run with a default schedule behaves exactly like the original
-  whole-run fault),
+- the default schedule is constant 1.0 from arming (v1 parity: a run
+  with a default schedule behaves exactly like the original whole-run
+  fault, felt from mission start),
 - step gates 0 -> 1 at the onset,
 - ramp rises linearly to 1 over ``ramp_s`` then holds,
 - intermittent cycles on/off per ``period_s`` / ``duty`` across periods,
-- the epoch is latched by ``start`` OR lazily on the first call,
+- the epoch is latched ONLY by ``start`` — an unarmed schedule reads 0
+  (fault not felt), so bringup before /command can never consume or
+  fire the onset,
 - ``active_elapsed`` is 0 before onset and grows after,
 - an unknown shape / a negative onset raise at construction.
 """
@@ -25,21 +27,26 @@ from py_pkg.sensor_faults import FaultSchedule
 # ---------------------------------------------------------------------------
 
 
-def test_default_schedule_is_constant_one_from_first_call():
+def test_default_schedule_is_constant_one_from_arming():
     s = FaultSchedule()
-    # No start(): the first multiplier call latches the epoch, and a
-    # step-at-t=0 schedule reads 1.0 from that first sample onward.
+    s.start(0.0)
+    # A step-at-t=0 schedule reads 1.0 from the armed epoch onward.
     assert s.multiplier(0.0) == 1.0
     for t in (0.0, 0.5, 10.0, 1000.0):
         assert s.multiplier(t) == 1.0
 
 
-def test_default_schedule_lazy_epoch_still_reads_one_at_first_sample():
-    # Even when the first sample is at a large clock value, a default
-    # (onset 0) schedule reads 1.0 immediately -- the whole-run behavior.
+def test_unarmed_schedule_reads_zero_and_holds_no_epoch():
+    # Not armed = fault not felt, at any clock value: pre-/command
+    # bringup samples can neither feel the fault nor burn the onset.
     s = FaultSchedule()
-    assert s.multiplier(500.0) == 1.0
-    assert s.multiplier(500.1) == 1.0
+    assert s.multiplier(500.0) == 0.0
+    assert s.active_elapsed(500.0) == 0.0
+    # Arming afterwards counts the onset from the armed epoch, proving
+    # the earlier calls latched nothing.
+    s.start(1000.0)
+    assert s.multiplier(1000.0) == 1.0
+    assert s.blend(1.0, 0.6, 1000.0) == pytest.approx(0.6)
 
 
 # ---------------------------------------------------------------------------
@@ -118,12 +125,15 @@ def test_epoch_latched_explicitly_via_start():
     assert s.multiplier(105.0) == 1.0  # onset measured from the started epoch
 
 
-def test_epoch_latched_lazily_on_first_call():
+def test_unarmed_epoch_never_latches_lazily():
     s = FaultSchedule(onset_s=5.0, shape="step")
-    # No start(): the first multiplier call pins the epoch to its own t.
-    assert s.multiplier(100.0) == 0.0  # rel = 100 - 100 - 5 < 0
-    assert s.multiplier(104.999) == 0.0
-    assert s.multiplier(105.0) == 1.0
+    # No start(): calls read 0 and pin nothing — arming later measures
+    # the onset from start()'s epoch, not from the earliest call.
+    assert s.multiplier(100.0) == 0.0
+    assert s.multiplier(105.0) == 0.0
+    s.start(200.0)
+    assert s.multiplier(204.999) == 0.0
+    assert s.multiplier(205.0) == 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -140,10 +150,11 @@ def test_active_elapsed_zero_before_onset_then_grows():
     assert s.active_elapsed(20.0) == pytest.approx(15.0)
 
 
-def test_active_elapsed_latches_epoch_lazily():
+def test_active_elapsed_zero_until_armed():
     s = FaultSchedule(onset_s=2.0, shape="step")
-    # First touch is active_elapsed, which must latch the epoch just like
-    # multiplier would.
+    # Unarmed touches read 0 and latch nothing — mirroring multiplier.
+    assert s.active_elapsed(50.0) == 0.0
+    s.start(50.0)
     assert s.active_elapsed(50.0) == 0.0  # rel = 50 - 50 - 2 < 0 -> 0
     assert s.active_elapsed(55.0) == pytest.approx(3.0)  # 55 - 50 - 2
 
@@ -187,10 +198,13 @@ def test_blend_tracks_the_ramp_between_the_two_ends():
     assert s.blend(0.0, 4.0, 5.0) == pytest.approx(2.0)
 
 
-def test_blend_on_default_schedule_is_the_severity():
+def test_blend_on_armed_default_schedule_is_the_severity():
     # v1 parity: with no onset, the fault is felt at full severity from
-    # the first sample, whichever end is "healthy".
+    # arming, whichever end is "healthy". Unarmed it blends to healthy.
     s = FaultSchedule()
+    assert s.blend(1.0, 0.6, 0.0) == pytest.approx(1.0)
+    assert s.blend(0.0, 7.0, 0.0) == pytest.approx(0.0)
+    s.start(0.0)
     assert s.blend(1.0, 0.6, 0.0) == pytest.approx(0.6)
     assert s.blend(0.0, 7.0, 0.0) == pytest.approx(7.0)
 

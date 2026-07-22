@@ -145,3 +145,38 @@ class TestVerdictLatches:
         t = _dive_to(rp, Z_SPAWN, Z_SPAWN - 2.5, t0=0.0)
         assert rp.feed(t + GRACE, Z_SPAWN - 2.5) == "sinker"
         assert rp.feed(t + GRACE + 60.0, Z_SPAWN) == "sinker"
+
+
+class TestBadStart:
+    """The v3 surface-start guard: a run armed already deep is invalid.
+
+    v2 forensics: runs whose vehicle free-fell during bringup armed the
+    watchdog at 30+ m; the floater rule then misread the (ascending)
+    mission as "never dove" and killed valid-looking-but-invalid runs at
+    ~130 s. bad_start names the failure instead, immediately, so sweep
+    runners can retry it.
+    """
+
+    def test_first_sample_deeper_than_limit_is_bad_start(self):
+        rp = _rp(max_start_depth_m=5.0)
+        assert rp.feed(0.0, -31.0) == "bad_start"
+        # Latched: even a perfect dive afterwards can't clear it.
+        assert rp.feed(60.0, -40.0) == "bad_start"
+
+    def test_first_sample_at_or_above_limit_arms_normally(self):
+        rp = _rp(max_start_depth_m=5.0)
+        assert rp.feed(0.0, -5.0) is None  # boundary: not strictly deeper
+        t = _dive_to(rp, -5.0, -8.0, t0=0.0)
+        assert rp.feed(t + 1.0, -6.5) is None  # drawup >= min_return
+
+    def test_guard_disabled_by_default_preserves_deep_arm(self):
+        # max_start_depth_m defaults to 0 (off): arming at depth is legal
+        # (ad-hoc runs intentionally spawn at z=-5 or deeper).
+        rp = _rp()
+        assert rp.feed(0.0, -31.0) is None
+
+    def test_only_first_sample_is_guarded(self):
+        # The guard is about the START; diving deep later is the mission.
+        rp = _rp(max_start_depth_m=5.0)
+        assert rp.feed(0.0, -0.5) is None
+        assert rp.feed(30.0, -30.0) is None

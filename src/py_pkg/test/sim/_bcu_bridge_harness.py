@@ -28,7 +28,7 @@ from py_pkg.uuv_ros_core import (
 )
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
-from std_msgs.msg import Float64, Int16
+from std_msgs.msg import Bool, Float64, Int16
 
 from ._sim_helpers import spin_until
 
@@ -86,6 +86,13 @@ def make_rig(probe_cls, init_args=None, name="rig", bridge_cls=BCUSimBridge):
         executor = SingleThreadedExecutor()
         executor.add_node(bridge)
         executor.add_node(probe)
+        # Mission-start stand-in: fault schedules arm on the first
+        # latched /command=true (auto_mission's job in a real launch),
+        # so every rig publishes it up front — the latch reaches the
+        # bridge during discovery, pinning the fault epoch at rig
+        # bringup exactly like the pre-/command-gating behavior.
+        command_pub = create_publisher_for_topic(probe, UUVTopics.COMMAND)
+        command_pub.publish(Bool(data=True))
         yield probe, executor
         executor.remove_node(probe)
         executor.remove_node(bridge)

@@ -55,7 +55,22 @@
 # floaters ~130 s / stalled sinkers ~dwell+240 s in). The worst corner
 # (40 m, 2 dwelled cycles, armed-clamp ascent budgeted at 0.012 m/s)
 # computes to ~16.9 ks under run_sweep's scaled-budget formula; 18000
-# covers it.
+# covers it. run_sweep now REFUSES a cap below any run's scaled budget
+# (the first campaign drop ran at 1800 s and killed every long mission
+# mid-write — see --allow-cap-below-scaled).
+#
+# Bringup/infra hardening (post first-drop forensics): the sim launches
+# spawn Gazebo PAUSED and a sim_ready_gate unpauses only once the whole
+# graph (bridges, controllers, recorder, ros_gz command path) is
+# discovered — deep-start free-falls and frozen-plant runs cannot
+# happen by construction; apptainer_exec.sh forces UDPv4-only DDS (no
+# cross-slot /dev/shm) and LOCALHOST discovery; run_sweep staggers slot
+# launches (--stagger-sec) and retries infra verdicts
+# (abort_init/abort_bad_start/abort_floater/abort_sinker, --max-retries,
+# default 2). Rebuild the SIF before re-running: nautilus_hal (gate,
+# consolidated record_throttle, /command-armed fault epochs) and py_pkg
+# (SIM_READY registry, auto_mission gating, bad-start watchdog) both
+# changed.
 
 description: >
   Train and validation mix v2: 1024 dives with per-run mission-profile

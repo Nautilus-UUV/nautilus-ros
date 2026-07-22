@@ -74,7 +74,19 @@ if [[ -n "$SCENARIOS_DIR" ]]; then
     binds+=( --bind "$(readlink -f "$SCENARIOS_DIR"):/ros2_ws/scenarios:ro" )
 fi
 
-env_args=( --env GZ_IP=127.0.0.1 )
+# DDS transport hardening for many concurrent slots on one host:
+#  - UDPv4-only builtin transports: apptainer shares the host /dev/shm,
+#    so Fast DDS's shared-memory transport collides ACROSS slots (lock
+#    files, stale segments after SIGKILL reaps). The v2 campaign's
+#    dead/minutes-late DataReaders ("Failed init_port ...", "No unicast
+#    locators ... Problem creating associated Reader") trace to exactly
+#    this; loopback UDP is contention-free at our message rates.
+#  - LOCALHOST discovery range: every run is self-contained, so DDS
+#    discovery must never leave the box (slots on sibling cluster nodes
+#    reuse the same ROS_DOMAIN_IDs).
+env_args=( --env GZ_IP=127.0.0.1
+           --env FASTDDS_BUILTIN_TRANSPORTS=UDPv4
+           --env ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST )
 for kv in "${EXTRA_ENVS[@]}"; do
     env_args+=( --env "$kv" )
 done

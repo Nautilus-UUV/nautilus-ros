@@ -50,6 +50,39 @@ optional CPU pinning) — keep the two scripts side by side. Host-side
 Python deps for the sampler and analysis live in
 `scripts/requirements-sampler.txt` / `scripts/requirements-analysis.txt`.
 
+Robustness knobs added after the first `train_validation_mix_v2` drop
+(82% of runs lost to init races, DDS meltdown, and a truncating cap):
+
+- `apptainer_exec.sh` forces `FASTDDS_BUILTIN_TRANSPORTS=UDPv4` and
+  `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST` — apptainer shares the host
+  `/dev/shm`, so Fast DDS's shared-memory transport collides across
+  concurrent slots (dead / minutes-late DataReaders); loopback UDP
+  doesn't.
+- `--stagger-sec` (default 15) spaces slot launches so N containers
+  never run Python import + DDS discovery at the same instant.
+- `--max-retries` (default 2) requeues runs that end in an
+  infrastructure verdict (`abort_init` / `abort_bad_start` /
+  `abort_floater` / `abort_sinker` — the sim launches spawn Gazebo
+  paused behind a `sim_ready_gate`, so genuine scenario physics is not
+  what these mean anymore), crash without a verdict, or leave no bag.
+  Failed attempts' bags are parked as `raw.failedN`; `sweep_status.csv`
+  gains an `attempt` column and the last row per run_id is the final
+  outcome.
+- `--per-run-timeout` now REFUSES to cap below any run's scaled mission
+  budget (pass `--allow-cap-below-scaled` to truncate anyway). The v2
+  drop ran 1800 s against ~17 ks budgets and killed every long mission
+  mid-write.
+- `--ros-domain-base` defaults to 10 and run_sweep refuses a window
+  whose Fast DDS ports (7400 + 250×domain) reach the Linux ephemeral
+  port range (domains ≥ 102 — the v2 drop's 64 slots at base 50 put
+  slots 52–63 there, where transient sockets sporadically break DDS
+  participant creation; those slots showed 3× the no-usable-data rate).
+  Keep base + concurrency − 1 ≤ 100.
+
+Changing `nautilus_hal` or `py_pkg` (the gate, the consolidated
+`record_throttle`, `/command`-armed fault epochs, `SIM_READY`) requires
+a SIF rebuild before the next sweep.
+
 ### PID Sweep
 
 ```bash

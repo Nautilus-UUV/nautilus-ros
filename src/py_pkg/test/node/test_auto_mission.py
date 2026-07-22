@@ -158,3 +158,40 @@ def test_endpoints_publish_one_latched_dive_init_before_path(am_harness, monkeyp
     cmd = sub.missions[0]
     assert cmd.dwell_s == pytest.approx(7.0)
     assert cmd.n_steps == 4
+
+
+def test_wait_for_sim_ready_holds_mission_until_ready(am_harness, monkeypatch):
+    """With wait_for_sim_ready, NOTHING goes out until /sim/ready lands.
+
+    The sim launches spawn Gazebo paused; publishing the mission early
+    would arm controllers and fault epochs against a world that is not
+    stepping yet. A latched ready (published here BEFORE the node would
+    normally fire) must release the sequence exactly once.
+    """
+    from py_pkg.uuv_ros_core import create_publisher_for_topic
+    from std_msgs.msg import Bool
+
+    auto = _make_auto_mission(
+        monkeypatch,
+        wait_for_sim_ready=True,
+        start_delay_s=100.0,
+    )
+    am_harness.add(auto)
+    sub = am_harness.add(_InitSubscriber())
+
+    # Grace period: nothing may be published while the gate is closed.
+    am_harness.spin_for(0.5)
+    assert sub.missions == [], "mission must be held until /sim/ready"
+
+    class _GateStub(Node):
+        def __init__(self):
+            super().__init__("sim_ready_gate_stub")
+            self.pub = create_publisher_for_topic(self, UUVTopics.SIM_READY)
+
+    gate = am_harness.add(_GateStub())
+    gate.pub.publish(Bool(data=True))
+
+    got = am_harness.spin_until(lambda: len(sub.missions) >= 1, timeout=3.0)
+    assert got, "latched /sim/ready must release the mission sequence"
+    am_harness.spin_for(0.3)
+    assert len(sub.missions) == 1, "exactly one MissionCommand after ready"

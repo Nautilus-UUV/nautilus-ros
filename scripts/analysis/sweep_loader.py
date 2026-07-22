@@ -37,9 +37,11 @@ class RunEntry:
     bag_dir: Path
     scenario_yaml_path: str | None
     is_nominal: bool
-    # Run-watchdog verdict from sweep_status.csv ("mission_complete" /
-    # "abort_floater" / "abort_sinker"); "" for legacy sweeps and
-    # wall-clock kills — classify from the bag in that case.
+    # Run-watchdog / sim-gate verdict from sweep_status.csv
+    # ("mission_complete" / "abort_floater" / "abort_sinker" /
+    # "abort_bad_start" / "abort_init"); "" for legacy sweeps and
+    # wall-clock kills — classify from the bag in that case. Retried
+    # runs resolve to their final attempt's verdict (last CSV row wins).
     verdict: str = ""
 
 
@@ -49,7 +51,10 @@ def _looks_nominal(yaml_path: str | None) -> bool:
 
 def _read_status_csv(sweep_dir: Path) -> dict[str, dict]:
     """`run_id -> row` map. Empty if the file is missing (ad-hoc runs, or a sweep
-    that crashed before the orchestrator wrote rows)."""
+    that crashed before the orchestrator wrote rows). run_sweep's retry
+    path appends one row per attempt for the same run_id; the dict
+    comprehension keeps the LAST row — the final attempt, whose bag is
+    the one on disk (failed attempts' bags are parked as raw.failedN)."""
     status_csv = sweep_dir / "sweep_status.csv"
     if not status_csv.is_file():
         return {}

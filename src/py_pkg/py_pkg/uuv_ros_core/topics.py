@@ -83,3 +83,11 @@ class UUVTopics:
     # through any fault/comms gate — it must stay intact precisely when
     # the faulted streams go quiet.
     ANOMALY_LABEL = "/anomaly/label"
+
+    # Sim-only bringup-ready flag: latched true by the nautilus_hal
+    # sim_ready_gate once every required node is discovered and the
+    # (paused-spawned) Gazebo world has been unpaused and verified
+    # stepping. auto_mission holds the mission start until it lands, so
+    # a sweep run can never begin while part of the graph is still
+    # coming up. Never published on hardware.
+    SIM_READY = "/sim/ready"

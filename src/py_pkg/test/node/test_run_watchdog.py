@@ -19,6 +19,7 @@ from std_msgs.msg import Bool
 
 from py_pkg.uuv_ros_core import UUVQoS, UUVTopics, create_publisher_for_topic
 from py_pkg.watchdog.run_watchdog_node import (
+    EXIT_ABORT_BAD_START,
     EXIT_ABORT_FLOATER,
     EXIT_MISSION_COMPLETE,
     RunWatchdogNode,
@@ -69,7 +70,7 @@ class WatchdogHarness(NodeHarness):
     """NodeHarness specialised for RunWatchdogNode: exit recording + odom
     feeding on top of the generic scaffolding."""
 
-    def __init__(self, verdict_path: str):
+    def __init__(self, verdict_path: str, max_start_depth_m: float = 0.0):
         self.exits: list[int] = []
         super().__init__(
             lambda: RunWatchdogNode(
@@ -82,6 +83,11 @@ class WatchdogHarness(NodeHarness):
                     Parameter("verdict_path", Parameter.Type.STRING, verdict_path),
                     Parameter("complete_grace_s", Parameter.Type.DOUBLE, GRACE_S),
                     Parameter("abort_grace_s", Parameter.Type.DOUBLE, GRACE_S),
+                    Parameter(
+                        "max_start_depth_m",
+                        Parameter.Type.DOUBLE,
+                        max_start_depth_m,
+                    ),
                 ],
             ),
             _WatchdogTesterNode,
@@ -101,8 +107,8 @@ def make_harness():
     """Factory so each test picks its own verdict_path (including "")."""
     harnesses: list[WatchdogHarness] = []
 
-    def _make(verdict_path: str) -> WatchdogHarness:
-        harness = WatchdogHarness(verdict_path)
+    def _make(verdict_path: str, **kwargs) -> WatchdogHarness:
+        harness = WatchdogHarness(verdict_path, **kwargs)
         harnesses.append(harness)
         return harness
 
@@ -160,6 +166,32 @@ class TestRunWatchdog:
         # fired sooner than this.
         assert time.monotonic() - t_armed >= DIVE_DEADLINE_S
 
+    def test_deep_armed_start_concludes_abort_bad_start(self, make_harness, tmp_path):
+        # v2 forensics: a vehicle that fell during bringup armed the
+        # watchdog at 30+ m and the floater rule misread the run. With the
+        # guard on, the FIRST armed sample being deep names the failure.
+        path = tmp_path / "run_verdict.json"
+        h = make_harness(str(path), max_start_depth_m=5.0)
+        h.publish_command(True)
+        deadline = time.monotonic() + 4.0
+        while not h.exits and time.monotonic() < deadline:
+            h.tester.publish_odom_z(-31.0)
+            h.spin_for(0.05)
+
+        assert h.exits == [EXIT_ABORT_BAD_START]
+        assert json.loads(path.read_text())["verdict"] == "abort_bad_start"
+
+    def test_surface_armed_start_with_guard_still_runs(self, make_harness, tmp_path):
+        # Guard on, surfaced start: no verdict until the (shrunk) floater
+        # deadline — the guard must not fire on a legitimate start.
+        h = make_harness("", max_start_depth_m=5.0)
+        h.publish_command(True)
+        deadline = time.monotonic() + 4.0
+        while not h.exits and time.monotonic() < deadline:
+            h.tester.publish_odom_z(-0.5)
+            h.spin_for(0.05)
+        assert h.exits == [EXIT_ABORT_FLOATER]  # floater, NOT bad_start
+
     def test_empty_verdict_path_writes_nothing(self, make_harness, tmp_path):
         h = make_harness("")
         h.publish_command(True)
@@ -168,3 +200,35 @@ class TestRunWatchdog:
         # Concludes and exits normally -- just without a verdict file.
         assert h.exits == [EXIT_ABORT_FLOATER]
         assert list(tmp_path.iterdir()) == []
+
+    def test_plausibility_clock_uses_odometry_stamps(self, make_harness, tmp_path):
+        # Sim-time stamps rule the deadlines: two surface samples whose
+        # STAMPS span the dive deadline conclude a floater within
+        # milliseconds of wall time. (Unstamped odometry — every other
+        # test here — falls back to the node clock; an RTF-0.13 pilot
+        # run proved why the fallback must not be the primary.)
+        path = tmp_path / "run_verdict.json"
+        h = make_harness(str(path))
+        h.publish_command(True)
+        h.spin_until(lambda: h.node._armed, timeout=2.0)
+
+        def publish_stamped(t_s: float) -> None:
+            msg = Odometry()
+            msg.header.stamp.sec = int(t_s)
+            msg.header.stamp.nanosec = int((t_s % 1.0) * 1e9)
+            msg.pose.pose.position.z = Z_SPAWN
+            h.tester.odom_pub.publish(msg)
+
+        t_wall = time.monotonic()
+        deadline = time.monotonic() + 4.0
+        k = 0
+        while not h.exits and time.monotonic() < deadline:
+            # Stamps race ahead of wall time: 100 + k covers the shrunk
+            # DIVE_DEADLINE_S after two samples.
+            publish_stamped(100.0 + k)
+            k += 1
+            h.spin_for(0.05)
+        assert h.exits == [EXIT_ABORT_FLOATER]
+        assert json.loads(path.read_text())["verdict"] == "abort_floater"
+        # Far faster than the wall deadline could ever fire.
+        assert time.monotonic() - t_wall < DIVE_DEADLINE_S + 3.0

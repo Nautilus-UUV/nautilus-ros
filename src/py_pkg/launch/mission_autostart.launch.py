@@ -48,6 +48,9 @@ def _autostart_setup(context):
         "start_delay_s": ParameterValue(
             LaunchConfiguration("start_delay_s"), value_type=float
         ),
+        "wait_for_sim_ready": ParameterValue(
+            LaunchConfiguration("wait_for_sim_ready"), value_type=bool
+        ),
     }
     scenario_path = LaunchConfiguration("scenario").perform(context)
     if scenario_path:
@@ -75,6 +78,10 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument("dwell_s", default_value="0.0"),
             DeclareLaunchArgument("n_steps", default_value="1"),
             DeclareLaunchArgument("start_delay_s", default_value="2.0"),
+            # True (the sim launches pass it) holds the mission until the
+            # sim_ready_gate's latched /sim/ready; false keeps the legacy
+            # fixed-timer autostart for gate-less compositions.
+            DeclareLaunchArgument("wait_for_sim_ready", default_value="false"),
             DeclareLaunchArgument("scenario", default_value=""),
             OpaqueFunction(function=_autostart_setup),
         ]

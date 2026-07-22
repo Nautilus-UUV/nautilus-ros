@@ -8,10 +8,13 @@ Faults here are *persistent whole-run archetypes at constant drawn
 severity* (they replace the old Poisson-MTTF escalation ladder). An
 optional :class:`FaultSchedule` gates WHEN the archetype is felt — a
 deterministic envelope ``m(t) in [0, 1]`` giving the fault an onset and
-a shape (step / ramp / intermittent); the default schedule is
-``m(t) == 1`` from the first sample, i.e. the original whole-run
-behavior. Severity itself never changes mid-run — ``m(t)`` scales the
-one drawn magnitude. Pieces:
+a shape (step / ramp / intermittent). A supplied schedule is armed by
+its owner — the HAL bridges arm on the first latched ``/command=true``,
+so an onset counts from the moment the run physically begins and reads
+0 (fault not felt) through bringup; a channel's own default schedule
+arms at its first sample, i.e. the original whole-run behavior.
+Severity itself never changes mid-run — ``m(t)`` scales the one drawn
+magnitude. Pieces:
 
 - :class:`FaultyChannel` — one value-fault archetype (bias / drift /
   stuck) composed with the channel's calibrated
@@ -67,9 +70,13 @@ class FaultSchedule:
       "intermittent" -> after onset, 1 during the first
                         ``duty * period_s`` of each period, else 0.
 
-    The epoch is latched by :meth:`start` (bridges call it in setup) or
-    lazily on the first :meth:`multiplier` call. No RNG, no clock of its
-    own — same determinism contract as :class:`FaultyChannel`.
+    The epoch is latched by :meth:`start` — the bridges arm it on the
+    first ``/command=true`` (mission start), so ``onset_s`` counts from
+    the moment the run physically begins, not from process bringup.
+    Until armed the envelope reads 0 (fault not felt): bringup and a
+    paused-spawned world can never eat into — or fire — the onset.
+    No RNG, no clock of its own — same determinism contract as
+    :class:`FaultyChannel`.
     """
 
     def __init__(
@@ -93,14 +100,28 @@ class FaultSchedule:
         self.duty = float(duty)
         self._epoch_s: float | None = None
 
-    def start(self, t_s: float) -> None:
-        """Latch the epoch the onset counts from."""
+    @property
+    def armed(self) -> bool:
+        """True once an epoch is latched (the envelope reads 0 until then)."""
+        return self._epoch_s is not None
+
+    def start(self, t_s: float) -> bool:
+        """Latch the epoch the onset counts from. First call wins.
+
+        Idempotent so callers never have to inspect the epoch to decide
+        whether arming is still needed — returns True only when this call
+        is the one that armed it, which is exactly what a caller wanting
+        to log or count newly-armed schedules needs.
+        """
+        if self._epoch_s is not None:
+            return False
         self._epoch_s = float(t_s)
+        return True
 
     def multiplier(self, t_s: float) -> float:
-        """Severity multiplier at ``t_s`` (epoch latched on first call)."""
+        """Severity multiplier at ``t_s``; 0.0 until :meth:`start` arms it."""
         if self._epoch_s is None:
-            self._epoch_s = float(t_s)
+            return 0.0
         rel = t_s - self._epoch_s - self.onset_s
         if rel < 0.0:
             return 0.0
@@ -122,12 +143,34 @@ class FaultSchedule:
         return healthy + self.multiplier(t_s) * (severity - healthy)
 
     def active_elapsed(self, t_s: float) -> float:
-        """Seconds since the onset fired (0 before). Step-shape helper:
-        drift channels accumulate at ``magnitude * active_elapsed`` so the
-        drift epoch moves to the onset (drift is step-only by spec)."""
+        """Seconds since the onset fired (0 before arming and before the
+        onset). Step-shape helper: drift channels accumulate at
+        ``magnitude * active_elapsed`` so the drift epoch moves to the
+        onset (drift is step-only by spec)."""
         if self._epoch_s is None:
-            self._epoch_s = float(t_s)
+            return 0.0
         return max(0.0, t_s - self._epoch_s - self.onset_s)
+
+
+class _WholeRunSchedule(FaultSchedule):
+    """The default for a channel nobody else will arm: arms on first touch.
+
+    A caller-supplied schedule has an owner that arms it (the bridges, on
+    the first latched ``/command=true``), so it correctly reads 0 until
+    the run starts. A schedule the channel invented for itself has no such
+    owner, and would otherwise read 0 forever. Self-latching on the first
+    sample restores the original whole-run semantics — and keeps that rule
+    inside the class that owns the epoch, so ``FaultyChannel.sample`` needs
+    no branch and no reach into private state.
+    """
+
+    def multiplier(self, t_s: float) -> float:
+        self.start(t_s)  # latch-once: the first touch defines the epoch
+        return super().multiplier(t_s)
+
+    def active_elapsed(self, t_s: float) -> float:
+        self.start(t_s)
+        return super().active_elapsed(t_s)
 
 
 class FaultyChannel:
@@ -136,19 +179,21 @@ class FaultyChannel:
     kind semantics (channel-native units, e.g. Pa for pressure):
       "none"  -> exact delegation to the noise chain (zero extra work)
       "bias"  -> `magnitude` is a signed additive offset
-      "drift" -> `magnitude` is a signed ramp rate per second; the epoch
-                 is latched on the first sample (bridge start ~= t=0)
+      "drift" -> `magnitude` is a signed ramp rate per second, accumulated
+                 from the schedule's onset
       "stuck" -> the first reported (post-noise, on-comb) value is
                  latched and returned forever; no RNG after the latch
 
     An optional `schedule` gates the archetype in time: bias scales by
     `m(t)`; drift accumulates from the schedule's onset instead of the
     first sample (step-only by spec); stuck behaves normally until the
-    onset fires, then latches the first post-onset reading. Omitting it
-    installs the default `FaultSchedule()` — `m(t) == 1` from the first
-    sample, with the onset-relative drift epoch collapsing onto that same
-    sample — i.e. exactly the original whole-run behavior, so there is
-    only ever one code path.
+    onset fires, then latches the first post-onset reading. A supplied
+    schedule is armed by its owner (the bridges, on the first latched
+    `/command=true`). Omitting it installs a `_WholeRunSchedule`, which
+    arms itself at the first sample — `m(t) == 1` from then on, with the
+    onset-relative drift epoch collapsing onto that same sample — i.e.
+    exactly the original whole-run behavior, so there is only ever one
+    code path.
 
     `t_s` is caller-supplied node-clock seconds — this class never
     reads a clock.
@@ -169,9 +214,11 @@ class FaultyChannel:
         self.noise = noise
         self.kind = kind
         self.magnitude = float(magnitude)
-        # The inert default IS the unscheduled behavior, so `sample` never
-        # has to branch on absence.
-        self.schedule = schedule if schedule is not None else FaultSchedule()
+        # The self-arming default IS the unscheduled behavior, so `sample`
+        # never has to branch on absence: a caller-supplied schedule is
+        # armed by its owner (the bridges, on /command), and our own
+        # default arms itself at the first sample.
+        self.schedule = schedule if schedule is not None else _WholeRunSchedule()
         self.is_active = kind != "none"
         self._stuck_value: float | None = None
 

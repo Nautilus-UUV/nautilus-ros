@@ -72,4 +72,6 @@ TOPIC_MESSAGE_MAP = {
     UUVTopics.DEBUG_RESET: Empty,
     UUVTopics.STATUS_LIVENESS: DiagnosticArray,
     UUVTopics.ANOMALY_LABEL: AnomalyLabel,
+    # Sim-only latched bringup-ready flag from the nautilus_hal sim_ready_gate.
+    UUVTopics.SIM_READY: Bool,
 }

@@ -57,6 +57,9 @@ TOPIC_QOS_MAP = {
     # the last Initialize so a controller that (re)starts mid-deployment
     # still sees the registered values.
     UUVTopics.DIVE_INIT: UUVQoS.COMMAND,
+    # Latched state from the long-lived sim_ready_gate: an auto_mission
+    # that finishes discovery after the gate opened still sees ready.
+    UUVTopics.SIM_READY: UUVQoS.COMMAND,
     UUVTopics.DEBUG_BCU_RPM: UUVQoS.COMMAND,
     UUVTopics.DEBUG_BCU_RPM_UNTIL_PRESSURE: UUVQoS.COMMAND,
     UUVTopics.DEBUG_BCU_VALVES: UUVQoS.COMMAND,

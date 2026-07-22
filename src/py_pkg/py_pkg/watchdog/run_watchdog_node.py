@@ -6,7 +6,11 @@ stream and concludes the run on whichever verdict lands first:
 - ``mission_complete`` (exit 0) -- pathfinding latched ``/mission/complete``;
 - ``abort_floater`` (exit 2) / ``abort_sinker`` (exit 3) -- the pure
   ``RunPlausibility`` tracker decided the run can never become viable
-  (never left the surface / sank and stopped climbing).
+  (never left the surface / sank and stopped climbing);
+- ``abort_bad_start`` (exit 4) -- the first armed odometry sample was
+  already deeper than ``max_start_depth_m``: the run's init failed
+  before the mission began, so the recording is invalid and a sweep
+  runner should retry it rather than let it run out the budget.
 
 Exiting *is* the termination mechanism: ``run_watchdog.launch.py`` registers
 an ``OnProcessExit`` handler on this node that turns the exit into a full
@@ -17,6 +21,9 @@ tail of the run before teardown.
 
 The plausibility clock arms only once ``/command`` goes true (mission
 started), so bringup idling at the spawn depth can never read as a floater.
+Once armed it advances on the odometry messages' own (sim-time) stamps, so
+a low real-time factor under sweep load cannot compress the deadlines
+against wall-clock physics that hasn't happened yet.
 """
 
 import json
@@ -43,6 +50,7 @@ from py_pkg.watchdog.plausibility import PlausibilityConfig, RunPlausibility
 EXIT_MISSION_COMPLETE = 0
 EXIT_ABORT_FLOATER = 2
 EXIT_ABORT_SINKER = 3
+EXIT_ABORT_BAD_START = 4
 
 
 class RunWatchdogNode(Node):
@@ -62,6 +70,13 @@ class RunWatchdogNode(Node):
         self.declare_parameter("odom_topic", "/model/glider_nautilus/odometry")
         self.declare_parameter("dive_deadline_s", 120.0)
         self.declare_parameter("stall_grace_s", 300.0)
+        # Bad-start guard (metres; <= 0 disables): if the first armed
+        # odometry sample is already deeper than this, the run's init
+        # failed (vehicle fell during bringup) — conclude abort_bad_start
+        # immediately instead of letting the floater rule misread it.
+        # Sweep launches pass a positive value; 0 preserves the old
+        # behavior for ad-hoc runs armed at an intentional depth.
+        self.declare_parameter("max_start_depth_m", 0.0)
         # "" = write no verdict file.
         self.declare_parameter("verdict_path", "")
         self.declare_parameter("complete_grace_s", 12.0)
@@ -76,6 +91,7 @@ class RunWatchdogNode(Node):
             PlausibilityConfig(
                 dive_deadline_s=self.get_parameter("dive_deadline_s").value,
                 stall_grace_s=self.get_parameter("stall_grace_s").value,
+                max_start_depth_m=self.get_parameter("max_start_depth_m").value,
             )
         )
         self._armed = False
@@ -109,12 +125,27 @@ class RunWatchdogNode(Node):
     def _on_odom(self, msg: Odometry) -> None:
         if not self._armed or self._concluded is not None:
             return
+        # Plausibility clocks on the odometry's OWN stamp (Gazebo sim
+        # time): deadlines and graces judge the physics, and under CPU
+        # contention the sim runs well below wall rate (an RTF-0.13
+        # pilot run climbed healthily for 222 wall-s = 23 sim-s and the
+        # wall-clocked stall grace called it a sinker). Sim-time seconds
+        # are RTF-invariant and match the offline classifier, which
+        # reads bag message time. Unstamped odometry (bench feeds)
+        # falls back to the node clock.
+        t_s = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        if t_s <= 0.0:
+            t_s = now_s(self)
         # classify_run's axis convention: raw odometry z, negative-down.
-        verdict = self._plausibility.feed(now_s(self), msg.pose.pose.position.z)
+        verdict = self._plausibility.feed(t_s, msg.pose.pose.position.z)
         if verdict == "floater":
             self._conclude("abort_floater", EXIT_ABORT_FLOATER, self._abort_grace_s)
         elif verdict == "sinker":
             self._conclude("abort_sinker", EXIT_ABORT_SINKER, self._abort_grace_s)
+        elif verdict == "bad_start":
+            self._conclude(
+                "abort_bad_start", EXIT_ABORT_BAD_START, self._abort_grace_s
+            )
 
     def _conclude(self, verdict: str, exit_code: int, grace_s: float) -> None:
         """Record the run verdict and schedule the exit. Idempotent -- the
