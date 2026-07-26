@@ -106,7 +106,7 @@ def make_rig(probe_cls, init_args=None, name="rig", bridge_cls=BCUSimBridge):
 
 def wait_wired(probe: BridgeProbe, executor: SingleThreadedExecutor) -> None:
     # The bridge's echo reaching the probe proves the pub/sub graph is up.
-    assert spin_until(
-        executor, lambda: len(probe.fb_samples) > 0, timeout_s=10.0
-    ), "feedback echo never arrived -- bridge not spinning?"
+    assert spin_until(executor, lambda: len(probe.fb_samples) > 0, timeout_s=10.0), (
+        "feedback echo never arrived -- bridge not spinning?"
+    )
     probe.volume_state_pub.publish(Float64(data=SEED_VOLUME_M3))

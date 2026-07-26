@@ -110,6 +110,17 @@ a SIF rebuild before the next sweep.
   --launch-args angle_rad:=0.0 z:=-1.0
 ```
 
+```bash
+./src/nautilus-ros/scripts/run_sweep.py \
+  --scenarios-dir ./scenarios/train_validation_mix_v3 \
+  --sif nautilus_sim.sif \
+  --concurrency 64 \
+  --cpu-budget 0-383 \
+  --per-run-timeout 18000 \
+  --launch sawtooth_sim.launch.py \
+  --launch-args angle_rad:=0.0 z:=-0.115 watchdog:=true
+```
+
 ### Visualization
 
 `run_analysis.py` runs host-side (outside the SIF) and reads the recorded MCAP bags off disk, writes a markdown statistics report and renders the plot PNG(s).
