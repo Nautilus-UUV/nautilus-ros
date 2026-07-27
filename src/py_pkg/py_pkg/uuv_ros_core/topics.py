@@ -72,6 +72,19 @@ class UUVTopics:
     # Reset button. The mission/controller stop rides /command=false instead.
     DEBUG_RESET = "/debug/reset"
 
+    # The BCU manual-drive command surfaces: a message on any of these means a
+    # debug/operator path (bcu_debug, or the lifeguard's auto emergency-surface)
+    # is actively driving the BCU wire. bcu_node subscribes to the whole group to
+    # yield the wire while one is in flight. DEBUG_RESET is deliberately excluded:
+    # a reset silences bcu_debug rather than driving the wire, so bcu_node should
+    # still emit its safe-stop burst then.
+    BCU_MANUAL_DRIVE_TOPICS = (
+        DEBUG_BCU_RPM,
+        DEBUG_BCU_RPM_UNTIL_PRESSURE,
+        DEBUG_BCU_VALVES,
+        DEBUG_EMERGENCY_SURFACE,
+    )
+
     # System status
     # Per-subsystem health, one DiagnosticArray published by the liveness node
     # from a freshness watchdog over the steady glider-side feedback/sensor

@@ -23,6 +23,20 @@ from dataclasses import dataclass
 MIN_DIVE_M = 2.0
 MIN_RETURN_M = 1.0
 
+# Floater deadline, from arming. 360 s covers the slowest legitimate dive onset
+# in the sweep envelope: a 0.55-effectiveness pump behind the lake-fitted
+# delay/slew still deflating the full bladder (~150 s) plus sinking to
+# MIN_DIVE_M with degraded authority (a 0.6-effectiveness pilot run reached
+# only 1.4 m by the old 120 s deadline -- a false floater). Still a fast-fail
+# next to the multi-ks mission budgets.
+DIVE_DEADLINE_S = 360.0
+
+# The sinker stall grace. The stall clock restarts at every deepening event, so
+# this only has to cover one transit leg plus controller response; 240 s is
+# generous against the slowest legitimate leg in the sweep envelope, so only a
+# genuinely stuck vehicle trips the sinker rule.
+STALL_GRACE_S = 240.0
+
 
 @dataclass(frozen=True)
 class PlausibilityConfig:
@@ -30,8 +44,8 @@ class PlausibilityConfig:
 
     min_dive_m: float = MIN_DIVE_M
     min_return_m: float = MIN_RETURN_M
-    dive_deadline_s: float = 120.0  # floater check, from arming
-    stall_grace_s: float = 300.0  # sinker check
+    dive_deadline_s: float = DIVE_DEADLINE_S  # floater check, from arming
+    stall_grace_s: float = STALL_GRACE_S  # sinker check
     deepen_epsilon_m: float = 0.05
     # Bad-start guard: a mission must begin from (near) the surface. If
     # the FIRST fed sample is already deeper than this, the run's init

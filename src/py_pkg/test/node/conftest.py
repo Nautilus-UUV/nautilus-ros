@@ -32,8 +32,8 @@ from py_pkg.debug.acu_debug_node import AcuDebugNode
 from py_pkg.debug.bcu_debug_node import BcuDebugNode
 from py_pkg.math_utils import rpy_to_quaternion
 from py_pkg.path.pathfinding import PathfindingNode
-from py_pkg.pid.acu_node import ACUControlNode
-from py_pkg.pid.bcu_node import BCUNode
+from py_pkg.control.acu_node import ACUControlNode
+from py_pkg.control.bcu_node import BCUNode
 from py_pkg.uuv_ros_core import (
     UUVTopics,
     create_publisher_for_topic,
@@ -61,6 +61,15 @@ def rclpy_session():
     rclpy.shutdown()
 
 
+def publish_bool(pub, value: bool) -> None:
+    """Publish a std_msgs/Bool. Every latched control surface the tester nodes
+    drive -- /command, /mission/complete, /debug/emergency_surface -- is this
+    shape, so the three-line build lives here once."""
+    msg = Bool()
+    msg.data = bool(value)
+    pub.publish(msg)
+
+
 class NodeHarness:
     """Generic Tier 2 harness: node-under-test + tester node + executor.
 
@@ -77,6 +86,8 @@ class NodeHarness:
         self.executor = SingleThreadedExecutor()
         self.executor.add_node(self.node)
         self.executor.add_node(self.tester)
+        # Set by destroy_node_under_test so shutdown doesn't destroy it twice.
+        self._node_destroyed = False
 
     def __getattr__(self, name):
         """Delegate unknown attribute lookups to the tester node.
@@ -114,12 +125,25 @@ class NodeHarness:
         if not predicate():
             raise TimeoutError(f"predicate did not become true within {timeout}s")
 
+    def destroy_node_under_test(self) -> None:
+        """Tear the node-under-test down mid-test, leaving the tester spinning.
+
+        For nodes that publish a parking value from ``destroy_node`` (bcu_node's
+        safe-stop, acu_node's neutral): the tester has to outlive the node to
+        observe what it emitted on the way out, so the usual ``shutdown()``
+        teardown can't exercise it. Spin after calling this to collect.
+        """
+        self.executor.remove_node(self.node)
+        self.node.destroy_node()
+        self._node_destroyed = True
+
     def shutdown(self) -> None:
         try:
             self.executor.remove_node(self.node)
             self.executor.remove_node(self.tester)
         finally:
-            self.node.destroy_node()
+            if not self._node_destroyed:
+                self.node.destroy_node()
             self.tester.destroy_node()
             self.executor.shutdown()
 
@@ -151,6 +175,17 @@ class _BCUTesterNode(Node):
         )
         self.dive_init_pub = create_publisher_for_topic(self, UUVTopics.DIVE_INIT)
         self.command_pub = create_publisher_for_topic(self, UUVTopics.COMMAND)
+        # Stands in for pathfinding announcing the mission finished. Distinct
+        # from command_pub: bcu_node must safe-stop on either, and the tests
+        # exercise both paths separately.
+        self.mission_complete_pub = create_publisher_for_topic(
+            self, UUVTopics.MISSION_COMPLETE
+        )
+        # Stands in for a manual valve command (bcu_debug's input). bcu_node
+        # listens to this only to yield the wire -- it doesn't act on the mask.
+        self.debug_valves_pub = create_publisher_for_topic(
+            self, UUVTopics.DEBUG_BCU_VALVES
+        )
         self.bcu_rpm_sub = create_subscription_for_topic(
             self, UUVTopics.BCU_RPM, self._on_rpm
         )
@@ -200,9 +235,17 @@ class _BCUTesterNode(Node):
     def publish_command(self, start: bool) -> None:
         # bcu_node subscribes to /command and resets to a safe-silent state
         # on false (the old CONTROL_RESET path, now folded into /command).
-        msg = Bool()
-        msg.data = bool(start)
-        self.command_pub.publish(msg)
+        publish_bool(self.command_pub, start)
+
+    def publish_mission_complete(self, done: bool = True) -> None:
+        # The other way a run ends: pathfinding's latched completion event.
+        # bcu_node runs the same safe-stop off it, with no /command traffic.
+        publish_bool(self.mission_complete_pub, done)
+
+    def publish_debug_valves(self, mask: int) -> None:
+        msg = UInt8()
+        msg.data = int(mask) & 0xFF
+        self.debug_valves_pub.publish(msg)
 
 
 @pytest.fixture
@@ -244,6 +287,9 @@ class _ACUTesterNode(Node):
             self, UUVTopics.POSITION_ESTIMATION
         )
         self.command_pub = create_publisher_for_topic(self, UUVTopics.COMMAND)
+        self.mission_complete_pub = create_publisher_for_topic(
+            self, UUVTopics.MISSION_COMPLETE
+        )
         self.pitch_sub = create_subscription_for_topic(
             self, UUVTopics.ACU_PITCH, self._on_pitch
         )
@@ -288,9 +334,12 @@ class _ACUTesterNode(Node):
     def publish_command(self, start: bool) -> None:
         # acu_node subscribes to /command and resets to a safe-silent state
         # on false (the old CONTROL_RESET path, now folded into /command).
-        msg = Bool()
-        msg.data = bool(start)
-        self.command_pub.publish(msg)
+        publish_bool(self.command_pub, start)
+
+    def publish_mission_complete(self, done: bool = True) -> None:
+        # The other way a run ends: pathfinding's latched completion event.
+        # acu_node neutralizes off it, with no /command traffic.
+        publish_bool(self.mission_complete_pub, done)
 
 
 @pytest.fixture
@@ -314,6 +363,10 @@ class _PathfindingTesterNode(Node):
     def __init__(self):
         super().__init__("pathfinding_node_tester")
         self.received_targets: list = []
+        # Every /command on the wire. The node must never publish here -- it
+        # announces completion on MISSION_COMPLETE instead -- so anything in
+        # this list beyond what the test itself published is a regression.
+        self.received_commands: list[bool] = []
 
         self.estimation_pub = create_publisher_for_topic(
             self, UUVTopics.POSITION_ESTIMATION
@@ -323,9 +376,15 @@ class _PathfindingTesterNode(Node):
         self.target_sub = create_subscription_for_topic(
             self, UUVTopics.POSITION_TARGET, self._on_target
         )
+        self.command_sub = create_subscription_for_topic(
+            self, UUVTopics.COMMAND, self._on_command_capture
+        )
 
     def _on_target(self, msg: Pose) -> None:
         self.received_targets.append(msg)
+
+    def _on_command_capture(self, msg: Bool) -> None:
+        self.received_commands.append(bool(msg.data))
 
     def publish_pose_estimation(self, x: float, y: float, z: float) -> None:
         # position.z is gauge depth (Pa); pathfinding reads it straight off the
@@ -344,22 +403,26 @@ class _PathfindingTesterNode(Node):
         self.publish_pose_estimation(0.0, 0.0, gauge_pa)
 
     def publish_command(self, start: bool) -> None:
-        msg = Bool()
-        msg.data = bool(start)
-        self.command_pub.publish(msg)
+        publish_bool(self.command_pub, start)
 
     def publish_mission_command(
         self,
         mission_id: int,
         target_pressure_pa: float = 0.0,
+        shallow_pressure_pa: float = 0.0,
         angle_rad: float = 0.0,
-        n_resurfaces: int = 0,
+        n_oscillations: int = 0,
+        n_steps: int = 1,
     ) -> None:
+        # `n_oscillations` is the operator/launch-arg name for the count; the
+        # msg field it lands on is `n_resurfaces`.
         msg = MissionCommand()
         msg.mission_id = int(mission_id)
         msg.target_pressure_pa = float(target_pressure_pa)
+        msg.shallow_pressure_pa = float(shallow_pressure_pa)
         msg.angle_rad = float(angle_rad)
-        msg.n_resurfaces = int(n_resurfaces)
+        msg.n_resurfaces = int(n_oscillations)
+        msg.n_steps = int(n_steps)
         self.path_pub.publish(msg)
 
 
@@ -444,9 +507,7 @@ class _BcuDebugTesterNode(Node):
         self.valves_cmd_pub.publish(msg)
 
     def publish_emergency(self, active: bool) -> None:
-        msg = Bool()
-        msg.data = bool(active)
-        self.emergency_pub.publish(msg)
+        publish_bool(self.emergency_pub, active)
 
     def publish_reset(self) -> None:
         self.reset_pub.publish(Empty())

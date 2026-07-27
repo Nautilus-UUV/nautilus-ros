@@ -234,7 +234,7 @@ def test_baseline_library_yaml_is_a_labeled_pump_fault(library_scenario_path):
 
 @pytest.mark.parametrize(
     "library_yaml",
-    ["nominal.yaml", "nominal_with_hydrodynamics.yaml", "suggested_lhs_0071.yaml"],
+    ["nominal.yaml", "nominal_with_hydrodynamics.yaml"],
 )
 def test_no_fault_library_yamls_stay_nominal(library_scenario_path, library_yaml):
     scen = load_scenario(library_scenario_path(library_yaml))

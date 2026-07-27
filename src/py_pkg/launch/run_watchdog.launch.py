@@ -5,15 +5,16 @@ early termination) and registers an ``OnProcessExit`` handler that turns the
 node's verdict exit into a full launch ``Shutdown`` -- the sweep runner then
 reaps the slot on process exit.
 
-Included by the ``*_sim`` HAL launches; each forwards its own ``dwell_s`` /
-``bag_path``. Lives in py_pkg (the package that owns the control nodes) so
-the HAL launches compose it via ``IncludeLaunchDescription`` rather than
-embedding a ``py_pkg`` node directly.
+Included by the ``*_sim`` HAL launches; each forwards its own ``bag_path``.
+Lives in py_pkg (the package that owns the control nodes) so the HAL
+launches compose it via ``IncludeLaunchDescription`` rather than embedding
+a ``py_pkg`` node directly.
 
-The sinker stall grace is derived, not declared: the stall clock restarts
-at every deepening event, so what it must cover is the longest *single*
-intended hold (``dwell_s``) plus a fixed margin for transit and controller
-settling. The verdict JSON lands next to the run's bag directory
+Both deadlines are fixed, and owned by ``watchdog/plausibility.py`` rather
+than restated here. Missions no longer hold at depth -- a bang-bang leg
+either reaches its turn or rails the tank and coasts to it -- so there is
+no intended-hold duration left for them to scale with. The verdict JSON
+lands next to the run's bag directory
 (``{bag_path}/../run_verdict.json``) where the sweep analysis picks it up;
 no ``bag_path`` means no verdict file.
 """
@@ -33,33 +34,18 @@ from launch.events import Shutdown
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
-# Added on top of one intended dwell to form the sinker stall grace: budget
-# for transit legs and controller settling around the holds, so only a
-# genuinely stuck vehicle trips the sinker rule.
-_STALL_GRACE_MARGIN_S = 240.0
-
-# Floater deadline, derived like the stall grace rather than left at the
-# node's 120 s default. 360 s covers the slowest legitimate dive onset in
-# the sweep envelope: a 0.55-effectiveness pump behind the lake-fitted
-# delay/slew still deflating the full bladder (~150 s) plus sinking to
-# MIN_DIVE_M with degraded authority (a 0.6-effectiveness pilot run
-# reached only 1.4 m by the old 120 s deadline — a false floater). The
-# dwell term covers STAIRCASE profiles whose first step(s) sit shallower
-# than MIN_DIVE_M: the vehicle legitimately holds there for up to a few
-# dwells before ever crossing the dive threshold. Still a fast-fail next
-# to the multi-ks mission budgets.
-_DIVE_DEADLINE_BASE_S = 360.0
-_DIVE_DEADLINE_DWELL_FACTOR = 3.0
-
 
 def _wire_watchdog(context, *_args, **_kwargs):
-    # OpaqueFunction so the grace arithmetic and verdict-path derivation can
-    # run on the resolved LaunchConfiguration values.
-    dwell_s = float(LaunchConfiguration("dwell_s").perform(context))
+    # OpaqueFunction so the verdict-path derivation can run on the resolved
+    # LaunchConfiguration values.
+    #
+    # The floater deadline and sinker stall grace are deliberately NOT passed:
+    # they are run-verdict policy and live on PlausibilityConfig, which the
+    # node reads its parameter defaults from and scripts/analysis imports its
+    # own thresholds from. Overriding them here would give sweeps one set of
+    # numbers and the offline classifier another.
     bag_path = LaunchConfiguration("bag_path").perform(context).strip()
 
-    stall_grace_s = dwell_s + _STALL_GRACE_MARGIN_S
-    dive_deadline_s = _DIVE_DEADLINE_BASE_S + _DIVE_DEADLINE_DWELL_FACTOR * dwell_s
     verdict_path = str(Path(bag_path).parent / "run_verdict.json") if bag_path else ""
 
     watchdog_node = Node(
@@ -69,8 +55,6 @@ def _wire_watchdog(context, *_args, **_kwargs):
         output="screen",
         parameters=[
             {
-                "stall_grace_s": stall_grace_s,
-                "dive_deadline_s": dive_deadline_s,
                 "verdict_path": verdict_path,
                 "max_start_depth_m": float(
                     LaunchConfiguration("max_start_depth_m").perform(context)
@@ -99,15 +83,6 @@ def generate_launch_description() -> LaunchDescription:
                     "If true, run the sim run watchdog: shut the launch down "
                     "early on mission completion or an implausibility verdict "
                     "(surface-floater / bottom-sinker)."
-                ),
-            ),
-            DeclareLaunchArgument(
-                "dwell_s",
-                default_value="0.0",
-                description=(
-                    "The mission's per-hold dwell time (seconds); feeds the "
-                    "sinker stall grace so an intended hold at depth is never "
-                    "mistaken for a sinker."
                 ),
             ),
             DeclareLaunchArgument(

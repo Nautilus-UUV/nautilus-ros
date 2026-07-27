@@ -13,8 +13,9 @@ DDS chatter stays inside that run). Optionally also slices a CPU budget
 into disjoint sets via `--cpu-budget`, handed to apptainer_exec.sh's
 `--cpus` flag so runs don't fight each other for cores.
 
-Mission knobs (`target_pressure_pa`, `angle_rad`, `n_oscillations`) are
-not scenario-YAML fields — pass them as `--launch-args foo:=bar`. The
+Mission knobs (`target_pressure_pa`, `shallow_pressure_pa`, `angle_rad`,
+`n_oscillations`) are not scenario-YAML fields — pass them as
+`--launch-args foo:=bar`. The
 same value is used for every run in the sweep, unless the sampler's
 manifest.json (next to the scenario YAMLs) carries `mission.*`
 dimensions: those become per-run launch args (`mission.target_pressure_pa`
@@ -66,6 +67,15 @@ import yaml
 SCRIPTS_DIR = Path(__file__).resolve().parent
 APPTAINER_EXEC = SCRIPTS_DIR / "apptainer_exec.sh"
 
+# Same repo walk lhs_sample.py uses. physics itself is stdlib-only, but
+# py_pkg/__init__ eagerly imports uuv_ros_core, so this drags in the message-type
+# registry (~180 ms) where rclpy is installed and silently degrades where it
+# isn't. Paid once per orchestrator process for an hours-long sweep, so it's not
+# worth dodging here -- unlike debug/mission_fields.py, which exists precisely
+# because a launch file pays it on every evaluation.
+sys.path.insert(0, str(SCRIPTS_DIR.parent / "src/py_pkg"))
+from py_pkg.physics import WATER_PRESSURE_GRADIENT_PA_PER_M  # noqa: E402
+
 DEFAULT_LAUNCH = "sawtooth_sim.launch.py"
 POLL_INTERVAL_SEC = 1.0
 # Gazebo + ros2 launch shutdown is slow — give it generous breathing room
@@ -91,7 +101,6 @@ MISSION_PREFIX = "mission."
 # at the tank guard band and steady ascent drops to ~0.015 m/s near it.
 # With watchdog:=true the budget is only a hang fallback — runs end at
 # mission completion or on a floater/sinker abort long before it.
-WATER_PRESSURE_GRADIENT_PA_PER_M = 9806.0  # physics.py, fresh water
 TIMEOUT_DESCENT_MPS = 0.10
 TIMEOUT_ASCENT_MPS = 0.012
 # Bringup budget covers the sim_ready_gate's paused-spawn wait (its own
@@ -100,8 +109,6 @@ TIMEOUT_ASCENT_MPS = 0.012
 # and non-destructive.
 TIMEOUT_BRINGUP_SEC = 600.0
 TIMEOUT_SAFETY = 2.0
-# Dwell seconds are wall-clock already; 1.5 covers real-time-factor slip.
-TIMEOUT_DWELL_FACTOR = 1.5
 
 # Watchdog / gate verdicts that mean "the run's infrastructure failed
 # before or during init — the same YAML rerun should come back clean".
@@ -239,21 +246,14 @@ def _scaled_timeout(
     depth_m = float(target_pa) / WATER_PRESSURE_GRADIENT_PA_PER_M
     if "n_steps" in mission:
         # A staircase is ONE round trip of vertical travel regardless of
-        # how many steps it pauses at; each step holds one dwell.
+        # how many steps it descends through.
         n_osc = 1
-        n_dwells = max(1, int(mission["n_steps"]))
     else:
         n_osc = max(1, int(mission.get("n_oscillations", 1)))
-        n_dwells = n_osc
-    dwell_s = float(mission.get("dwell_s", 0.0))
     round_trips_sec = (
         n_osc * depth_m * (1.0 / TIMEOUT_DESCENT_MPS + 1.0 / TIMEOUT_ASCENT_MPS)
     )
-    scaled = (
-        TIMEOUT_BRINGUP_SEC
-        + TIMEOUT_SAFETY * round_trips_sec
-        + TIMEOUT_DWELL_FACTOR * n_dwells * dwell_s
-    )
+    scaled = TIMEOUT_BRINGUP_SEC + TIMEOUT_SAFETY * round_trips_sec
     return min(cap, scaled) if cap is not None else scaled
 
 # Per-bag finalize: glob *.mcap in cwd, zstd each into *.mcap.zstd, drop

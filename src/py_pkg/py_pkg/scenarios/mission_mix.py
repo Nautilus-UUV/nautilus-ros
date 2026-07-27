@@ -2,10 +2,9 @@
 
 Pure logic, no ROS, stdlib RNG only (same conventions as
 ``anomaly.py``): the host-side sampler (``scripts/lhs_sample.py``)
-consumes this to assign every run of a sweep a mission profile — plain
-sawtooth, dwell sawtooth, staircase, or station-keep — and to draw that
-run's mission parameters (target pressure, leg count, dwell) from
-authored bands.
+consumes this to assign every run of a sweep a mission profile —
+sawtooth or staircase — and to draw that run's mission parameters
+(target pressure, leg count) from authored bands.
 
 Resolved OUTSIDE the LHS matrix, exactly like the anomaly mix: the mix
 adds zero LHS dimensions, and its drawn values are emitted as flat
@@ -18,16 +17,16 @@ Design contracts (each Tier-1 tested):
 
 - **Stratified exact counts**: ``assign_profiles`` splits ``n`` runs
   into largest-remainder-rounded profile counts and shuffles them with
-  a dedicated seeded stream — a 1024-run sweep at 0.25/0.30/0.25/0.20
-  carries exactly 256/307/256/205, deterministically.
+  a dedicated seeded stream — a 1024-run sweep at 0.55/0.45 carries
+  exactly 564/460, deterministically.
 - **Decoupling**: the profile stream (``"mission_profile_assignment"``)
   and the per-run parameter streams (``"mission_params:<idx>"``) are
   derive_seed children of the sweep seed, independent of the LHS matrix
   and of the anomaly streams. Editing one profile's bands never
   reshuffles assignments or other profiles' drawn values.
 - **Fixed draw order** inside ``draw_mission`` (target pressure, then
-  leg count, then dwell), so same seed + same mix config => identical
-  missions forever.
+  leg count), so same seed + same mix config => identical missions
+  forever.
 
 ``expected_mission_duration_s`` is the deliberately optimistic no-safety
 duration estimate that fault-onset placement scales into an onset time.
@@ -51,13 +50,20 @@ from .stratify import check_weights, stratified_assignment, stratified_counts
 # Kept explicit and ORDER-LOCKED: this tuple's order feeds both the
 # largest-remainder tie-break and the seeded profile shuffle, so it must
 # never be reordered (test_profile_tuple_order_is_load_bearing).
-MISSION_PROFILES = ("sawtooth_plain", "sawtooth_dwell", "staircase", "station_keep")
+# `sawtooth_dwell` and `station_keep` are gone: both were a plain profile
+# plus a hold at depth, and the bang-bang BCU has no hold — it either
+# reaches a leg's turn or rails the tank and coasts to it. They collapsed
+# onto `sawtooth_plain` / `staircase` exactly, so keeping them would have
+# sampled the same two trajectories under four labels.
+MISSION_PROFILES = ("sawtooth_plain", "staircase")
 
-# expected_mission_duration_s leg speeds: the no-safety speeds
-# run_sweep.py budgets with, used here WITHOUT its 2x safety factor or
-# bringup allowance, i.e. as the fastest a run could conceivably move
-# through its mission. (The Pa/m gradient comes from physics.py, so a
-# fluid-density override reaches this estimate too.)
+# expected_mission_duration_s leg speeds: the FASTEST a run could
+# conceivably move through its mission. Deliberately NOT run_sweep.py's
+# TIMEOUT_* speeds, which point the other way -- those are pessimistic, so
+# that a wall-clock budget expires well after a slow run finishes, whereas
+# fault-onset placement needs an optimistic bound so `frac * expected`
+# always lands inside the real run. (The Pa/m gradient comes from
+# physics.py, so a fluid-density override reaches this estimate too.)
 OPTIMISTIC_DESCENT_MPS = 0.10
 OPTIMISTIC_ASCENT_MPS = 0.035
 
@@ -101,15 +107,13 @@ class MissionProfileSpec(StrictModel):
     ``mission_id`` is the profile's fixed launch-side identifier (never
     drawn). Exactly one of ``n_oscillations`` / ``n_steps`` carries the
     leg count — sawtooth-shaped profiles count oscillations, staircase
-    profiles count steps. ``dwell_s`` accepts a plain scalar (fixed
-    dwell, no RNG consumed) or a band.
+    profiles count steps.
     """
 
     mission_id: int
     target_pressure_pa: MissionBand
     n_oscillations: Optional[MissionBand] = None
     n_steps: Optional[MissionBand] = None
-    dwell_s: MissionBand | float = 0.0
 
     @model_validator(mode="after")
     def _check_leg_count(self) -> "MissionProfileSpec":
@@ -121,13 +125,11 @@ class MissionProfileSpec(StrictModel):
 
 
 class MissionMixSpec(StrictModel):
-    """The per-run profile mix of a sweep (e.g. 0.25/0.30/0.25/0.20)."""
+    """The per-run profile mix of a sweep (e.g. 0.55/0.45)."""
 
     weights: dict[str, float]
     sawtooth_plain: Optional[MissionProfileSpec] = None
-    sawtooth_dwell: Optional[MissionProfileSpec] = None
     staircase: Optional[MissionProfileSpec] = None
-    station_keep: Optional[MissionProfileSpec] = None
 
     @model_validator(mode="after")
     def _check_weights_and_blocks(self) -> "MissionMixSpec":
@@ -149,9 +151,9 @@ class MissionAssignment:
 
     ``values`` keys are the FLAT ``mission.*`` paths the sampler
     manifest records (``mission.mission_id``,
-    ``mission.target_pressure_pa``, ``mission.n_oscillations`` OR
-    ``mission.n_steps``, ``mission.dwell_s``) — ``run_sweep.py`` strips
-    the prefix to make launch args.
+    ``mission.target_pressure_pa``, and ``mission.n_oscillations`` OR
+    ``mission.n_steps``) — ``run_sweep.py`` strips the prefix to make
+    launch args.
     """
 
     profile: str
@@ -191,10 +193,10 @@ def draw_mission(
     Every run gets its own derived RNG stream
     (``"mission_params:<idx>"``, the mission analogue of anomaly's
     ``"anomaly_severity:<idx>"``). The draw order is FIXED —
-    target_pressure_pa, then the leg count (n_oscillations or n_steps),
-    then dwell_s — a determinism contract: same seed + same mix config
-    => identical missions forever, and a dwell-band edit never moves
-    the earlier draws.
+    target_pressure_pa, then the leg count (n_oscillations or n_steps)
+    — a determinism contract: same seed + same mix config => identical
+    missions forever, and a leg-count band edit never moves the earlier
+    draw.
     """
     if profile not in MISSION_PROFILES:
         raise ValueError(f"unknown mission profile {profile!r}")
@@ -210,11 +212,6 @@ def draw_mission(
         values["mission.n_oscillations"] = spec.n_oscillations.draw(rng)
     else:
         values["mission.n_steps"] = spec.n_steps.draw(rng)
-    values["mission.dwell_s"] = (
-        spec.dwell_s.draw(rng)
-        if isinstance(spec.dwell_s, MissionBand)
-        else float(spec.dwell_s)
-    )
     return MissionAssignment(profile, values)
 
 
@@ -227,23 +224,22 @@ def _require(block: Optional[MissionProfileSpec], profile: str) -> MissionProfil
 def expected_mission_duration_s(values: dict) -> float:
     """Optimistic no-safety duration of one drawn mission, in seconds.
 
-    Round-trip travel at the fastest leg speeds plus the commanded
-    dwells — no bringup, no safety factor, no controller settling, no
-    surfacing overhead. Optimistic speeds are CORRECT here, not a bug:
-    fault-onset placement computes ``onset_s = frac * expected`` with
-    ``frac <= 0.6``, and a real run is never faster than this estimate,
-    so the onset always lands inside the actual run.
+    Round-trip travel at the fastest leg speeds — no bringup, no safety
+    factor, no controller settling, no surfacing overhead. Optimistic
+    speeds are CORRECT here, not a bug: fault-onset placement computes
+    ``onset_s = frac * expected`` with ``frac <= 0.6``, and a real run is
+    never faster than this estimate, so the onset always lands inside the
+    actual run.
 
     ``values`` is a MissionAssignment's flat ``mission.*`` dict; a
-    missing leg count means one round trip, a staircase's ``n_steps``
-    counts its dwells.
+    missing leg count means one round trip. A staircase is one round trip
+    of vertical travel however many steps it descends through, matching
+    ``run_sweep.py``'s timeout budget.
     """
     depth_m = (
         float(values["mission.target_pressure_pa"]) / WATER_PRESSURE_GRADIENT_PA_PER_M
     )
     n_osc = int(values.get("mission.n_oscillations", 1))
-    n_dwells = int(values.get("mission.n_steps", n_osc))
-    travel = (
+    return (
         n_osc * depth_m * (1.0 / OPTIMISTIC_DESCENT_MPS + 1.0 / OPTIMISTIC_ASCENT_MPS)
     )
-    return travel + n_dwells * float(values.get("mission.dwell_s", 0.0))

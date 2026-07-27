@@ -55,8 +55,8 @@
 #
 # Timeout: a rarely-binding hang fallback, not the expected run length —
 # watchdog:=true ends every run at mission completion (or aborts
-# floaters ~360 s+3xdwell / stalled sinkers ~dwell+240 s in). The worst
-# corner (40 m, 2 dwelled cycles, armed-clamp ascent budgeted at
+# floaters ~360 s / stalled sinkers ~240 s in). The worst
+# corner (40 m, 2 cycles, armed-clamp ascent budgeted at
 # 0.012 m/s) computes to ~16.9 ks under run_sweep's scaled-budget
 # formula; 18000 covers it. run_sweep REFUSES a cap below any run's
 # scaled budget (v2's first drop ran at 1800 s and killed every long
@@ -84,17 +84,19 @@
 # Post-fix pilot: 12/12 clean. Rebuild the SIF before running.
 #
 # STILL OPEN at authoring time (not fixed by this spec):
-#   - A4/B1 command temporal texture: the depth PID pulses the pump
+#   - A4/B1 command temporal texture: the depth PID pulsed the pump
 #     during dwells (switching 0.351 vs real 0.024), and the sim-vs-real
-#     discriminator still scores 0.944 ROC-AUC. The fix is a command
-#     hold-band / rate-limit in bcu_node, i.e. a controller change.
+#     discriminator scored 0.944 ROC-AUC. The controller change this
+#     called for has since landed — the PID is now bang-bang and both
+#     dwells and the pulser are gone — so this needs re-measuring rather
+#     than fixing.
 #   - C3: no progressive-leak (lake dive-5) analogue in the fault
 #     library, which is the real failure mode holding 71% of the real
 #     positives.
 
 description: >
   Train and validation mix v3: 2048 dives with per-run mission-profile
-  sampling (plain/dwelled sawtooth, staircase, station-keep; depth
+  sampling (sawtooth, staircase; depth
   3-40 m), armed tank-limit clamp, pinned gas-law tank map, sampled
   pump overshoot, and the stratified 70/10/10/10 per-run anomaly mix —
   persistent bcu_pump / sensor / biofouling faults whose severities
@@ -122,33 +124,21 @@ buoyancy_derivation:
 # v2-identical: A1 (in-dive idle duty) passed on median with this mix,
 # and its spread is the profile mix working as intended.
 mission_mix:
-  weights: {sawtooth_plain: 0.25, sawtooth_dwell: 0.30, staircase: 0.25, station_keep: 0.20}
+  # sawtooth_dwell / station_keep are gone: the bang-bang BCU has no hold,
+  # so both collapsed exactly onto the two profiles below. Reweighted to
+  # keep sawtooth the majority stratum, as it was across v1/v2.
+  weights: {sawtooth_plain: 0.55, staircase: 0.45}
 
   sawtooth_plain:                  # v1-continuity stratum: byte-identical
     mission_id: 1                  # mission semantics to the v1 campaign
     target_pressure_pa: {low: 29418.0, high: 392240.0}    # 3-40 m
     n_oscillations: {low: 2, high: 3, integer: true}      # pinned 2
-    dwell_s: 0.0
-
-  sawtooth_dwell:
-    mission_id: 1
-    # 5 m floor: a dwell needs a deep extremum clear of the surface band.
-    target_pressure_pa: {low: 49030.0, high: 392240.0}    # 5-40 m
-    n_oscillations: {low: 1, high: 3, integer: true}      # {1, 2}
-    dwell_s: {low: 120.0, high: 600.0}
 
   staircase:
     mission_id: 3
     # 6 m floor: >= ~3 m per step at the shallowest 2-step draw.
     target_pressure_pa: {low: 58836.0, high: 392240.0}    # 6-40 m deepest step
     n_steps: {low: 2, high: 6, integer: true}             # {2..5}
-    dwell_s: {low: 60.0, high: 300.0}                     # per step
-
-  station_keep:
-    mission_id: 3                  # STAIRCASE with n_steps=1 IS
-    n_steps: {low: 1, high: 2, integer: true}             # dive-hold-surface
-    target_pressure_pa: {low: 49030.0, high: 392240.0}    # 5-40 m
-    dwell_s: {low: 300.0, high: 1200.0}
 
 anomaly_mix:
   # 70/10/10/10 (v2: 85/5/5/5). At 2048: 1433 nominal + 205 each.

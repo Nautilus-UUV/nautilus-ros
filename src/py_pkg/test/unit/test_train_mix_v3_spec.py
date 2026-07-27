@@ -18,46 +18,20 @@ sweep after minutes of work. The bound is arithmetic, so assert it.
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import pytest
-import yaml
 from py_pkg.scenarios.anomaly import AnomalyMixSpec, class_counts
 from py_pkg.scenarios.mission_mix import MissionMixSpec, profile_counts
 
-_SCRIPTS_DIR = Path(__file__).resolve().parents[4] / "scripts"
-_V3_PATH = _SCRIPTS_DIR / "sweeps" / "train_validation_mix_v3.yaml"
-_V2_PATH = _SCRIPTS_DIR / "sweeps" / "train_validation_mix_v2.yaml"
-for _p in (_V3_PATH, _V2_PATH):
-    if not _p.is_file():  # pragma: no cover — repo-layout guard
-        pytest.skip(f"sweep spec not found at {_p}", allow_module_level=True)
+from _sweep_specs import lhs_sample, load_sweep_spec, needs_scripts, run_sweep
 
-_V3 = yaml.safe_load(_V3_PATH.read_text())
-_V2 = yaml.safe_load(_V2_PATH.read_text())
+_V3_PATH, _V3 = load_sweep_spec("train_validation_mix_v3.yaml")
+_, _V2 = load_sweep_spec("train_validation_mix_v2.yaml")
 MIX = AnomalyMixSpec.model_validate(_V3["anomaly_mix"])
 MISSION = MissionMixSpec.model_validate(_V3["mission_mix"])
 DIMS = {d["path"]: d for d in _V3["dimensions"]}
 V2_DIMS = {d["path"]: d for d in _V2["dimensions"]}
 
 N = int(_V3["n_samples"])
-
-# The sweep scripts are plain modules two dirs above py_pkg, not a
-# package — import them the way run_sweep imports its own siblings.
-sys.path.insert(0, str(_SCRIPTS_DIR))
-try:
-    import lhs_sample  # noqa: E402
-    import run_sweep  # noqa: E402
-
-    _SCRIPTS_IMPORT_ERROR = None
-except ImportError as exc:  # pragma: no cover — apt python3 ships numpy/scipy
-    lhs_sample = run_sweep = None
-    _SCRIPTS_IMPORT_ERROR = exc
-
-needs_scripts = pytest.mark.skipif(
-    _SCRIPTS_IMPORT_ERROR is not None,
-    reason=f"scripts import failed (numpy/scipy missing?): {_SCRIPTS_IMPORT_ERROR}",
-)
 
 
 # ---------------------------------------------------------------------------
@@ -149,8 +123,8 @@ def test_pump_delay_and_slew_bands_still_straddle_their_envelopes():
 def test_worst_pump_plant_still_dives_before_the_floater_deadline():
     """The severe tail must not manufacture false `abort_floater`s.
 
-    run_watchdog.launch.py's floater deadline is 360 s + 3 x dwell from
-    arming, and its comment sized the base on a 0.55-effectiveness pump.
+    run_watchdog.launch.py's floater deadline is a fixed 360 s from
+    arming, and its comment sized it on a 0.55-effectiveness pump.
     v3 goes to 0.35 with 8 s of dead time and a 60 rpm/s ramp, so
     re-derive the worst corner: time to pump the spawn fill (bladder_max)
     down past the neutral volume, which is when the vehicle starts
@@ -241,11 +215,11 @@ def test_mission_mix_and_buoyancy_derivation_are_v2_byte_equal():
 
 def test_mission_profile_counts_at_2048():
     assert sum(MISSION.weights.values()) == pytest.approx(1.0)
+    # 0.55 x 2048 = 1126.4 and 0.45 x 2048 = 921.6: staircase's 0.6
+    # remainder takes the leftover run.
     assert profile_counts(MISSION, N) == {
-        "sawtooth_plain": 512,
-        "sawtooth_dwell": 614,
-        "staircase": 512,
-        "station_keep": 410,
+        "sawtooth_plain": 1126,
+        "staircase": 922,
     }
 
 
@@ -264,9 +238,9 @@ def test_dimensions_are_v2_byte_equal():
 
 @needs_scripts
 def test_worst_corner_fits_the_recommended_timeout():
-    # The deepest dwelled sawtooth (40 m, 2 cycles, 600 s dwells) must
-    # fit the header's recommended --per-run-timeout of 18000 s.
-    worst = {"target_pressure_pa": 392240.0, "n_oscillations": 2, "dwell_s": 600.0}
+    # The deepest sawtooth (40 m, 2 cycles) must fit the header's
+    # recommended --per-run-timeout of 18000 s.
+    worst = {"target_pressure_pa": 392240.0, "n_oscillations": 2}
     assert run_sweep._scaled_timeout(worst, None) <= 18000.0
 
 

@@ -11,6 +11,32 @@ from typing import Protocol
 from geometry_msgs.msg import Pose
 
 from py_pkg.math_utils import rpy_to_quaternion
+from py_pkg.physics import WATER_PRESSURE_GRADIENT_PA_PER_M
+
+# Arrival bands -- the mission-contract half of the bang-bang loop. A leg holds
+# one sign of depth error until the vehicle enters one of these bands; entering
+# it is what turns the mission and so what reverses the BCU. They live here
+# rather than in any one profile because sawtooth, staircase and surface all
+# turn on the same boundaries, and a profile importing another profile's
+# private constant meant retuning one silently retuned the others.
+#
+# 0.8 m water column (lake-analysis convention: depth > 0.8 m = diving), wider
+# than weather-driven atmospheric drift and sea-state noise. The Pa value
+# tracks the physics-layer water density, so a salt-water override moves it.
+#
+# These must stay comfortably above `DepthSpec.deadband_pa` (the BCU's only
+# idle condition): if the pump went idle before the vehicle reached a band, the
+# leg could never complete.
+_SURFACE_THRESHOLD_M = 0.8
+
+# Gauge pressure below this counts as "surfaced" (gates final completion).
+SURFACE_THRESHOLD_PA = _SURFACE_THRESHOLD_M * WATER_PRESSURE_GRADIENT_PA_PER_M
+# Within this of the deep extremum counts as "at depth". Equal by symmetry.
+DESCEND_TOLERANCE_PA = SURFACE_THRESHOLD_PA
+# Within this of the shallow extremum counts as "at the shallow turn". Also
+# equal by symmetry, so a shallow extremum of 0 makes the shallow turn and the
+# surface coincide -- which is what makes the legacy sawtooth profile fall out.
+SHALLOW_TOLERANCE_PA = SURFACE_THRESHOLD_PA
 
 
 def depth_pitch_pose(depth_pa: float, pitch_rad: float) -> Pose:
@@ -26,37 +52,6 @@ def depth_pitch_pose(depth_pa: float, pitch_rad: float) -> Pose:
     return pose
 
 
-class DwellTimer:
-    """Bounded hold at a station, stamped on first use and never restarted.
-
-    `SawtoothMission` and `StaircaseMission` share this: the hold runs
-    `dwell_s` from the FIRST `expired()` call after entering the band —
-    deliberately unlike `SurfaceMission`'s restart-on-bob dwell — so every
-    hold is bounded and a sweep's wall-clock budget stays computable.
-    Callers freeze their own state machine while holding, so a pressure bob
-    can neither restart the hold nor advance the mission.
-    """
-
-    def __init__(self, dwell_s: float = 0.0) -> None:
-        self.dwell_s = dwell_s
-        self._start_t: float | None = None
-
-    def reset(self) -> None:
-        """Forget any stamp, so the next `expired()` starts a fresh hold."""
-        self._start_t = None
-
-    def expired(self, mission_t: float) -> bool:
-        """True once `dwell_s` has elapsed since the first call of this hold.
-
-        Lazy-stamps on that first call, so `dwell_s <= 0` expires on it —
-        a staircase with no dwell advances a leg per tick, as it did before
-        dwell existed.
-        """
-        if self._start_t is None:
-            self._start_t = mission_t
-        return mission_t - self._start_t >= self.dwell_s
-
-
 @dataclass
 class MissionState:
     """Snapshot of glider state + operator-supplied parameters at start.
@@ -67,10 +62,11 @@ class MissionState:
     """
 
     pose: Pose | None = None
-    target_pressure_pa: float = 0.0  # TRIM_AND_NEUTRAL_BUOYANCY hold-depth
+    # TRIM_AND_NEUTRAL_BUOYANCY target depth; SAWTOOTH deep extremum (gauge Pa).
+    target_pressure_pa: float = 0.0
+    shallow_pressure_pa: float = 0.0  # SAWTOOTH shallow extremum (0 => surface)
     angle_rad: float = 0.0  # SAWTOOTH glide pitch magnitude
-    n_resurfaces: int = 0  # SAWTOOTH termination count
-    dwell_s: float = 0.0  # SAWTOOTH/STAIRCASE hold time at depth (0 = no hold)
+    n_resurfaces: int = 0  # SAWTOOTH dive count before the final surfacing
     n_steps: int = 1  # STAIRCASE descent step count
 
 
@@ -87,16 +83,16 @@ class MissionProfile(Protocol):
         Open-loop missions can leave it as a no-op.
         """
 
-    def reference(self, mission_t: float) -> Pose | None:
+    def reference(self, mission_t: float) -> Pose:
         """Setpoint at `mission_t` seconds since start.
 
         `position.z` MUST be gauge Pa. `orientation` encodes target
         roll/pitch for the ACU (yaw is unused).
 
-        Returning `None` means "no setpoint this tick": the executor
-        publishes nothing, so the controllers hold their last target
-        (the SURFACE/SAWTOOTH missions decline to command between phases
-        this way). The controllers are silenced only by /command=false stop.
+        Every tick of a running mission yields a setpoint -- a profile has no
+        way to abstain. Two things silence a controller, both of them events
+        rather than an absence of setpoints: an operator /command=false, and
+        this mission's own completion on /mission/complete.
         """
 
     def is_done(self, mission_t: float) -> bool:

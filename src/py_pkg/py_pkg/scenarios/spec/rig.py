@@ -37,9 +37,9 @@ class PlantSpec(StrictModel):
     """Ground-truth plant parameters used by HAL bridges + the sim.
 
     Mirrors robot_specs.py at nominal. MC perturbs these to model
-    uncertainty in the *actual* hardware plant. To perturb the
-    controller's *model* of the plant independently, see
-    ControlScenario.controllers.depth.plant_model.
+    uncertainty in the *actual* hardware plant. There is no longer a
+    controller-side mirror of it to perturb independently: the bang-bang
+    depth loop commands RPM directly and carries no plant model.
     """
 
     volume_per_rev_m3: float = VOLUME_PER_REV_M3

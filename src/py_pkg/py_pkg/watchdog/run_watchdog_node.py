@@ -68,8 +68,13 @@ class RunWatchdogNode(Node):
         # Model-scoped sim topic, deliberately not in the registry --
         # parameterized instead.
         self.declare_parameter("odom_topic", "/model/glider_nautilus/odometry")
-        self.declare_parameter("dive_deadline_s", 120.0)
-        self.declare_parameter("stall_grace_s", 300.0)
+        # Defaults come off PlausibilityConfig so the node, the launch file and
+        # the offline classifier all read one set of numbers. They stay
+        # parameters so Tier-2 tests can shrink them (360 s / 240 s in
+        # production is not a thing a unit test can wait out).
+        _defaults = PlausibilityConfig()
+        self.declare_parameter("dive_deadline_s", _defaults.dive_deadline_s)
+        self.declare_parameter("stall_grace_s", _defaults.stall_grace_s)
         # Bad-start guard (metres; <= 0 disables): if the first armed
         # odometry sample is already deeper than this, the run's init
         # failed (vehicle fell during bringup) — conclude abort_bad_start

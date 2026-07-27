@@ -1,6 +1,6 @@
 """Tier 1 unit tests for AxisController.
 
-The pitch axis is now bang-bang inside ``pid/acu_node.py`` (no separate
+The pitch axis is now bang-bang inside ``control/acu_node.py`` (no separate
 class), so this file exercises the surface that remains: AxisController
 as the roll-only PID + motor-frame clamp + redundant-publish guard.
 
@@ -11,7 +11,7 @@ assert behaviour at t>=0.1, the same cadence the 10 Hz node uses.
 
 import pytest
 
-from py_pkg.pid.acu_axis_controller import AxisController
+from py_pkg.control.acu_axis_controller import AxisController
 
 
 PRIME_TIME = 0.0

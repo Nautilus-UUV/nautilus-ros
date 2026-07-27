@@ -13,20 +13,30 @@ Pipeline under test:
 
 The test loads ``MissionId.TRIM_AND_NEUTRAL_BUOYANCY = 0`` with
 ``target_pressure_pa = 65332`` (~6.66 m of lake water at the sensor's
-9806 Pa/m gradient) and asserts the closed loop holds depth + comes to
-a stop. Spawn is at z=-5 (~5 m), so the BCU has to descend ~1.7 m by
-draining the bladder below the lake-calibrated neutral fill
-(V_n = 2.097e-3 m^3; the plant has no hull compressibility, so any
-depth is holdable as long as V_n sits inside the
-``rig.plant.bladder_min/max_m3`` clamps). Ground truth comes from
-the model's already-bridged ``/model/glider_nautilus/odometry`` topic
-— privileged sim-only info kept *out* of the Nautilus topic registry
-so production controllers can't accidentally depend on it.
+9806 Pa/m gradient). Spawn is at z=-5 (~5 m), so the BCU has to descend
+~1.7 m by draining the bladder below the lake-calibrated neutral fill.
 
-Tolerances here are deliberately loose: the estimator is in the loop, and
-any orientation drift it carries feeds the ACU. This test also doubles as
-an estimator-stability smoke. If only the |omega| assertion regresses, add
-a narrow xfail pointing at the estimator; don't blanket-skip the test.
+**What this asserts, and why it is not "holds at target".** Under the
+bang-bang BCU there is no neutral-buoyancy hold to converge to: the
+bladder sits at a tank rail for the whole descent, so the vehicle coasts
+through the target and keeps sinking after the run ends. Arrival IS the
+completion condition (see ``path/missions/trim_and_neutral.py``). The PID
+-era version of this test asserted a terminal mean pressure at the target
+and near-zero ground-truth velocity; both are unbuildable against a
+controller with no idle equilibrium, and asserting them measured the
+plant's momentum rather than the mission. What survives is the contract
+the mission actually makes:
+
+  1. the vehicle enters the ``NEAR_GOAL_PA`` band around the target
+     (closest approach, not a terminal mean);
+  2. ``/mission/complete`` latches, i.e. the mission self-terminates;
+  3. ``POSITION_TARGET`` falls silent afterwards (pathfinding reset).
+
+Ground truth still comes from the model's already-bridged
+``/model/glider_nautilus/odometry`` topic — privileged sim-only info kept
+*out* of the Nautilus topic registry so production controllers can't
+accidentally depend on it — but it is now only used for the finite/unit-norm
+sanity sweep, not for a rest assertion.
 
 Composed via ``nautilus_hal/launch/trim_sim.launch.py`` (which
 ``IncludeLaunchDescription``s ``py_pkg/launch/control_stack.launch.py``).
@@ -51,10 +61,10 @@ from launch import LaunchDescription
 from launch.actions import IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.substitutions import FindPackageShare
-from nautilus_msgs.msg import MissionCommand
 from nav_msgs.msg import Odometry
 from py_pkg.path.missions.factory import MissionId
-from py_pkg.physics import gauge_pressure_pa
+from py_pkg.path.missions.trim_and_neutral import NEAR_GOAL_PA
+from py_pkg.physics import WATER_PRESSURE_GRADIENT_PA_PER_M, gauge_pressure_pa
 from py_pkg.uuv_ros_core import (
     UUVTopics,
     create_publisher_for_topic,
@@ -66,10 +76,9 @@ from sensor_msgs.msg import Imu
 from std_msgs.msg import Bool, Int32
 
 from ._sim_helpers import (
-    omega,
+    mission_command,
     reap_lingering_gz,
     sim_gui_enabled,
-    speed,
     spin_for,
     spin_until,
     window,
@@ -134,6 +143,7 @@ class _TrimNeutralTestDriver(Node):
         self.odom_samples: list[tuple[float, Odometry]] = []
         self.target_samples: list[tuple[float, Pose]] = []
         self.imu_msg_count: int = 0
+        self.mission_complete: bool = False
 
         self.path_pub = create_publisher_for_topic(self, UUVTopics.PATH)
         self.command_pub = create_publisher_for_topic(self, UUVTopics.COMMAND)
@@ -146,6 +156,11 @@ class _TrimNeutralTestDriver(Node):
         )
         # Sanity: pathfinding must actually broadcast the setpoint at 10 Hz.
         create_subscription_for_topic(self, UUVTopics.POSITION_TARGET, self._on_target)
+        # Arrival latches this. Under bang-bang it IS the mission's terminal
+        # condition, so it's both the wait signal and an assertion target.
+        create_subscription_for_topic(
+            self, UUVTopics.MISSION_COMPLETE, self._on_mission_complete
+        )
 
         # Privileged sim-only ground truth: bridged out of Gazebo by
         # dave_robot_models/config/glider_nautilus/robot_config.py:16.
@@ -154,6 +169,9 @@ class _TrimNeutralTestDriver(Node):
 
     def _on_imu(self, _msg: Imu) -> None:
         self.imu_msg_count += 1
+
+    def _on_mission_complete(self, msg: Bool) -> None:
+        self.mission_complete = self.mission_complete or bool(msg.data)
 
     def _on_pressure(self, msg: Int32) -> None:
         # EXTERNAL_PRESSURE is absolute Pa; the controller works in gauge.
@@ -168,12 +186,12 @@ class _TrimNeutralTestDriver(Node):
         self.odom_samples.append((time.monotonic(), msg))
 
     def publish_mission(self, target_pa: float) -> None:
-        cmd = MissionCommand()
-        cmd.mission_id = int(MissionId.TRIM_AND_NEUTRAL_BUOYANCY)
-        cmd.target_pressure_pa = float(target_pa)
-        cmd.angle_rad = 0.0
-        cmd.n_resurfaces = 0
-        self.path_pub.publish(cmd)
+        # TRIM reads only the target; everything else stays at the msg default.
+        self.path_pub.publish(
+            mission_command(
+                MissionId.TRIM_AND_NEUTRAL_BUOYANCY, target_pressure_pa=target_pa
+            )
+        )
 
     def publish_start(self) -> None:
         msg = Bool()
@@ -183,7 +201,7 @@ class _TrimNeutralTestDriver(Node):
 
 @pytest.mark.sim
 class TrimNeutralSimTest(unittest.TestCase):
-    """Behavior: TRIM mission holds depth + the glider comes to rest."""
+    """Behavior: TRIM mission reaches the target band and self-terminates."""
 
     @classmethod
     def setUpClass(cls):
@@ -203,24 +221,18 @@ class TrimNeutralSimTest(unittest.TestCase):
         self.driver.destroy_node()
         self.executor.shutdown()
 
-    def test_trim_and_neutral_buoyancy_holds_at_target(self):
-        """TRIM mission -> pressure converges to target, glider stops moving."""
+    def test_trim_and_neutral_buoyancy_reaches_target_and_completes(self):
+        """TRIM mission -> vehicle reaches the target band, mission self-ends."""
         startup_timeout_s = 60.0
         post_ready_settle_s = 2.0
-        # Mission timeline: spawn is at z=-5 (~51 kPa), target is ~65 kPa
-        # (6.5 m). 120 s covers the saturated-drain + bladder-swing +
-        # momentum-bleed budget for the BCU plant.
-        mission_duration_s = 120.0
+        # Spawn is at z=-5 (~51 kPa), target ~65 kPa (6.66 m): ~1.7 m of
+        # saturated drain. Only an UPPER BOUND -- the run ends on
+        # /mission/complete, so a healthy descent costs its real duration.
+        mission_budget_s = 120.0
         drain_s = 2.0
-        # Last 5 s used for the convergence assertions
-        assert_window_s = 5.0
-
-        # Loose tolerances: the estimator is in the loop here, so attitude
-        # noise drives extra ACU activity that this test has to absorb.
-        # Tighten as the estimator stabilises.
-        pressure_tol_pa = 4000.0  # ~0.4 m
-        v_linear_max = 0.10  # m/s
-        omega_max = 0.15  # rad/s
+        # Silence window after completion: pathfinding resets on is_done, so
+        # POSITION_TARGET must stop. Sized well above the 10 Hz setpoint period.
+        quiet_tail_s = 5.0
 
         # 1) Wait for sim. IMU is the readiness signal.
         sim_ready = spin_until(
@@ -248,23 +260,35 @@ class TrimNeutralSimTest(unittest.TestCase):
         spin_for(self.executor, 0.5)
         self.driver.publish_start()
 
-        # 4) Run the closed loop.
+        # 4) Run the closed loop until the mission ends on arrival.
         mission_start_t = time.monotonic()
-        spin_for(self.executor, mission_duration_s)
-        spin_for(self.executor, drain_s)
+        completed = spin_until(
+            self.executor,
+            lambda: self.driver.mission_complete,
+            timeout_s=mission_budget_s,
+        )
+        mission_complete_t = time.monotonic()
+        self.assertTrue(
+            completed,
+            f"TRIM never latched /mission/complete within {mission_budget_s}s. "
+            "Under bang-bang the mission ends on ARRIVAL (within NEAR_GOAL_PA of "
+            "the target), so this means the BCU never drove the vehicle into the "
+            "band -- check the drain direction and the tank-limit guard.",
+        )
+        # Hold the window open so the POSITION_TARGET silence below is real.
+        spin_for(self.executor, quiet_tail_s + drain_s)
 
-        # 5) Take the last `assert_window_s` of each stream.
-        window_start_t = time.monotonic() - drain_s - assert_window_s
-        window_pressure = window(self.driver.gauge_pressure_pa, window_start_t)
-        window_odom = window(self.driver.odom_samples, window_start_t)
+        # 5) Streams over the mission proper (start -> completion).
+        window_odom = window(self.driver.odom_samples, mission_start_t)
 
-        # 6a) Setpoint actually broadcast at ~10 Hz across the full mission.
+        # 6a) Setpoint actually broadcast at ~10 Hz while the mission ran.
         targets_during = window(self.driver.target_samples, mission_start_t)
+        mission_elapsed_s = mission_complete_t - mission_start_t
         self.assertGreaterEqual(
             len(targets_during),
             100,
             f"pathfinding broadcast only {len(targets_during)} setpoints in "
-            f"{mission_duration_s}s — expected ~{int(mission_duration_s * 10)}. "
+            f"{mission_elapsed_s:.1f}s — expected ~{int(mission_elapsed_s * 10)}. "
             "Did `start` reach pathfinding_node?",
         )
         last_target = self.driver.target_samples[-1][1]
@@ -272,50 +296,42 @@ class TrimNeutralSimTest(unittest.TestCase):
             last_target.position.z,
             TARGET_PRESSURE_PA,
             f"latest POSITION_TARGET.position.z = {last_target.position.z} Pa, "
-            f"expected {TARGET_PRESSURE_PA} Pa (TRIM mission's hold-depth)",
+            f"expected {TARGET_PRESSURE_PA} Pa (TRIM mission's arrival depth)",
         )
 
-        # 6b) Pressure convergence. Mean over the window, not the last
-        #     sample, to absorb 10 Hz quantization on EXTERNAL_PRESSURE.
+        # 6b) Arrival: the vehicle actually entered the target band at some
+        #     point. This is the depth claim the bang-bang plant can make --
+        #     it cannot HOLD the target (see the module docstring), so the
+        #     assertion is on the closest approach, not on a terminal mean.
+        gauges = window(self.driver.gauge_pressure_pa, mission_start_t)
         self.assertGreaterEqual(
-            len(window_pressure),
+            len(gauges),
             5,
-            f"only {len(window_pressure)} EXTERNAL_PRESSURE samples in the "
-            f"last {assert_window_s}s — bridge or sensor stalled.",
+            f"only {len(gauges)} EXTERNAL_PRESSURE samples during the mission "
+            "— bridge or sensor stalled.",
         )
-        mean_gauge = sum(window_pressure) / len(window_pressure)
-        self.assertAlmostEqual(
-            mean_gauge,
-            TARGET_PRESSURE_PA,
-            delta=pressure_tol_pa,
-            msg=(
-                f"mean gauge pressure over last {assert_window_s}s = "
-                f"{mean_gauge:.0f} Pa, target {TARGET_PRESSURE_PA:.0f} Pa "
-                f"(tol ±{pressure_tol_pa:.0f} Pa)."
-            ),
+        closest_pa = min(abs(pa - TARGET_PRESSURE_PA) for pa in gauges)
+        self.assertLessEqual(
+            closest_pa,
+            NEAR_GOAL_PA,
+            f"closest approach to target was {closest_pa:.0f} Pa "
+            f"({closest_pa / WATER_PRESSURE_GRADIENT_PA_PER_M:.2f} m) — never "
+            f"entered the ±{NEAR_GOAL_PA:.0f} Pa arrival band around "
+            f"{TARGET_PRESSURE_PA:.0f} Pa. The mission's own is_done uses this "
+            "band, so completion without arrival would be a profile bug.",
         )
 
-        # 6c) Trim: ground-truth linear + angular velocity both small.
-        self.assertGreaterEqual(
-            len(window_odom),
-            5,
-            f"only {len(window_odom)} odometry samples in last "
-            f"{assert_window_s}s — sim ground-truth bridge stalled.",
-        )
-        mean_v = sum(speed(o) for o in window_odom) / len(window_odom)
-        mean_w = sum(omega(o) for o in window_odom) / len(window_odom)
-        self.assertLess(
-            mean_v,
-            v_linear_max,
-            f"mean |v_linear| over last {assert_window_s}s = {mean_v:.3f} m/s "
-            f"(>= {v_linear_max} m/s). Glider hasn't come to rest.",
-        )
-        self.assertLess(
-            mean_w,
-            omega_max,
-            f"mean |omega| over last {assert_window_s}s = {mean_w:.3f} rad/s "
-            f"(>= {omega_max} rad/s). ACU/estimator combination keeps disturbing "
-            "attitude.",
+        # 6c) Self-termination: POSITION_TARGET falls silent after completion.
+        #     pathfinding resets on is_done; bcu_node/acu_node then safe-stop.
+        #     This replaces the old "glider comes to rest" check -- with the
+        #     bladder parked at a tank rail the vehicle keeps coasting, so
+        #     quiescence is a property of the SETPOINT stream, not the plant.
+        late_targets = window(self.driver.target_samples, mission_complete_t + 1.0)
+        self.assertEqual(
+            len(late_targets),
+            0,
+            f"pathfinding published {len(late_targets)} setpoints more than 1 s "
+            "after /mission/complete — it did not reset on is_done.",
         )
 
         # 6d) Sanity: every odom pose is finite + quaternion unit-norm.

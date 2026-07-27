@@ -39,6 +39,8 @@ class PIDController:
         self.prev_input = 0.0
         self.prev_time = None
         self.integral = 0.0
+        # EMA accumulator for the D-term, carried across updates. Only read
+        # when `derivative_filter` > 0; internal state, not an output.
         self.filtered_derivative = 0.0
 
     def update(self, target: float, input: float, time: float) -> float:

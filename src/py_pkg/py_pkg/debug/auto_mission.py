@@ -42,6 +42,7 @@ from nautilus_msgs.msg import DiveInit, MissionCommand
 from rclpy.node import Node
 from std_msgs.msg import Bool
 
+from py_pkg.debug.mission_fields import MISSION_FIELDS
 from py_pkg.math_utils import tank_limits_valid
 from py_pkg.uuv_ros_core import (
     UUVTopics,
@@ -50,6 +51,10 @@ from py_pkg.uuv_ros_core import (
     spin_node,
 )
 
+# The mission fields live in a ROS-free leaf module so the launch file can
+# import the table without dragging rclpy and the message registry into the
+# launch process. See py_pkg/debug/mission_fields.py.
+
 
 class AutoMission(Node):
     """Publishes a latched MissionCommand on /path then a latched start on /command."""
@@ -57,12 +62,8 @@ class AutoMission(Node):
     def __init__(self) -> None:
         super().__init__("auto_mission")
 
-        self.declare_parameter("mission_id", 1)
-        self.declare_parameter("target_pressure_pa", 0.0)
-        self.declare_parameter("angle_rad", 0.0)
-        self.declare_parameter("n_oscillations", 0)
-        self.declare_parameter("dwell_s", 0.0)
-        self.declare_parameter("n_steps", 1)
+        for param, _field, _cast, default in MISSION_FIELDS:
+            self.declare_parameter(param, default)
         self.declare_parameter("dive_init_tank_empty_pa", 0.0)
         self.declare_parameter("dive_init_tank_full_pa", 0.0)
         # Gap between /path and /command so the mission is loaded before the
@@ -97,15 +98,8 @@ class AutoMission(Node):
             self._dive_init.tank_full_pa = float(tank_full_pa)
 
         self._cmd = MissionCommand()
-        self._cmd.mission_id = int(self.get_parameter("mission_id").value)
-        self._cmd.target_pressure_pa = float(
-            self.get_parameter("target_pressure_pa").value
-        )
-        self._cmd.angle_rad = float(self.get_parameter("angle_rad").value)
-        # MissionCommand still carries the pre-rename field name on the wire.
-        self._cmd.n_resurfaces = int(self.get_parameter("n_oscillations").value)
-        self._cmd.dwell_s = float(self.get_parameter("dwell_s").value)
-        self._cmd.n_steps = int(self.get_parameter("n_steps").value)
+        for param, field, cast, _default in MISSION_FIELDS:
+            setattr(self._cmd, field, cast(self.get_parameter(param).value))
 
         self._start_delay_s = self.get_parameter("start_delay_s").value
         self._published = False
@@ -138,11 +132,14 @@ class AutoMission(Node):
 
         cmd = self._cmd
         self._path_pub.publish(cmd)
+        # Logged under the operator-facing parameter names, from the same table
+        # that filled the message -- so a new field shows up here for free.
+        fields = ", ".join(
+            f"{param}={getattr(cmd, field)}"
+            for param, field, _cast, _default in MISSION_FIELDS
+        )
         self.get_logger().info(
-            f"Published latched MissionCommand on {UUVTopics.PATH}: "
-            f"mission_id={cmd.mission_id}, target_pressure_pa={cmd.target_pressure_pa}, "
-            f"angle_rad={cmd.angle_rad}, n_oscillations={cmd.n_resurfaces}, "
-            f"dwell_s={cmd.dwell_s}, n_steps={cmd.n_steps}"
+            f"Published latched MissionCommand on {UUVTopics.PATH}: {fields}"
         )
 
         # One-shot: a periodic timer we cancel on first fire.

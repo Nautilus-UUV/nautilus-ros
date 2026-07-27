@@ -14,11 +14,12 @@ import math
 import rclpy
 from geometry_msgs.msg import Pose
 from rclpy.node import Node
-from std_msgs.msg import Bool, Int16
+from std_msgs.msg import Int16
 
 from py_pkg.math_utils import quaternion_to_roll_pitch
-from py_pkg.pid.acu_axis_controller import AxisController
-from py_pkg.robot_specs import ACU_ROLL_CDEG_PER_DEG
+from py_pkg.control.acu_axis_controller import AxisController
+from py_pkg.control.run_end import subscribe_run_end
+from py_pkg.robot_specs import ACU_PITCH_MM_PER_M, ACU_ROLL_CDEG_PER_DEG
 from py_pkg.scenarios.compile import acu_pitch_spec_from_node, acu_roll_spec_from_node
 from py_pkg.uuv_ros_core import (
     UUVTopics,
@@ -38,8 +39,12 @@ class ACUControlNode(Node):
         # "Front" is the most negative end of the stroke (mass forward),
         # "back" is the least negative (mass aft).
         pitch_cfg = acu_pitch_spec_from_node(self)
-        self._acu_pitch_back_mm = int(round(pitch_cfg.output_limits[0] * 1000.0))
-        self._acu_pitch_front_mm = int(round(pitch_cfg.output_limits[1] * 1000.0))
+        self._acu_pitch_back_mm = int(
+            round(pitch_cfg.output_limits[0] * ACU_PITCH_MM_PER_M)
+        )
+        self._acu_pitch_front_mm = int(
+            round(pitch_cfg.output_limits[1] * ACU_PITCH_MM_PER_M)
+        )
 
         roll_cfg = acu_roll_spec_from_node(self)
         self.roll_axis = AxisController(
@@ -75,10 +80,10 @@ class ACUControlNode(Node):
             self, UUVTopics.POSITION_ESTIMATION, self.current_pose_callback
         )
 
-        # Mission run/stop. /command=false drops the target, neutralizes the
-        # ACU once, and gates control_loop off (silent) so acu_debug can own
-        # the wire; /command=true is a no-op (we wait for POSITION_TARGET).
-        create_subscription_for_topic(self, UUVTopics.COMMAND, self._on_command)
+        # Either way a run ends, the controller drops its target, neutralizes
+        # the ACU once, and gates control_loop off (silent) so acu_debug can own
+        # the wire.
+        subscribe_run_end(self, self._stop)
 
         self.control_timer = self.create_timer(
             1.0 / roll_cfg.frequency_hz, self.control_loop
@@ -114,14 +119,23 @@ class ACUControlNode(Node):
         roll.data = 0
         self.roll_pub.publish(roll)
 
-    def _on_command(self, msg: Bool) -> None:
-        # /command=true (start) is a no-op -- we wait for POSITION_TARGET.
-        # /command=false (stop) drops the target, wipes the roll PID, gates the
-        # loop off, and commands pitch + roll to neutral ONCE before going
-        # silent. The single neutral matters because the STM re-ships the last
-        # value forever (no staleness watchdog), so silence alone would leave
-        # the last mission attitude latched on the wire.
-        if bool(msg.data):
+    def _stop(self, reason: str) -> None:
+        """Drop the target, wipe the roll PID, emit ONE neutral, go silent.
+
+        The single neutral matters because the STM re-ships the last value
+        forever (no staleness watchdog), so silence alone would leave the last
+        mission attitude latched on the wire.
+        """
+        # Edge-trigger, mirroring bcu_node: only the running->stopped
+        # transition emits. target_pressure_pa is None already means "stopped",
+        # and the ACU wire has no arbiter -- last writer wins at the STM. The UI
+        # sends /command=false before EVERY manual command, so without this
+        # guard each one would drop a neutral on top of the operator's
+        # pitch/roll and undo the command they just sent. (The BCU needs the
+        # same guard for a different reason -- to avoid re-arming its safe-stop
+        # burst -- but the failure mode here is the more direct one: a
+        # controller that is not running is still overwriting the wire.)
+        if self.target_pressure_pa is None:
             return
         self.roll_axis.reset()
         self.target_pressure_pa = None
@@ -129,7 +143,7 @@ class ACUControlNode(Node):
         self.current_roll_deg = 0.0
         self._publish_acu_neutral()
         self.get_logger().info(
-            "stop -> neutral emitted, ACU going silent (fresh state)."
+            f"{reason} -> neutral emitted, ACU going silent (fresh state)."
         )
 
     def control_loop(self):
@@ -157,6 +171,21 @@ class ACUControlNode(Node):
             msg = Int16()
             msg.data = int(round(roll_cmd * ACU_ROLL_CDEG_PER_DEG))
             self.roll_pub.publish(msg)
+
+    def destroy_node(self) -> bool:
+        # Best-effort neutral on teardown, mirroring bcu_node's safe-stop. The
+        # STM latches the last value it was sent and has no staleness watchdog,
+        # so a node that exits mid-mission -- Ctrl-C, a launch shutdown, a
+        # crash-restart -- would otherwise leave the mass shifter parked at the
+        # last commanded pitch/roll with nothing left running to move it.
+        # Unconditional (not edge-triggered): _stop's guard exists to avoid
+        # fighting a live manual driver, but on teardown there is no later
+        # command from us to fight with.
+        try:
+            self._publish_acu_neutral()
+        except Exception:
+            pass
+        return super().destroy_node()
 
 
 def main(args=None):

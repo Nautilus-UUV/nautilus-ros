@@ -15,7 +15,7 @@ clears the latch.
 
 from __future__ import annotations
 
-from py_pkg.math_utils import span_band_guards, tank_limits_valid
+from py_pkg.math_utils import at_span_endpoint
 
 
 class Lifeguard:
@@ -75,7 +75,11 @@ def tank_blow_exhausted(
     A missing tank reading or unusable endpoints (see ``tank_limits_valid``)
     return False.
     """
-    if tank_pa is None or not tank_limits_valid(tank_empty_pa, tank_full_pa):
-        return False
-    low_guard, _ = span_band_guards(tank_empty_pa, tank_full_pa, band)
-    return tank_pa <= low_guard
+    return at_span_endpoint(
+        tank_pa,
+        tank_empty_pa,
+        tank_full_pa,
+        band,
+        toward_low=True,  # the blow drains the tank toward empty
+        toward_high=False,
+    )

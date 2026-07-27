@@ -13,6 +13,11 @@ env vocabulary can't drift between tests.
 
 ``window`` / ``speed`` / ``omega`` are the timeseries-analysis helpers
 the trim/surface convergence assertions share.
+
+``mission_command`` builds the ``MissionCommand`` every sim driver publishes.
+It lives here because each driver used to fill the message field-by-field, so a
+new ``.msg`` field meant an identical edit in six files — and the last one added
+missed one of them.
 """
 
 import math
@@ -20,6 +25,7 @@ import os
 import subprocess
 import time
 
+from nautilus_msgs.msg import MissionCommand
 from nav_msgs.msg import Odometry
 
 # Depth conversion for the sim's sea-pressure plugin gradient
@@ -27,6 +33,26 @@ from nav_msgs.msg import Odometry
 # physics.WATER_PRESSURE_GRADIENT_PA_PER_M). Defined once here so the
 # lake-matching tests can't drift apart on it.
 SIM_PA_PER_M = 9806.38
+
+
+def mission_command(mission_id, **fields) -> MissionCommand:
+    """One ``MissionCommand`` for a sim driver to publish.
+
+    Every field not named stays at its ``.msg`` default (0 / 0.0), which is what
+    the profiles treat as "operator left this alone" -- so a test only spells out
+    the parameters its mission actually reads, and a new message field needs no
+    edit here or in any driver.
+
+    ``**fields`` are message field names, so the wire name (``n_resurfaces``)
+    applies rather than the operator-facing ``n_oscillations``.
+    """
+    cmd = MissionCommand()
+    cmd.mission_id = int(mission_id)
+    for name, value in fields.items():
+        # getattr first: a typo'd field would otherwise be silently attached to
+        # the message object instead of failing the test.
+        setattr(cmd, name, type(getattr(cmd, name))(value))
+    return cmd
 
 
 def spin_for(executor, duration_s: float, slice_s: float = 0.05) -> None:

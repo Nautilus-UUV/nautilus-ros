@@ -11,27 +11,14 @@ infrastructure failures, and each claim is pinned here:
   mission budget is detected up front (the drop ran 1800 s caps against
   ~17 ks budgets and killed every long mission mid-write).
 
-run_sweep.py is a script, not a package module: import it by path.
+run_sweep.py is a script, not a package module; ``_sweep_specs`` owns the repo
+walk and the numpy/scipy import policy that makes it importable from a test.
 """
 
 from __future__ import annotations
 
-import importlib.util
-import sys
-from pathlib import Path
-
 import pytest
-
-_RUN_SWEEP = Path(__file__).resolve().parents[4] / "scripts" / "run_sweep.py"
-if not _RUN_SWEEP.is_file():  # pragma: no cover — repo-layout guard
-    pytest.skip(f"run_sweep.py not found at {_RUN_SWEEP}", allow_module_level=True)
-
-_spec = importlib.util.spec_from_file_location("run_sweep_under_test", _RUN_SWEEP)
-run_sweep = importlib.util.module_from_spec(_spec)
-# Registered before exec: @dataclass resolves its owning module through
-# sys.modules to evaluate the string annotations.
-sys.modules["run_sweep_under_test"] = run_sweep
-_spec.loader.exec_module(run_sweep)
+from _sweep_specs import needs_scripts, run_sweep
 
 
 def _retry(**overrides) -> bool:
@@ -47,6 +34,7 @@ def _retry(**overrides) -> bool:
     return run_sweep.should_retry(**kwargs)
 
 
+@needs_scripts
 class TestShouldRetry:
     def test_mission_complete_never_retries(self):
         # Even a weird exit code / timeout flag cannot requeue a
@@ -82,6 +70,7 @@ class TestShouldRetry:
         assert not _retry(watchdog=False)
 
 
+@needs_scripts
 class TestTruncatingCapRuns:
     MISSION = {"target_pressure_pa": 294_180.0, "n_oscillations": 2}  # ~30 m
 
@@ -111,9 +100,10 @@ class TestTruncatingCapRuns:
 
     def test_run_without_target_is_exempt(self):
         # No target pressure -> nothing to scale -> the cap applies as-is.
-        assert run_sweep.truncating_cap_runs({"x": {"dwell_s": 5.0}}, 1.0) == []
+        assert run_sweep.truncating_cap_runs({"x": {"n_oscillations": 2}}, 1.0) == []
 
 
+@needs_scripts
 class TestDomainWindow:
     def test_v2_campaign_shape_is_rejected(self):
         # 64 slots at base 50 -> domains 50..113; 102+ map DDS ports into

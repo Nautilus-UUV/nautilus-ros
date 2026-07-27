@@ -26,6 +26,7 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
+from py_pkg.debug.mission_fields import MISSION_FIELDS
 from py_pkg.scenarios.compile import params_for_auto_mission
 from py_pkg.scenarios.loader import load_scenario
 
@@ -34,24 +35,19 @@ _BRINGUP_DELAY_S = 8.0
 
 
 def _autostart_setup(context):
+    # Mission fields come off the shared MISSION_FIELDS table that auto_mission
+    # declares its parameters from, so this file can't drift out of step with it.
     parameters = {
-        "mission_id": ParameterValue(LaunchConfiguration("mission_id"), value_type=int),
-        "target_pressure_pa": ParameterValue(
-            LaunchConfiguration("target_pressure_pa"), value_type=float
-        ),
-        "angle_rad": ParameterValue(LaunchConfiguration("angle_rad"), value_type=float),
-        "n_oscillations": ParameterValue(
-            LaunchConfiguration("n_oscillations"), value_type=int
-        ),
-        "dwell_s": ParameterValue(LaunchConfiguration("dwell_s"), value_type=float),
-        "n_steps": ParameterValue(LaunchConfiguration("n_steps"), value_type=int),
-        "start_delay_s": ParameterValue(
-            LaunchConfiguration("start_delay_s"), value_type=float
-        ),
-        "wait_for_sim_ready": ParameterValue(
-            LaunchConfiguration("wait_for_sim_ready"), value_type=bool
-        ),
+        name: ParameterValue(LaunchConfiguration(name), value_type=cast)
+        for name, _field, cast, _default in MISSION_FIELDS
     }
+    # Sequencing knobs: node behaviour, not mission content.
+    parameters["start_delay_s"] = ParameterValue(
+        LaunchConfiguration("start_delay_s"), value_type=float
+    )
+    parameters["wait_for_sim_ready"] = ParameterValue(
+        LaunchConfiguration("wait_for_sim_ready"), value_type=bool
+    )
     scenario_path = LaunchConfiguration("scenario").perform(context)
     if scenario_path:
         parameters.update(params_for_auto_mission(load_scenario(scenario_path)))
@@ -71,12 +67,10 @@ def generate_launch_description() -> LaunchDescription:
     return LaunchDescription(
         [
             DeclareLaunchArgument("mission_autostart", default_value="false"),
-            DeclareLaunchArgument("mission_id", default_value="1"),
-            DeclareLaunchArgument("target_pressure_pa", default_value="0.0"),
-            DeclareLaunchArgument("angle_rad", default_value="0.0"),
-            DeclareLaunchArgument("n_oscillations", default_value="0"),
-            DeclareLaunchArgument("dwell_s", default_value="0.0"),
-            DeclareLaunchArgument("n_steps", default_value="1"),
+            *[
+                DeclareLaunchArgument(name, default_value=str(default))
+                for name, _field, _cast, default in MISSION_FIELDS
+            ],
             DeclareLaunchArgument("start_delay_s", default_value="2.0"),
             # True (the sim launches pass it) holds the mission until the
             # sim_ready_gate's latched /sim/ready; false keeps the legacy

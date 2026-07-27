@@ -88,26 +88,6 @@ def clamp(val: float, lo: float, hi: float) -> float:
     return val
 
 
-def deadband_snap(val: float, zero_below: float, snap_to: float, limit: float) -> float:
-    """Shape a signed command through a deadband, then saturate.
-
-    Magnitudes under ``zero_below`` are suppressed to 0; magnitudes in
-    ``[zero_below, snap_to)`` are pushed up to ``±snap_to`` (the minimum
-    value the actuator runs at reliably); everything else passes through,
-    saturated into ``[-limit, limit]``. Sign is preserved. Invariant
-    (not enforced): ``0 <= zero_below <= snap_to <= limit``.
-
-    With ``zero_below == snap_to == 0`` this reduces to a plain
-    ``clamp(val, -limit, limit)``.
-    """
-    mag = abs(val)
-    if mag < zero_below:
-        return 0.0
-    if mag < snap_to:
-        return snap_to if val > 0 else -snap_to
-    return clamp(val, -limit, limit)
-
-
 def span_band_guards(
     lo_endpoint: float, hi_endpoint: float, band: float
 ) -> tuple[float, float]:
@@ -133,3 +113,31 @@ def tank_limits_valid(empty_pa, full_pa) -> bool:
     if empty_pa is None or full_pa is None:
         return False
     return 0.0 < empty_pa < full_pa
+
+
+def at_span_endpoint(
+    value: float | None,
+    lo_endpoint: float | None,
+    hi_endpoint: float | None,
+    band: float,
+    *,
+    toward_low: bool,
+    toward_high: bool,
+) -> bool:
+    """True when ``value`` has reached the ``band`` guard on a side being
+    pushed toward -- the point past which more actuation does no useful work.
+
+    ``toward_low`` / ``toward_high`` say which endpoint the current command
+    heads for; a side that isn't being pushed toward never reports reached, so
+    flow *away* from a touched limit always passes. With unregistered or
+    inverted endpoints (see ``tank_limits_valid``) or a missing reading there is
+    no guard to sit on, so the answer is False.
+
+    One home for the tank-endpoint predicate: ``TankLimitGuard`` (both its stop
+    and release checks) and the lifeguard's blow stand-down share it, so the two
+    safety gates cannot drift apart in their arithmetic.
+    """
+    if value is None or not tank_limits_valid(lo_endpoint, hi_endpoint):
+        return False
+    low_guard, high_guard = span_band_guards(lo_endpoint, hi_endpoint, band)
+    return (toward_low and value <= low_guard) or (toward_high and value >= high_guard)

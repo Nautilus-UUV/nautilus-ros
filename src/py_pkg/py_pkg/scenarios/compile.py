@@ -32,9 +32,8 @@ from .spec.control import (
     AcuPitchSpec,
     AcuRollSpec,
     ControlScenario,
-    DepthPlantModel,
     DepthSpec,
-    PIDPressureSpec,
+    ImuPrefilterSpec,
 )
 from .spec.rig import (
     FaultScheduleSpec,
@@ -63,69 +62,25 @@ def params_for_bcu_node(scen: ControlScenario) -> dict[str, Any]:
     d = scen.controllers.depth
     return {
         "frequency_hz": d.frequency_hz,
-        "pid_pressure.kp": d.pid_pressure.kp,
-        "pid_pressure.ki": d.pid_pressure.ki,
-        "pid_pressure.kd": d.pid_pressure.kd,
-        "pid_pressure.integral_limit_low": d.pid_pressure.integral_limits[0],
-        "pid_pressure.integral_limit_high": d.pid_pressure.integral_limits[1],
-        "pid_pressure.output_limit_low": d.pid_pressure.output_limits[0],
-        "pid_pressure.output_limit_high": d.pid_pressure.output_limits[1],
-        "pid_pressure.derivative_filter": d.pid_pressure.derivative_filter,
-        "plant_model.bladder_nominal_m3": d.plant_model.bladder_nominal_m3,
-        "plant_model.initial_proportion_full": d.plant_model.initial_proportion_full,
-        "plant_model.min_rpm": d.plant_model.min_rpm,
-        "plant_model.min_operating_rpm": d.plant_model.min_operating_rpm,
-        "plant_model.max_rpm": d.plant_model.max_rpm,
-        "plant_model.pump_efficiency": d.plant_model.pump_efficiency,
+        "pump_rpm": d.pump_rpm,
+        "deadband_pa": d.deadband_pa,
+        "tank_stop_band": d.tank_stop_band,
     }
 
 
 def bcu_spec_from_node(node: Node) -> DepthSpec:
     """Read depth-controller params off `node` into a typed DepthSpec.
 
-    Defaults come from the dataclass — absent any scenario override at
-    launch time, behaviour matches the literal values that used to live
-    in `init_control` / `init_buoyancy_engine` / `init_motor`.
+    Defaults come from the spec, so a bare `ros2 run bcu_node` with no
+    scenario behaves exactly like the installed nominal.yaml.
     """
 
     default = DepthSpec()
-    pp = default.pid_pressure
-    pm = default.plant_model
-
     return DepthSpec(
         frequency_hz=_param(node, "frequency_hz", default.frequency_hz),
-        pid_pressure=PIDPressureSpec(
-            kp=_param(node, "pid_pressure.kp", pp.kp),
-            ki=_param(node, "pid_pressure.ki", pp.ki),
-            kd=_param(node, "pid_pressure.kd", pp.kd),
-            integral_limits=(
-                _param(node, "pid_pressure.integral_limit_low", pp.integral_limits[0]),
-                _param(node, "pid_pressure.integral_limit_high", pp.integral_limits[1]),
-            ),
-            output_limits=(
-                _param(node, "pid_pressure.output_limit_low", pp.output_limits[0]),
-                _param(node, "pid_pressure.output_limit_high", pp.output_limits[1]),
-            ),
-            derivative_filter=_param(
-                node, "pid_pressure.derivative_filter", pp.derivative_filter
-            ),
-        ),
-        plant_model=DepthPlantModel(
-            bladder_nominal_m3=_param(
-                node, "plant_model.bladder_nominal_m3", pm.bladder_nominal_m3
-            ),
-            initial_proportion_full=_param(
-                node, "plant_model.initial_proportion_full", pm.initial_proportion_full
-            ),
-            min_rpm=_param(node, "plant_model.min_rpm", pm.min_rpm),
-            min_operating_rpm=_param(
-                node, "plant_model.min_operating_rpm", pm.min_operating_rpm
-            ),
-            max_rpm=_param(node, "plant_model.max_rpm", pm.max_rpm),
-            pump_efficiency=_param(
-                node, "plant_model.pump_efficiency", pm.pump_efficiency
-            ),
-        ),
+        pump_rpm=_param(node, "pump_rpm", default.pump_rpm),
+        deadband_pa=_param(node, "deadband_pa", default.deadband_pa),
+        tank_stop_band=_param(node, "tank_stop_band", default.tank_stop_band),
     )
 
 
@@ -203,6 +158,18 @@ def acu_roll_spec_from_node(node: Node) -> AcuRollSpec:
             node, "acu_roll.derivative_filter", default.derivative_filter
         ),
     )
+
+
+def params_for_imu_prefilter(scen: ControlScenario) -> dict[str, Any]:
+    return {"alpha": scen.estimator.prefilter.alpha}
+
+
+def imu_prefilter_spec_from_node(node: Node) -> ImuPrefilterSpec:
+    """Read prefilter params off `node` into a typed ImuPrefilterSpec."""
+
+    default = ImuPrefilterSpec()
+
+    return ImuPrefilterSpec(alpha=_param(node, "alpha", default.alpha))
 
 
 # ---------------------------------------------------------------------------
@@ -358,7 +325,7 @@ def params_for_anomaly_label(scen: Scenario) -> dict[str, Any]:
 def params_for_auto_mission(scen: Scenario) -> dict[str, Any]:
     """Wire params for the sim mission autostart (debug/auto_mission).
 
-    The tank endpoints arm bcu_node's `clamp_to_tank_limits` through the
+    The tank endpoints arm bcu_node's `TankLimitGuard` through the
     same DIVE_INIT path the operator UI uses on hardware. Sampled plant
     truth on purpose: the hardware value is a pre-dive *measurement* of
     the actual tank, so the sim surrogate measures the sampled plant.

@@ -14,6 +14,7 @@ import struct
 
 import pytest
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from sensor_msgs.msg import Imu
 from std_msgs.msg import Int16, UInt8
 
@@ -146,24 +147,71 @@ class _STMTesterNode(Node):
         self.rpm_cmd_pub.publish(Int16(data=rpm))
 
 
-class STMComHarness(NodeHarness):
-    """NodeHarness that keeps a handle on the fake serial port."""
+def _last_rpm_on_wire(h) -> int:
+    """The most recent 0x2102 RPM value the node put on the fake serial port.
 
-    def __init__(self, fake: _FakeSerial):
+    In the wire's own (reversed) polarity -- callers compare against
+    ``STM_BCU_RPM_SIGN * ros_rpm``.
+    """
+    sent = _decode_frames(bytes(h.fake.tx))
+    rpm_frames = [p for vid, p in sent if vid == BCU_RPM_VAR_ID]
+    assert rpm_frames, "no 0x2102 rpm frame was sent"
+    return struct.unpack("<h", rpm_frames[-1])[0]
+
+
+class STMComHarness(NodeHarness):
+    """NodeHarness that keeps a handle on the fake serial port.
+
+    The TX heartbeat period and the command-staleness window come in as ROS
+    parameter overrides -- the node's own public surface -- so a test can shrink
+    them instead of waiting out the 1 Hz / 3 s production cadence. Defaults are
+    the production values, because tests that assert *nothing* reaches the wire
+    depend on the heartbeat staying slow.
+    """
+
+    def __init__(
+        self,
+        fake: _FakeSerial,
+        tx_period_s: float | None = None,
+        command_timeout_s: float | None = None,
+    ):
         self.fake = fake
-        super().__init__(STMComNode, _STMTesterNode)
+        overrides = [
+            Parameter(name, Parameter.Type.DOUBLE, value)
+            for name, value in (
+                ("tx_period_s", tx_period_s),
+                ("command_timeout_s", command_timeout_s),
+            )
+            if value is not None
+        ]
+        super().__init__(
+            lambda: STMComNode(parameter_overrides=overrides), _STMTesterNode
+        )
 
 
 @pytest.fixture
-def stm_harness(monkeypatch):
-    fake = _FakeSerial()
-    # STMComNode does `serial.Serial(port, baud, timeout=0)` in __init__.
-    monkeypatch.setattr(stm.serial, "Serial", lambda *a, **k: fake)
-    harness = STMComHarness(fake)
+def make_stm_harness(monkeypatch):
+    """Factory for STM harnesses; owns teardown for every one it hands out."""
+    made: list[STMComHarness] = []
+
+    def _make(**overrides) -> STMComHarness:
+        fake = _FakeSerial()
+        # STMComNode does `serial.Serial(port, baud, timeout=0)` in __init__.
+        monkeypatch.setattr(stm.serial, "Serial", lambda *a, **k: fake)
+        harness = STMComHarness(fake, **overrides)
+        made.append(harness)
+        return harness
+
     try:
-        yield harness
+        yield _make
     finally:
-        harness.shutdown()
+        for harness in made:
+            harness.shutdown()
+
+
+@pytest.fixture
+def stm_harness(make_stm_harness):
+    return make_stm_harness()
 
 
 class TestSTMValves:
@@ -206,12 +254,6 @@ class TestSTMRpmSign:
     sign at the wire (STM_BCU_RPM_SIGN) on both the commanded setpoint and the
     measured feedback, keeping the whole ROS graph on one convention."""
 
-    def _last_rpm_on_wire(self, h) -> int:
-        sent = _decode_frames(bytes(h.fake.tx))
-        rpm_frames = [p for vid, p in sent if vid == BCU_RPM_VAR_ID]
-        assert rpm_frames, "no 0x2102 rpm frame was sent"
-        return struct.unpack("<h", rpm_frames[-1])[0]
-
     def test_commanded_rpm_sign_flipped_on_wire(self, stm_harness):
         h = stm_harness
         for ros_rpm in (500, -500):
@@ -219,7 +261,7 @@ class TestSTMRpmSign:
             h.spin_for(0.1)
             h.fake.inject(_frame(VALVES_STATUS_VAR_ID, struct.pack("<B", 0)))
             h.spin_for(0.1)
-            assert self._last_rpm_on_wire(h) == STM_BCU_RPM_SIGN * ros_rpm
+            assert _last_rpm_on_wire(h) == STM_BCU_RPM_SIGN * ros_rpm
 
     def test_feedback_rpm_sign_flipped(self, stm_harness):
         # 0x2103 BCU_STATUS carries the motor's measured RPM in the hardware's
@@ -275,14 +317,68 @@ class TestSTMImu:
         h.spin_until(lambda: len(h.tester.received_imu) > 0, timeout=2.0)
         sent = _decode_frames(bytes(h.fake.tx))
         setpoint_ids = {BCU_RPM_VAR_ID, VALVES_TARGET_VAR_ID}
-        assert not [vid for vid, _ in sent if vid in setpoint_ids], (
-            "IMU frames must not cue a setpoint send"
-        )
+        assert not [
+            vid for vid, _ in sent if vid in setpoint_ids
+        ], "IMU frames must not cue a setpoint send"
 
         # A subsequent housekeeping/status frame DOES flush the setpoints.
         h.fake.inject(_frame(VALVES_STATUS_VAR_ID, struct.pack("<B", 0)))
         h.spin_for(0.1)
         sent = _decode_frames(bytes(h.fake.tx))
-        assert [vid for vid, _ in sent if vid in setpoint_ids], (
-            "a status frame should still cue a setpoint send"
+        assert [
+            vid for vid, _ in sent if vid in setpoint_ids
+        ], "a status frame should still cue a setpoint send"
+
+
+class TestSTMHeartbeatAndWatchdog:
+    """The independent TX heartbeat re-ships the cached setpoints with no
+    inbound cue, and the command-staleness watchdog fails the actuator safe
+    (0 rpm, valves closed) once /bcu/rpm goes quiet -- the Pi-side dead-man
+    for the bench bug where a latched setpoint kept the pump running."""
+
+    # Fast heartbeat, production dead-man: isolates "the heartbeat ships" from
+    # "the watchdog zeroes it".
+    HEARTBEAT_S = 0.1
+    # Fast heartbeat AND a short dead-man, so the failsafe is reachable in
+    # ~0.4 s instead of the production 3 s.
+    STALE_S = 0.3
+
+    def test_heartbeat_ships_without_inbound_frame(self, make_stm_harness):
+        h = make_stm_harness(tx_period_s=self.HEARTBEAT_S)
+        h.tester.command_rpm(250)
+        h.spin_for(0.1)
+        # No inbound frame is ever injected, so the parasitic send can't fire;
+        # crossing a heartbeat period is the only way bytes reach the wire.
+        h.spin_until(
+            lambda: _decode_frames(bytes(h.fake.tx)), timeout=2.0
         )
+        assert _last_rpm_on_wire(h) == STM_BCU_RPM_SIGN * 250
+
+    def test_staleness_watchdog_fails_safe(self, make_stm_harness):
+        h = make_stm_harness(
+            tx_period_s=self.HEARTBEAT_S, command_timeout_s=self.STALE_S
+        )
+        h.tester.command_rpm(800)
+        h.tester.command_valves(0b01)
+        h.spin_for(0.1)
+        assert h.node._latest_rpm == 800
+        # No fresh /bcu/rpm: past the timeout, the next heartbeat fails safe.
+        h.spin_until(lambda: h.node._cmd_stale, timeout=2.0)
+        assert h.node._cmd_stale is True
+        assert h.node._latest_rpm == 0
+        assert h.node._latest_valves == 0
+        assert _last_rpm_on_wire(h) == 0
+
+    def test_fresh_command_clears_watchdog(self, make_stm_harness):
+        h = make_stm_harness(
+            tx_period_s=self.HEARTBEAT_S, command_timeout_s=self.STALE_S
+        )
+        h.tester.command_rpm(800)
+        h.spin_for(0.1)
+        h.spin_until(lambda: h.node._cmd_stale, timeout=2.0)  # drive into failsafe
+        assert h.node._cmd_stale is True
+        # A fresh command pets the watchdog and revives the setpoint.
+        h.tester.command_rpm(640)
+        h.spin_for(0.1)
+        assert h.node._cmd_stale is False
+        assert h.node._latest_rpm == 640

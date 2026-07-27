@@ -23,7 +23,6 @@ from py_pkg.robot_specs import (
     IMU_GYRO_AXIS_MAP,
     STM_ACCEL_MG_PER_LSB,
     STM_GYRO_DPS_PER_LSB,
-    VOLUME_PER_REV_M3,
 )
 
 # Standard atmosphere (Pa) — the FALLBACK gauge reference. The operator
@@ -44,8 +43,6 @@ GRAVITY_M_S2 = 9.806
 # stack uses gauge pressure as its primary state; this constant is the
 # only place depth-in-metres <-> pressure-in-Pa conversions get scaled.
 WATER_PRESSURE_GRADIENT_PA_PER_M = WATER_DENSITY_KG_M3 * GRAVITY_M_S2
-
-SECONDS_PER_MINUTE = 60
 
 
 def gauge_pressure_pa(
@@ -129,21 +126,6 @@ class SurfaceReference:
     def gauge(self, absolute_pa: float) -> float:
         """Absolute Pa → gauge Pa against the current reference."""
         return gauge_pressure_pa(absolute_pa, atmospheric_pa=self.reference_pa)
-
-
-def q_to_rpm(q: float, bladder_volume: float, pump_efficiency: float) -> float:
-    """
-    Convert bladder flow-rate ratio (1/s) to motor RPM.
-
-    :param q: bladder flow rate as a fraction of total volume per second (1/s)
-    :param bladder_volume: bladder volume (m^3)
-    :param pump_efficiency: volumetric efficiency the controller assumes
-        when inverting flow → RPM. Lives on DepthPlantModel so MC sweeps
-        can perturb controller-vs-actual pump efficiency.
-    :return: motor speed (RPM)
-    """
-    flow_rate = q * bladder_volume  # m^3/s
-    return SECONDS_PER_MINUTE / (VOLUME_PER_REV_M3 * pump_efficiency) * flow_rate
 
 
 # ---------------------------------------------------------------------------

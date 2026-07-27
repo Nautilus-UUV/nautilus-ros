@@ -5,8 +5,8 @@ ACU mechanics. Both controllers (`py_pkg`) and the sim HAL
 (`nautilus_hal`) import from here so a value change propagates to both.
 
 Environmental constants (gravity, water density, atmospheric pressure)
-live in `physics.py`; controller tuning (PID gains, deadbands) lives in
-`pid/depth_config.py` and `pid/acu_{pitch,roll}_config.py`.
+live in `physics.py`; controller tuning lives in the scenario schema
+(`scenarios/spec/control.py`), reaching the nodes as ROS parameters.
 """
 
 # ---------------------------------------------------------------------------
@@ -21,10 +21,10 @@ VOLUME_PER_REV_M3 = 0.32e-6
 # ---------------------------------------------------------------------------
 
 # Full mechanical bladder capacity. Matches the Gazebo BuoyancyEngine plugin's
-# <max_volume> on the glider_nautilus SDF (0.0025 m^3 = 2.5 L) and is used by
-# the depth controller as the scaling denominator in q_to_rpm: the PID's
-# normalized output q (1/s) is multiplied by this volume to get a physical
-# flow rate (m^3/s) before inverting through the pump's volume-per-rev.
+# <max_volume> on the glider_nautilus SDF (0.0025 m^3 = 2.5 L). The bang-bang
+# depth controller never scales by it — it commands RPM directly — so this is
+# now consumed by the sim plant (rig.plant.bladder_nominal_m3) and by the
+# buoyancy derivation.
 #
 # Operating-range clamps (the bladder min/max actually exposed to the control
 # loop, with whatever headroom we want) are tunable from the scenario YAML
@@ -61,6 +61,11 @@ ACU_PITCH_MAX_TRAVEL_M = 0.1195
 ACU_PITCH_MAX_VELOCITY_M_S = 0.011
 ACU_PITCH_MAX_EFFORT_N = 10.0
 
+# ACU_PITCH wire format: Int16 millimetres. The specs above are in metres,
+# so every producer converts on the way to the topic. Both the producer
+# (control/acu_node.py) and the HAL bridge read this constant.
+ACU_PITCH_MM_PER_M = 1000
+
 # Roll — acu_roll_joint, revolute, axis = +x in body frame.
 # SDF limit: lower=-0.5236, upper=0.5236 (rad) = ±30°.
 ACU_ROLL_MASS_KG = 4.069
@@ -71,7 +76,7 @@ ACU_ROLL_MAX_EFFORT_NM = 10.0
 
 # ACU_ROLL wire format: Int16 centidegrees. ±30° -> ±3000 on the topic,
 # 0.01° per step. Native rad would collapse the range to {-1, 0, +1}.
-# Both the producer (pid/acu_node.py) and the HAL bridge
+# Both the producer (control/acu_node.py) and the HAL bridge
 # (nautilus_hal/acu_sim_bridge.py) read this constant.
 ACU_ROLL_CDEG_PER_DEG = 100
 

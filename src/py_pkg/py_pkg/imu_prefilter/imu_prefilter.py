@@ -3,6 +3,7 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Imu
 
+from py_pkg.scenarios.compile import imu_prefilter_spec_from_node
 from py_pkg.uuv_ros_core.node_factory import (
     create_publisher_for_topic,
     create_subscription_for_topic,
@@ -38,8 +39,14 @@ class ImuPrefilter(Node):
     def __init__(self):
         super().__init__("imu_prefilter")
 
-        # Filter coefficient: 0 = very smooth, 1 = no filtering
-        self.alpha = 0.5
+        # EMA coefficient, from the scenario (ImuPrefilterSpec.alpha, which
+        # carries the cutoff/group-delay derivation). The filtered stream feeds
+        # two consumers with opposite biases: the attitude estimator runs on it
+        # at the full IMU rate and wants low lag, while the MQTT egress to the
+        # operator UI is decimated to 10 Hz by plain sample-dropping, so it
+        # wants the content band-limited below ~5 Hz or the thinning aliases
+        # high-frequency noise into the display.
+        self.alpha = imu_prefilter_spec_from_node(self).alpha
 
         # Previous filtered (x, y, z) tuples, initialized on first message.
         self._prev_accel = None

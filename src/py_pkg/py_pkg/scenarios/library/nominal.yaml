@@ -10,26 +10,11 @@ control:
   controllers:
     depth:
       frequency_hz: 10
-      pid_pressure:
-        kp: 5.119127756253602e-07
-        ki: 1.210444124384171e-08
-        kd: 1.7448840717788575e-05
-        integral_limits:
-        - -0.0025
-        - 0.0025
-        output_limits:
-        - -0.01
-        - 0.01
-        derivative_filter: 0.3
-      plant_model:
-        bladder_nominal_m3: 0.0025
-        # Matches the sim spawn (SDF default_volume 2.2e-3 of the 2.5e-3
-        # bladder) and the real pre-dive float state.
-        initial_proportion_full: 0.88
-        min_rpm: 500
-        min_operating_rpm: 1000
-        max_rpm: 3000
-        pump_efficiency: 0.93
+      # Bang-bang: one speed, one direction, until the tank rails or the
+      # mission's next leg flips the sign of the depth error.
+      pump_rpm: 3000
+      deadband_pa: 2000.0
+      tank_stop_band: 0.05
     acu_pitch:
       output_limits: [-0.11, -0.01]
     acu_roll:

@@ -7,9 +7,9 @@ this asserts they don't silently diverge. `nominal.yaml` is the launch
 default; `baseline.yaml` is the same plant + faults turned on.
 
 MC perturbations live in non-nominal scenarios; they're not in scope
-here. The control-side controller plant model
-(``DepthSpec.plant_model``) is checked too, since at nominal it must
-also mirror robot_specs.
+here. The control side has no plant model any more (the bang-bang loop
+commands RPM directly), but its one hardware-derived value —
+``DepthSpec.pump_rpm`` — is checked the same way.
 """
 
 from __future__ import annotations
@@ -28,13 +28,15 @@ def test_rig_plant_mirrors_robot_specs(nominal_scenario_path):
     assert rig_plant.bcu_motor_max_rpm == robot_specs.BCU_MOTOR_MAX_RPM
 
 
-def test_control_plant_model_mirrors_robot_specs(nominal_scenario_path):
-    pm = load_scenario(nominal_scenario_path).control.controllers.depth.plant_model
-    assert pm.bladder_nominal_m3 == robot_specs.BLADDER_VOLUME_M3
-    assert pm.max_rpm == robot_specs.BCU_MOTOR_MAX_RPM
-    # min_rpm / min_operating_rpm are control-tuning knobs (the pump deadband
-    # the depth loop snaps RPM commands through), not hardware mirrors — they
-    # intentionally diverge from BCU_MOTOR_MIN_RPM, so they're not asserted here.
+def test_control_pump_rpm_mirrors_robot_specs(nominal_scenario_path):
+    depth = load_scenario(nominal_scenario_path).control.controllers.depth
+    # The bang-bang command magnitude at nominal IS the hardware ceiling:
+    # full authority is the point of the law. A sweep may lower it to model
+    # a weaker pump, which is why it lives on the spec and not in
+    # robot_specs — but nominal must not drift off the hardware value.
+    assert depth.pump_rpm == robot_specs.BCU_MOTOR_MAX_RPM
+    # deadband_pa / tank_stop_band are control-tuning knobs with no
+    # robot_specs counterpart, so they're not asserted here.
 
 
 def test_acu_roll_output_limits_mirror_robot_specs(nominal_scenario_path):

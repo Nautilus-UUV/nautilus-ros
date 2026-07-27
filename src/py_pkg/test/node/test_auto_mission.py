@@ -128,7 +128,6 @@ def test_endpoints_publish_one_latched_dive_init_before_path(am_harness, monkeyp
         monkeypatch,
         dive_init_tank_empty_pa=97_800.0,
         dive_init_tank_full_pa=190_000.0,
-        dwell_s=7.0,
         n_steps=4,
         mission_id=1,
         target_pressure_pa=60_000.0,
@@ -156,8 +155,8 @@ def test_endpoints_publish_one_latched_dive_init_before_path(am_harness, monkeyp
 
     assert len(sub.missions) == 1, "exactly one latched MissionCommand expected"
     cmd = sub.missions[0]
-    assert cmd.dwell_s == pytest.approx(7.0)
     assert cmd.n_steps == 4
+    assert cmd.target_pressure_pa == pytest.approx(60_000.0)
 
 
 def test_wait_for_sim_ready_holds_mission_until_ready(am_harness, monkeypatch):

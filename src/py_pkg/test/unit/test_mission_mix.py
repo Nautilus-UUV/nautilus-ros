@@ -32,33 +32,18 @@ from py_pkg.scenarios.mission_mix import (
 def _mix_dict() -> dict:
     return {
         "weights": {
-            "sawtooth_plain": 0.25,
-            "sawtooth_dwell": 0.30,
-            "staircase": 0.25,
-            "station_keep": 0.20,
+            "sawtooth_plain": 0.55,
+            "staircase": 0.45,
         },
         "sawtooth_plain": {
             "mission_id": 1,
             "target_pressure_pa": {"low": 49030.0, "high": 98060.0},
             "n_oscillations": {"low": 2, "high": 5, "integer": True},
         },
-        "sawtooth_dwell": {
-            "mission_id": 1,
-            "target_pressure_pa": {"low": 49030.0, "high": 98060.0},
-            "n_oscillations": {"low": 2, "high": 4, "integer": True},
-            "dwell_s": {"low": 20.0, "high": 60.0},
-        },
         "staircase": {
-            "mission_id": 2,
+            "mission_id": 3,
             "target_pressure_pa": {"low": 58836.0, "high": 98060.0},
             "n_steps": {"low": 3, "high": 6, "integer": True},
-            "dwell_s": {"low": 30.0, "high": 90.0},
-        },
-        "station_keep": {
-            "mission_id": 3,
-            "target_pressure_pa": {"low": 49030.0, "high": 78448.0},
-            "n_oscillations": {"low": 1, "high": 2, "integer": True},
-            "dwell_s": 300.0,
         },
     }
 
@@ -78,25 +63,11 @@ _EXPECTED_KEYS = {
         "mission.mission_id",
         "mission.target_pressure_pa",
         "mission.n_oscillations",
-        "mission.dwell_s",
-    },
-    "sawtooth_dwell": {
-        "mission.mission_id",
-        "mission.target_pressure_pa",
-        "mission.n_oscillations",
-        "mission.dwell_s",
     },
     "staircase": {
         "mission.mission_id",
         "mission.target_pressure_pa",
         "mission.n_steps",
-        "mission.dwell_s",
-    },
-    "station_keep": {
-        "mission.mission_id",
-        "mission.target_pressure_pa",
-        "mission.n_oscillations",
-        "mission.dwell_s",
     },
 }
 
@@ -108,14 +79,7 @@ _EXPECTED_KEYS = {
 
 def test_mix_validation_rejects_bad_configs():
     with pytest.raises(ValueError, match="sum"):
-        _mix(
-            weights={
-                "sawtooth_plain": 0.5,
-                "sawtooth_dwell": 0.3,
-                "staircase": 0.3,
-                "station_keep": 0.2,
-            }
-        )
+        _mix(weights={"sawtooth_plain": 0.5, "staircase": 0.3})
     with pytest.raises(ValueError, match="unknown"):
         _mix(weights={"sawtooth_plain": 0.5, "loiter": 0.5})
     with pytest.raises(ValueError, match="config block"):
@@ -125,6 +89,15 @@ def test_mix_validation_rejects_bad_configs():
                 "sawtooth_plain": _mix_dict()["sawtooth_plain"],
             }
         )
+
+
+def test_dwell_is_no_longer_a_mission_knob():
+    # The bang-bang BCU has no hold, so a leftover `dwell_s:` in an old
+    # sweep spec must fail loudly at load rather than be silently ignored.
+    stale = _mix_dict()
+    stale["staircase"]["dwell_s"] = {"low": 30.0, "high": 90.0}
+    with pytest.raises(ValueError, match="dwell_s"):
+        MissionMixSpec.model_validate(stale)
 
 
 def test_profile_spec_needs_exactly_one_leg_count():
@@ -165,49 +138,28 @@ def test_band_semantics():
 
 
 def test_profile_counts_exact_1024_and_32():
-    # Largest remainder by hand at n=1024: quotas 256.0/307.2/256.0/204.8
-    # floor to 256/307/256/204 (sum 1023); the one leftover goes to the
-    # largest remainder, station_keep (0.8).
+    # Largest remainder by hand at n=1024: quotas 563.2/460.8 floor to
+    # 563/460 (sum 1023); the one leftover goes to the largest remainder,
+    # staircase (0.8).
     assert profile_counts(MIX, 1024) == {
-        "sawtooth_plain": 256,
-        "sawtooth_dwell": 307,
-        "staircase": 256,
-        "station_keep": 205,
+        "sawtooth_plain": 563,
+        "staircase": 461,
     }
-    # Truncated n=32: quotas 8.0/9.6/8.0/6.4 floor to 8/9/8/6 (sum 31);
-    # the leftover goes to sawtooth_dwell (0.6).
+    # Truncated n=32: quotas 17.6/14.4 floor to 17/14 (sum 31); the
+    # leftover goes to sawtooth_plain (0.6).
     assert profile_counts(MIX, 32) == {
-        "sawtooth_plain": 8,
-        "sawtooth_dwell": 10,
-        "staircase": 8,
-        "station_keep": 6,
+        "sawtooth_plain": 18,
+        "staircase": 14,
     }
 
 
 def test_profile_tuple_order_is_load_bearing():
-    # Equal weights, n=2: every remainder ties at 0.5, so the two
-    # leftovers land on the FIRST two profiles of MISSION_PROFILES —
-    # sawtooth_plain takes the tie (anomaly.py gives nominal this role).
-    equal = _mix(
-        weights={
-            "sawtooth_plain": 0.25,
-            "sawtooth_dwell": 0.25,
-            "staircase": 0.25,
-            "station_keep": 0.25,
-        }
-    )
-    assert profile_counts(equal, 2) == {
-        "sawtooth_plain": 1,
-        "sawtooth_dwell": 1,
-        "staircase": 0,
-        "station_keep": 0,
-    }
-    assert MISSION_PROFILES == (
-        "sawtooth_plain",
-        "sawtooth_dwell",
-        "staircase",
-        "station_keep",
-    )
+    # Equal weights, n=1: both remainders tie at 0.5, so the leftover
+    # lands on the FIRST profile of MISSION_PROFILES — sawtooth_plain
+    # takes the tie (anomaly.py gives nominal this role).
+    equal = _mix(weights={"sawtooth_plain": 0.5, "staircase": 0.5})
+    assert profile_counts(equal, 1) == {"sawtooth_plain": 1, "staircase": 0}
+    assert MISSION_PROFILES == ("sawtooth_plain", "staircase")
 
 
 @pytest.mark.parametrize("n", [1, 3, 7, 100, 256, 1023])
@@ -233,14 +185,13 @@ def test_assign_profiles_is_a_seeded_permutation_of_the_counts():
 
 
 def test_draw_mission_deterministic_per_run():
-    a = draw_mission(MIX, 813, 42, "sawtooth_dwell")
-    b = draw_mission(MIX, 813, 42, "sawtooth_dwell")
-    c = draw_mission(MIX, 813, 43, "sawtooth_dwell")
+    a = draw_mission(MIX, 813, 42, "sawtooth_plain")
+    b = draw_mission(MIX, 813, 42, "sawtooth_plain")
+    c = draw_mission(MIX, 813, 43, "sawtooth_plain")
     assert a == b
     assert a.values != c.values  # per-run stream
     assert 49030.0 <= a.values["mission.target_pressure_pa"] <= 98060.0
-    assert a.values["mission.n_oscillations"] in (2, 3)
-    assert 20.0 <= a.values["mission.dwell_s"] <= 60.0
+    assert a.values["mission.n_oscillations"] in (2, 3, 4)
 
 
 def test_draw_mission_rejects_unknown_or_blockless_profiles():
@@ -262,14 +213,9 @@ def test_emitted_values_are_exactly_the_flat_mission_keys():
             assert all(k.startswith("mission.") for k in a.values)
             assert isinstance(a.values["mission.mission_id"], int)
             assert isinstance(a.values["mission.target_pressure_pa"], float)
-            assert isinstance(a.values["mission.dwell_s"], float)
-    # Fixed identifiers pass through undrawn; fixed scalar dwell too.
-    keep = draw_mission(MIX, 813, 3, "station_keep")
-    assert keep.values["mission.mission_id"] == 3
-    assert keep.values["mission.dwell_s"] == 300.0
-    assert keep.values["mission.n_oscillations"] == 1  # [1, 2) floors to 1
+    # Fixed identifiers pass through undrawn.
     stairs = draw_mission(MIX, 813, 3, "staircase")
-    assert stairs.values["mission.mission_id"] == 2
+    assert stairs.values["mission.mission_id"] == 3
     assert stairs.values["mission.n_steps"] in (3, 4, 5)
 
 
@@ -282,27 +228,25 @@ def test_record_carries_profile_and_values():
 
 def test_band_edits_do_not_reshuffle_or_leak_across_profiles():
     edited = _mix_dict()
-    edited["sawtooth_dwell"]["dwell_s"] = {"low": 111.0, "high": 222.0}
+    edited["staircase"]["n_steps"] = {"low": 2, "high": 3, "integer": True}
     mix_b = MissionMixSpec.model_validate(edited)
 
     # Same weights -> identical stratified assignment.
     assert assign_profiles(MIX, 813, 1024) == assign_profiles(mix_b, 813, 1024)
-    # Other profiles' draws are untouched by a sawtooth_dwell band edit.
     for idx in (3, 57, 200):
-        for profile in ("sawtooth_plain", "staircase", "station_keep"):
-            assert draw_mission(MIX, 813, idx, profile) == draw_mission(
-                mix_b, 813, idx, profile
-            )
-        # Fixed draw order: the edited dwell band draws LAST, so the
-        # edited profile's own earlier draws don't move either.
-        a = draw_mission(MIX, 813, idx, "sawtooth_dwell")
-        b = draw_mission(mix_b, 813, idx, "sawtooth_dwell")
+        # The other profile's draws are untouched by a staircase band edit.
+        assert draw_mission(MIX, 813, idx, "sawtooth_plain") == draw_mission(
+            mix_b, 813, idx, "sawtooth_plain"
+        )
+        # Fixed draw order: target pressure draws FIRST, so the edited
+        # profile's own earlier draw doesn't move either.
+        a = draw_mission(MIX, 813, idx, "staircase")
+        b = draw_mission(mix_b, 813, idx, "staircase")
         assert (
             a.values["mission.target_pressure_pa"]
             == b.values["mission.target_pressure_pa"]
         )
-        assert a.values["mission.n_oscillations"] == b.values["mission.n_oscillations"]
-        assert 111.0 <= b.values["mission.dwell_s"] <= 222.0
+        assert b.values["mission.n_steps"] == 2
 
 
 # ---------------------------------------------------------------------------
@@ -312,36 +256,26 @@ def test_band_edits_do_not_reshuffle_or_leak_across_profiles():
 
 def test_expected_duration_arithmetic():
     round_trip_per_m = 1.0 / OPTIMISTIC_DESCENT_MPS + 1.0 / OPTIMISTIC_ASCENT_MPS
-    # Sawtooth: 98060 Pa = 10 m, 3 oscillations, no dwell.
+    # Sawtooth: 98060 Pa = 10 m, 3 oscillations.
     sawtooth = {
         "mission.mission_id": 1,
         "mission.target_pressure_pa": 98060.0,
         "mission.n_oscillations": 3,
-        "mission.dwell_s": 0.0,
     }
     assert expected_mission_duration_s(sawtooth) == pytest.approx(
         3 * 10.0 * round_trip_per_m
     )
-    # Staircase: 49030 Pa = 5 m, one round trip, 4 dwells of 60 s.
+    # Staircase: 49030 Pa = 5 m; ONE round trip however many steps it
+    # descends through, matching run_sweep.py's timeout budget.
     staircase = {
-        "mission.mission_id": 2,
+        "mission.mission_id": 3,
         "mission.target_pressure_pa": 49030.0,
         "mission.n_steps": 4,
-        "mission.dwell_s": 60.0,
     }
     assert expected_mission_duration_s(staircase) == pytest.approx(
-        5.0 * round_trip_per_m + 4 * 60.0
+        5.0 * round_trip_per_m
     )
-    # Dwell sawtooth: n_dwells falls back to n_oscillations.
-    dwell = {
-        "mission.target_pressure_pa": 98060.0,
-        "mission.n_oscillations": 2,
-        "mission.dwell_s": 30.0,
-    }
-    assert expected_mission_duration_s(dwell) == pytest.approx(
-        2 * 10.0 * round_trip_per_m + 2 * 30.0
-    )
-    # Bare target: one round trip, one (zero-length) dwell.
+    # Bare target: one round trip.
     assert expected_mission_duration_s(
         {"mission.target_pressure_pa": 98060.0}
     ) == pytest.approx(10.0 * round_trip_per_m)

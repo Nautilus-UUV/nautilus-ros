@@ -44,7 +44,6 @@ from launch import LaunchDescription
 from launch.actions import IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.substitutions import FindPackageShare
-from nautilus_msgs.msg import MissionCommand
 from py_pkg.path.missions.factory import MissionId
 from py_pkg.physics import gauge_pressure_pa
 from py_pkg.scenarios.spec.rig import HydrodynamicsSpec
@@ -60,6 +59,7 @@ from std_msgs.msg import Bool, Int32
 
 from ._sim_helpers import (
     SIM_PA_PER_M,
+    mission_command,
     reap_lingering_gz,
     sim_gui_enabled,
     spin_for,
@@ -254,12 +254,15 @@ class _LakeVelocityDriver(Node):
             tracker.add(t, int(msg.data))
 
     def publish_mission(self) -> None:
-        cmd = MissionCommand()
-        cmd.mission_id = int(MissionId.SAWTOOTH)
-        cmd.target_pressure_pa = float(TARGET_PRESSURE_PA)
-        cmd.angle_rad = float(PITCH_RAD)
-        cmd.n_resurfaces = int(N_RESURFACES)
-        self.path_pub.publish(cmd)
+        # shallow_pressure_pa left at 0.0: climb to the surface each dive.
+        self.path_pub.publish(
+            mission_command(
+                MissionId.SAWTOOTH,
+                target_pressure_pa=TARGET_PRESSURE_PA,
+                angle_rad=PITCH_RAD,
+                n_resurfaces=N_RESURFACES,
+            )
+        )
 
     def publish_start(self) -> None:
         self.command_pub.publish(Bool(data=True))

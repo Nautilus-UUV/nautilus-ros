@@ -1,9 +1,10 @@
 """Tier 1 unit tests for TrimAndNeutralBuoyancyMission.
 
-Pure logic — no rclpy, no executor, no sim. Pins the open-loop hold
-contract: x/y from the start-time pose, z = `target_pressure_pa`,
-identity orientation, never-done. The cascaded depth controller and the
-ACU drive the actual hold; the mission only emits the constant setpoint.
+Pure logic — no rclpy, no executor, no sim. Pins the setpoint contract
+(x/y from the start-time pose, z = `target_pressure_pa`, identity
+orientation) and the arrival-based completion. The BCU and the ACU drive
+the descent; the mission only emits the constant setpoint and watches
+for arrival.
 """
 
 import math
@@ -12,7 +13,28 @@ import pytest
 from geometry_msgs.msg import Pose
 
 from py_pkg.path.missions.profile import MissionState
-from py_pkg.path.missions.trim_and_neutral import TrimAndNeutralBuoyancyMission
+from py_pkg.path.missions.trim_and_neutral import (
+    NEAR_GOAL_PA,
+    TrimAndNeutralBuoyancyMission,
+)
+
+
+def _drive(m, samples):
+    """Replay the executor loop -- update(pressure) then is_done(t) per tick.
+
+    Returns the first mission_t at which is_done latches True, else None.
+    """
+    for t, p in samples:
+        m.update(p)
+        if m.is_done(t):
+            return t
+    return None
+
+
+def _series(value_fn, duration_s, dt=0.1):
+    """(t, pressure) samples over [0, duration_s) at dt spacing."""
+    n = int(duration_s / dt)
+    return [(i * dt, value_fn(i)) for i in range(n)]
 
 
 def _pose(x=0.0, y=0.0, z=0.0):
@@ -44,7 +66,11 @@ class TestStartCapturesHorizontalPosition:
 
     def test_pose_xy_captured(self):
         m = TrimAndNeutralBuoyancyMission()
-        m.start(MissionState(pose=_pose(x=10.0, y=-5.0, z=99.0), target_pressure_pa=80_000.0))
+        m.start(
+            MissionState(
+                pose=_pose(x=10.0, y=-5.0, z=99.0), target_pressure_pa=80_000.0
+            )
+        )
         ref = m.reference(0.0)
         assert ref.position.x == pytest.approx(10.0)
         assert ref.position.y == pytest.approx(-5.0)
@@ -84,9 +110,9 @@ class TestOrientationIsIdentity:
         assert norm == pytest.approx(1.0)
 
 
-class TestUpdateIsNoop:
-    """Open-loop hold: `update` never mutates state, so `reference` must
-    return the same Pose regardless of pressure samples in between."""
+class TestUpdateDoesNotChangeSetpoint:
+    """`update` feeds the arrival check but never moves the reference: the
+    setpoint stays put regardless of the pressure samples in between."""
 
     def test_pressure_samples_do_not_change_setpoint(self):
         m = TrimAndNeutralBuoyancyMission()
@@ -113,20 +139,55 @@ class TestReferenceIsTimeInvariant:
             assert ref.orientation.w == pytest.approx(1.0)
 
 
-class TestNeverDone:
-    """The mission ends only on operator stop/abort — `is_done` is
-    permanently False so the executor never auto-terminates the hold."""
+class TestArrivalTermination:
+    """The mission ends on arrival: within NEAR_GOAL_PA of the target.
 
-    def test_is_done_false_at_t_zero(self):
+    There is no settling condition. The bang-bang BCU has no idle
+    equilibrium to converge to -- the bladder sits at a tank rail for the
+    whole descent and the vehicle coasts through the target -- so a
+    peak-to-peak "has it gone quiet" test could never latch.
+    """
+
+    TARGET = 75_000.0
+
+    def _mission(self):
         m = TrimAndNeutralBuoyancyMission()
-        m.start(MissionState(target_pressure_pa=80_000.0))
+        m.start(MissionState(target_pressure_pa=self.TARGET))
+        return m
+
+    def test_not_done_before_any_pressure(self):
+        # is_done is called by the executor before update only if pressure is
+        # missing; with no sample observed it must stay running.
+        m = self._mission()
         assert m.is_done(0.0) is False
 
-    @pytest.mark.parametrize("t", [0.0, 60.0, 3600.0, 86_400.0, 1e9])
-    def test_is_done_false_for_all_t(self, t):
-        m = TrimAndNeutralBuoyancyMission()
-        m.start(MissionState(target_pressure_pa=80_000.0))
-        assert m.is_done(t) is False
+    def test_done_on_arrival(self):
+        m = self._mission()
+        done_t = _drive(m, _series(lambda i: self.TARGET, 2.0))
+        assert done_t == pytest.approx(0.0)  # the very first sample arrives
+
+    def test_done_anywhere_inside_the_band(self):
+        for offset in (-NEAR_GOAL_PA, -1.0, 0.0, 1.0, NEAR_GOAL_PA):
+            m = self._mission()
+            m.update(self.TARGET + offset)
+            assert m.is_done(0.0) is True
+
+    def test_still_running_outside_the_band(self):
+        for offset in (-2.0 * NEAR_GOAL_PA, 2.0 * NEAR_GOAL_PA):
+            m = self._mission()
+            m.update(self.TARGET + offset)
+            assert m.is_done(0.0) is False
+
+    def test_descent_completes_on_the_tick_it_enters_the_band(self):
+        # A coasting descent from the surface: still running for every
+        # sample above the band, done on the first one inside it.
+        m = self._mission()
+        approach = [
+            (i * 0.1, self.TARGET - 5.0 * NEAR_GOAL_PA + i * NEAR_GOAL_PA)
+            for i in range(6)
+        ]
+        done_t = _drive(m, approach)
+        assert done_t == pytest.approx(0.4)  # offset -NEAR_GOAL_PA
 
 
 class TestRestartUpdatesSetpoint:

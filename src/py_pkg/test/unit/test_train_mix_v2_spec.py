@@ -15,44 +15,19 @@ through scripts/lhs_sample.py itself.
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import pytest
 import yaml
 from py_pkg.scenarios.anomaly import AnomalyMixSpec, class_counts
 from py_pkg.scenarios.mission_mix import MissionMixSpec, profile_counts
 
-_SCRIPTS_DIR = Path(__file__).resolve().parents[4] / "scripts"
-_V2_PATH = _SCRIPTS_DIR / "sweeps" / "train_validation_mix_v2.yaml"
-_V1_PATH = _SCRIPTS_DIR / "sweeps" / "train_validation_mix_v1.yaml"
-for _p in (_V2_PATH, _V1_PATH):
-    if not _p.is_file():  # pragma: no cover — repo-layout guard
-        pytest.skip(f"sweep spec not found at {_p}", allow_module_level=True)
+from _sweep_specs import lhs_sample, load_sweep_spec, needs_scripts, run_sweep
 
-_V2 = yaml.safe_load(_V2_PATH.read_text())
-_V1 = yaml.safe_load(_V1_PATH.read_text())
+_V2_PATH, _V2 = load_sweep_spec("train_validation_mix_v2.yaml")
+_, _V1 = load_sweep_spec("train_validation_mix_v1.yaml")
 MIX = AnomalyMixSpec.model_validate(_V2["anomaly_mix"])
 MISSION = MissionMixSpec.model_validate(_V2["mission_mix"])
 DIMS = {d["path"]: d for d in _V2["dimensions"]}
 V1_DIMS = {d["path"]: d for d in _V1["dimensions"]}
-
-# The sweep scripts are plain modules two dirs above py_pkg, not a
-# package — import them the way run_sweep imports its own siblings.
-sys.path.insert(0, str(_SCRIPTS_DIR))
-try:
-    import lhs_sample  # noqa: E402
-    import run_sweep  # noqa: E402
-
-    _SCRIPTS_IMPORT_ERROR = None
-except ImportError as exc:  # pragma: no cover — apt python3 ships numpy/scipy
-    lhs_sample = run_sweep = None
-    _SCRIPTS_IMPORT_ERROR = exc
-
-needs_scripts = pytest.mark.skipif(
-    _SCRIPTS_IMPORT_ERROR is not None,
-    reason=f"scripts import failed (numpy/scipy missing?): {_SCRIPTS_IMPORT_ERROR}",
-)
 
 
 # ---------------------------------------------------------------------------
@@ -122,13 +97,11 @@ def test_anomaly_weights_and_stratified_counts_at_1024():
 
 def test_mission_mix_weights_and_profile_counts_at_1024():
     assert sum(MISSION.weights.values()) == pytest.approx(1.0)
-    # 0.30 x 1024 = 307.2 and 0.20 x 1024 = 204.8: station_keep's 0.8
+    # 0.55 x 1024 = 563.2 and 0.45 x 1024 = 460.8: staircase's 0.8
     # remainder takes the leftover run.
     assert profile_counts(MISSION, int(_V2["n_samples"])) == {
-        "sawtooth_plain": 256,
-        "sawtooth_dwell": 307,
-        "staircase": 256,
-        "station_keep": 205,
+        "sawtooth_plain": 563,
+        "staircase": 461,
     }
 
 
@@ -181,9 +154,9 @@ def test_pump_overshoot_dim_spans_zero_to_the_lake_anchor_margin():
 
 @needs_scripts
 def test_worst_corner_fits_the_recommended_timeout():
-    # The deepest dwelled sawtooth (40 m, 2 cycles, 600 s dwells) must
-    # fit the header's recommended --per-run-timeout of 18000 s.
-    worst = {"target_pressure_pa": 392240.0, "n_oscillations": 2, "dwell_s": 600.0}
+    # The deepest sawtooth (40 m, 2 cycles) must fit the header's
+    # recommended --per-run-timeout of 18000 s.
+    worst = {"target_pressure_pa": 392240.0, "n_oscillations": 2}
     assert run_sweep._scaled_timeout(worst, None) <= 18000.0
 
 

@@ -43,9 +43,8 @@ from launch import LaunchDescription
 from launch.actions import IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.substitutions import FindPackageShare
-from nautilus_msgs.msg import MissionCommand
 from py_pkg.path.missions.factory import MissionId
-from py_pkg.path.missions.sawtooth import DESCEND_TOLERANCE_PA
+from py_pkg.path.missions.profile import DESCEND_TOLERANCE_PA
 from py_pkg.physics import ATMOSPHERIC_PRESSURE_PA
 from py_pkg.scenarios.loader import load_scenario
 
@@ -63,7 +62,13 @@ from rclpy.node import Node
 from sensor_msgs.msg import Imu
 from std_msgs.msg import Bool
 
-from ._sim_helpers import reap_lingering_gz, sim_gui_enabled, spin_for, spin_until
+from ._sim_helpers import (
+    mission_command,
+    reap_lingering_gz,
+    sim_gui_enabled,
+    spin_for,
+    spin_until,
+)
 
 # Short sawtooth: spawn at z=-5 m (~50 kPa gauge) → dive to ~6 m
 # (~60 kPa) → return to surface. About 1 m of glide each leg, a tiny
@@ -72,7 +77,7 @@ from ._sim_helpers import reap_lingering_gz, sim_gui_enabled, spin_for, spin_unt
 # the wall budget even with the high-drag plant pushing settling time up.
 TARGET_PRESSURE_PA = 60000.0
 PITCH_RAD = math.radians(20.0)
-N_RESURFACES = 1
+N_OSCILLATIONS = 1
 
 _SCENARIO_DIR = os.path.join(os.path.dirname(__file__), "scenarios")
 _SCENARIO_YAMLS = (
@@ -169,12 +174,15 @@ class _SawtoothSamplingDriver(Node):
         self.pressure_samples.append((time.monotonic(), float(msg.data)))
 
     def publish_mission(self) -> None:
-        cmd = MissionCommand()
-        cmd.mission_id = int(MissionId.SAWTOOTH)
-        cmd.target_pressure_pa = float(TARGET_PRESSURE_PA)
-        cmd.angle_rad = float(PITCH_RAD)
-        cmd.n_resurfaces = int(N_RESURFACES)
-        self.path_pub.publish(cmd)
+        # shallow_pressure_pa left at 0.0: climb to the surface each dive.
+        self.path_pub.publish(
+            mission_command(
+                MissionId.SAWTOOTH,
+                target_pressure_pa=TARGET_PRESSURE_PA,
+                angle_rad=PITCH_RAD,
+                n_resurfaces=N_OSCILLATIONS,
+            )
+        )
 
     def publish_start(self) -> None:
         msg = Bool()

@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 from py_pkg.scenarios import derive_seed, load_scenario
+from py_pkg.scenarios.compile import params_for_bcu_node
 from py_pkg.scenarios.spec.control import ControlScenario
 from py_pkg.scenarios.spec.rig import RigScenario
 
@@ -40,6 +41,54 @@ def test_unknown_nested_key_raises():
     p = _write_yaml("control:\n  controllers:\n    depth:\n      typo_field: 1\n")
     with pytest.raises(ValueError, match="typo_field"):
         load_scenario(p)
+
+
+def test_retired_pid_fields_are_rejected_not_ignored():
+    # The depth loop is bang-bang: it has no gains, no plant model, and no
+    # anti-chatter gate. A scenario still carrying those blocks is stale,
+    # and StrictModel must say so at load rather than silently running with
+    # a controller that ignores them.
+    for stale in (
+        "      pid_pressure:\n        kp: 4.0e-7\n",
+        "      plant_model:\n        min_rpm: 500\n",
+        "      error_arm_pa: 1500.0\n",
+        "      min_valve_dwell_s: 0.5\n",
+        "      trim_pulse_period_s: 4.0\n",
+        "      tank_release_band: 0.12\n",
+    ):
+        p = _write_yaml("control:\n  controllers:\n    depth:\n" + stale)
+        with pytest.raises(ValueError):
+            load_scenario(p)
+
+
+def test_bang_bang_bounds_are_validated_at_load():
+    for bad, needle in (
+        ("      pump_rpm: 0\n", "pump_rpm"),
+        ("      deadband_pa: -1.0\n", "deadband_pa"),
+        ("      tank_stop_band: 0.5\n", "tank_stop_band"),
+        ("      tank_stop_band: -0.01\n", "tank_stop_band"),
+    ):
+        p = _write_yaml("control:\n  controllers:\n    depth:\n" + bad)
+        with pytest.raises(ValueError, match=needle):
+            load_scenario(p)
+
+
+def test_bcu_params_are_exactly_the_four_bang_bang_knobs():
+    # Forward half of the param mapping (the inverse half,
+    # bcu_spec_from_node, is exercised by the Tier 2 node construction
+    # test). The exact-set assertion is the point: a leftover PID key here
+    # would be silently declared on the node and never read.
+    params = params_for_bcu_node(ControlScenario())
+    d = ControlScenario().controllers.depth
+    assert set(params) == {
+        "frequency_hz",
+        "pump_rpm",
+        "deadband_pa",
+        "tank_stop_band",
+    }
+    assert params["pump_rpm"] == d.pump_rpm
+    assert params["deadband_pa"] == d.deadband_pa
+    assert params["tank_stop_band"] == d.tank_stop_band
 
 
 def test_derive_seed_is_deterministic_and_varies():

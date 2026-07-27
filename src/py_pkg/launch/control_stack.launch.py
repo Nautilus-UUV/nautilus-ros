@@ -37,8 +37,11 @@ Composition (inputs -> outputs):
                                             gated by enable_can_com:= launch arg)
 
 There is no manual-override flag. A controller drives its actuator only while
-it has an active mission target; on /command=false it emits one safe-stop and
-goes silent, freeing the wire for a debug node. The operator's red Reset button
+it has an active mission target, and two events end that: the operator's
+/command=false, and pathfinding's /mission/complete when the mission finishes
+on its own. Either one makes the controller emit one safe-stop and go silent,
+freeing the wire for a debug node. They stay separate topics so "aborted" and
+"finished" remain distinguishable downstream. The operator's red Reset button
 publishes /debug/reset to all-stop the debug nodes.
 """
 
@@ -67,6 +70,7 @@ def _wire_control_stack(context, *_args, **_kwargs):
     from py_pkg.scenarios.compile import (
         params_for_acu_node,
         params_for_bcu_node,
+        params_for_imu_prefilter,
     )
     from py_pkg.scenarios.loader import load_scenario
 
@@ -82,6 +86,7 @@ def _wire_control_stack(context, *_args, **_kwargs):
             executable="imu_prefilter",
             name="imu_prefilter",
             output="screen",
+            parameters=[params_for_imu_prefilter(control)],
         ),
         Node(
             package="py_pkg",

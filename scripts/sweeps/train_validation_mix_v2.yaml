@@ -4,12 +4,14 @@
 # What changed vs train_validation_mix_v1 (and why):
 #
 #   - Mission shape is SAMPLED per run (`mission_mix:` below): plain
-#     2-cycle sawtooths (v1 continuity), sawtooth-with-dwell, staircase
-#     ladders, and station-keeps. Dwell plus the now-armed tank-limit
-#     clamp (the launch passes scenario:= into mission_autostart, so a
-#     DiveInit arms bcu_node's clamp exactly like the operator UI does
-#     on hardware) sweeps the pump duty cycle: v1's nominal runs railed
-#     ~92% / idled ~2% in-dive while the real glider idles ~62%.
+#     2-cycle sawtooths (v1 continuity) and staircase ladders. The
+#     now-armed tank-limit clamp (the launch passes scenario:= into
+#     mission_autostart, so a DiveInit arms bcu_node's clamp exactly
+#     like the operator UI does on hardware) sweeps the pump duty
+#     cycle: v1's nominal runs railed ~92% / idled ~2% in-dive while
+#     the real glider idles ~62%. NOTE: authored against the depth PID
+#     — the bang-bang BCU changes the duty cycle wholesale, so these
+#     numbers need re-measuring before this spec is trusted again.
 #     Acceptance gate: the per-run in-dive idle distribution must cover
 #     [0.40, 0.80] (scripts/run_gates.py, Gate A).
 #   - bcu_pump severities STRADDLE the nominal envelope instead of the
@@ -52,8 +54,8 @@
 #
 # Timeout: a rarely-binding hang fallback, not the expected run length —
 # watchdog:=true ends every run at mission completion (or aborts
-# floaters ~130 s / stalled sinkers ~dwell+240 s in). The worst corner
-# (40 m, 2 dwelled cycles, armed-clamp ascent budgeted at 0.012 m/s)
+# floaters ~130 s / stalled sinkers ~240 s in). The worst corner
+# (40 m, 2 cycles, armed-clamp ascent budgeted at 0.012 m/s)
 # computes to ~16.9 ks under run_sweep's scaled-budget formula; 18000
 # covers it. run_sweep now REFUSES a cap below any run's scaled budget
 # (the first campaign drop ran at 1800 s and killed every long mission
@@ -74,7 +76,7 @@
 
 description: >
   Train and validation mix v2: 1024 dives with per-run mission-profile
-  sampling (plain/dwelled sawtooth, staircase, station-keep; depth
+  sampling (sawtooth, staircase; depth
   3-40 m), armed tank-limit clamp, pinned gas-law tank map, sampled
   pump overshoot, and the stratified 85/5/5/5 per-run anomaly mix —
   persistent bcu_pump / sensor / biofouling faults whose severities
@@ -99,33 +101,21 @@ buoyancy_derivation:
 # machinery as anomaly_mix, so editing a band here never reshuffles the
 # physics draws). Values ride manifest.json as mission.* launch args.
 mission_mix:
-  weights: {sawtooth_plain: 0.25, sawtooth_dwell: 0.30, staircase: 0.25, station_keep: 0.20}
+  # sawtooth_dwell / station_keep are gone: the bang-bang BCU has no hold,
+  # so both collapsed exactly onto the two profiles below. Reweighted to
+  # keep sawtooth the majority stratum, as it was across v1/v2.
+  weights: {sawtooth_plain: 0.55, staircase: 0.45}
 
   sawtooth_plain:                  # v1-continuity stratum: byte-identical
     mission_id: 1                  # mission semantics to the v1 campaign
     target_pressure_pa: {low: 29418.0, high: 392240.0}    # 3-40 m
     n_oscillations: {low: 2, high: 3, integer: true}      # pinned 2
-    dwell_s: 0.0
-
-  sawtooth_dwell:
-    mission_id: 1
-    # 5 m floor: a dwell needs a deep extremum clear of the surface band.
-    target_pressure_pa: {low: 49030.0, high: 392240.0}    # 5-40 m
-    n_oscillations: {low: 1, high: 3, integer: true}      # {1, 2}
-    dwell_s: {low: 120.0, high: 600.0}
 
   staircase:
     mission_id: 3
     # 6 m floor: >= ~3 m per step at the shallowest 2-step draw.
     target_pressure_pa: {low: 58836.0, high: 392240.0}    # 6-40 m deepest step
     n_steps: {low: 2, high: 6, integer: true}             # {2..5}
-    dwell_s: {low: 60.0, high: 300.0}                     # per step
-
-  station_keep:
-    mission_id: 3                  # STAIRCASE with n_steps=1 IS
-    n_steps: {low: 1, high: 2, integer: true}             # dive-hold-surface
-    target_pressure_pa: {low: 49030.0, high: 392240.0}    # 5-40 m
-    dwell_s: {low: 300.0, high: 1200.0}
 
 anomaly_mix:
   # comms dropped (v1: near-chance for all 7 models; missingness does

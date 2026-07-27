@@ -47,10 +47,9 @@ from launch import LaunchDescription
 from launch.actions import IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.substitutions import FindPackageShare
-from nautilus_msgs.msg import MissionCommand
 from nav_msgs.msg import Odometry
 from py_pkg.path.missions.factory import MissionId
-from py_pkg.path.missions.sawtooth import SURFACE_THRESHOLD_PA
+from py_pkg.path.missions.profile import SURFACE_THRESHOLD_PA
 from py_pkg.physics import gauge_pressure_pa
 from py_pkg.uuv_ros_core import (
     UUVTopics,
@@ -63,6 +62,7 @@ from sensor_msgs.msg import Imu
 from std_msgs.msg import Bool, Int32
 
 from ._sim_helpers import (
+    mission_command,
     omega,
     reap_lingering_gz,
     sim_gui_enabled,
@@ -151,13 +151,8 @@ class _SurfaceTestDriver(Node):
         self.odom_samples.append((time.monotonic(), msg))
 
     def publish_mission(self) -> None:
-        cmd = MissionCommand()
-        cmd.mission_id = int(MissionId.SURFACE)
-        # SURFACE has no operator parameters; leave them all at zero.
-        cmd.target_pressure_pa = 0.0
-        cmd.angle_rad = 0.0
-        cmd.n_resurfaces = 0
-        self.path_pub.publish(cmd)
+        # SURFACE has no operator parameters; every field stays at zero.
+        self.path_pub.publish(mission_command(MissionId.SURFACE))
 
     def publish_start(self) -> None:
         msg = Bool()

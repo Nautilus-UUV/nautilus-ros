@@ -42,6 +42,15 @@ stream doesn't multiply what we push back to the STM.
 Until the depth PID has published a single RPM (and the BCU a valve bitmap)
 we send 0 -- safe default: motor off, valves closed, if the STM polls before
 the control stack is up.
+
+On top of the parasitic (inbound-cued) send, a fixed-rate timer (tx_period_s)
+re-ships the cached setpoints as an independent heartbeat, so a stalled STM
+can't leave the last value -- especially a 0 -- stuck undelivered. That same
+timer runs a command-staleness watchdog: if no fresh /bcu/rpm arrives within
+command_timeout_s the actuator fails safe to 0 rpm + valves closed. The STM
+firmware has no staleness watchdog of its own and latches the last setpoint
+forever, so this Pi-side dead-man is what stops a stopped/crashed/silent
+control stack from leaving the pump running.
 """
 
 import struct
@@ -62,7 +71,8 @@ from py_pkg.uuv_ros_core import (
     UUVTopics,
     create_publisher_for_topic,
     create_subscription_for_topic,
-    spin_node
+    now_s,
+    spin_node,
 )
 
 SYNC_BYTE = b"\xaa"
@@ -113,17 +123,33 @@ UINT8_LEN = struct.calcsize(UINT8_FMT)
 class STMComNode(Node):
     """Bridges ``/bcu/rpm`` to the STM32 over UART."""
 
-    def __init__(self) -> None:
-        super().__init__("stm_com")
+    def __init__(self, **kwargs) -> None:
+        # **kwargs forwards rclpy Node options (notably parameter_overrides, how
+        # the Tier-2 harness shortens the heartbeat and dead-man windows).
+        super().__init__("stm_com", **kwargs)
 
         self.declare_parameter("port", "/dev/serial0")
         self.declare_parameter("baud", 115200)
         self.declare_parameter("poll_period_s", 0.01)
+        # Independent downward heartbeat: re-ship the cached setpoints every
+        # tx_period_s regardless of the inbound stream, so a stalled STM (no
+        # frames to cue the parasitic send) can't strand the last value -- in
+        # particular a 0 -- undelivered.
+        self.declare_parameter("tx_period_s", 1.0)
+        # Command-staleness dead-man: if no fresh /bcu/rpm arrives within this
+        # window, fail safe to 0 rpm + valves closed. Fills the "STM has no
+        # staleness watchdog" hole on the Pi side, so a stopped/crashed/silent
+        # control stack can't leave the pump latched on.
+        self.declare_parameter("command_timeout_s", 3.0)
 
         port = self.get_parameter("port").get_parameter_value().string_value
         baud = self.get_parameter("baud").get_parameter_value().integer_value
         poll_period = (
             self.get_parameter("poll_period_s").get_parameter_value().double_value
+        )
+        tx_period = self.get_parameter("tx_period_s").get_parameter_value().double_value
+        self._command_timeout_s = (
+            self.get_parameter("command_timeout_s").get_parameter_value().double_value
         )
 
         # timeout=0 -> non-blocking reads. We drive cadence from the ROS
@@ -140,9 +166,15 @@ class STMComNode(Node):
         # converted to one Imu when GYRO_Z lands.
         self._imu_counts = {var_id: 0 for var_id in IMU_VAR_IDS}
 
+        # Staleness watchdog state: wall time of the last /bcu/rpm command and
+        # whether we're currently failed-safe (so the log fires once per edge).
+        self._last_cmd_t = now_s(self)
+        self._cmd_stale = False
+
         create_subscription_for_topic(self, UUVTopics.BCU_RPM, self._on_rpm)
         create_subscription_for_topic(self, UUVTopics.BCU_VALVES, self._on_valves)
         self.create_timer(poll_period, self._poll_serial)
+        self.create_timer(tx_period, self._tx_tick)
 
         # ==========================
         # --- SENSOR DATA
@@ -179,6 +211,12 @@ class STMComNode(Node):
 
     def _on_rpm(self, msg) -> None:
         self._latest_rpm = int(msg.data)
+        # bcu_node publishes rpm + valves together every tick, so a fresh rpm
+        # is proof the command path is alive -- pet the watchdog off it.
+        self._last_cmd_t = now_s(self)
+        if self._cmd_stale:
+            self._cmd_stale = False
+            self.get_logger().info("/bcu/rpm resumed -- staleness watchdog cleared")
 
     def _on_valves(self, msg) -> None:
         # Mask to a byte like can_com does; the firmware re-applies VALVE_MASK.
@@ -326,12 +364,32 @@ class STMComNode(Node):
         msg = Imu()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = IMU_FRAME_ID
-        msg.linear_acceleration.x, msg.linear_acceleration.y, msg.linear_acceleration.z = accel
+        (
+            msg.linear_acceleration.x,
+            msg.linear_acceleration.y,
+            msg.linear_acceleration.z,
+        ) = accel
         msg.angular_velocity.x, msg.angular_velocity.y, msg.angular_velocity.z = gyro
         # This IMU streams no orientation; the REP-145 / sensor_msgs convention is
         # to flag that with orientation_covariance[0] = -1 so consumers skip it.
         msg.orientation_covariance[0] = -1.0
         self._imu_pub.publish(msg)
+
+    def _tx_tick(self) -> None:
+        # Independent downward heartbeat + staleness dead-man. Runs on its own
+        # timer (not cued by inbound frames), so the cached setpoints keep
+        # going down even if the STM goes quiet, and a silent command path
+        # fails the actuator safe instead of latching the last value.
+        if now_s(self) - self._last_cmd_t > self._command_timeout_s:
+            if not self._cmd_stale:
+                self._cmd_stale = True
+                self.get_logger().warning(
+                    f"no /bcu/rpm for >{self._command_timeout_s:.1f}s -- failing "
+                    "safe: 0 rpm, valves closed"
+                )
+            self._latest_rpm = 0
+            self._latest_valves = 0
+        self._send_setpoints()
 
     def _send_setpoints(self) -> None:
         # The STM treats every frame from us as a cue to latch the latest
