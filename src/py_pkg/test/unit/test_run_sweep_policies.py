@@ -104,6 +104,75 @@ class TestTruncatingCapRuns:
 
 
 @needs_scripts
+class TestRequeueForRetry:
+    """The retry mechanics around the abort_init / probe-failure path.
+
+    v3's interruption at 700/2048 stranded every one of its 189 requeued
+    runs at the back of the queue (all rows attempt=0) — front-of-queue
+    requeue and verdict parking are what make a probe abort a cheap,
+    *diagnosable* retry instead of silent loss.
+    """
+
+    def _runner(self, tmp_path):
+        return run_sweep.SweepRunner(
+            sif=tmp_path / "x.sif",
+            scenarios_dir=tmp_path,
+            sweep_name="sweepy",
+            sim_data_dir=tmp_path / "sim_data",
+            launch_file="sawtooth_sim.launch.py",
+            extra_launch_args=["watchdog:=true"],
+            ros_domain_base=10,
+            record=True,
+            per_run_timeout=None,
+            slots=[run_sweep.Slot(index=0)],
+            queue=[("lhs_0001", tmp_path / "lhs_0001.yaml", 0)],
+        )
+
+    def _failed_slot(self, runner, tmp_path, with_bag=True):
+        slot = runner.slots[0]
+        slot.run_id = "lhs_0000"
+        slot.yaml_path = tmp_path / "lhs_0000.yaml"
+        if with_bag:
+            slot.host_bag_path = runner.sweep_dir / "lhs_0000" / "raw"
+            slot.host_bag_path.mkdir(parents=True)
+            (slot.host_bag_path / "raw_0.mcap").write_text("")
+        return slot
+
+    def test_requeue_goes_to_front_and_parks_verdict(self, tmp_path):
+        runner = self._runner(tmp_path)
+        slot = self._failed_slot(runner, tmp_path)
+        verdict_file = slot.host_bag_path.parent / "run_verdict.json"
+        verdict_file.write_text(
+            '{"verdict": "abort_init", "missing": ["physics:no-hull-response(...)"]}\n'
+        )
+        runner._requeue_for_retry(slot, "abort_init", verdict_file)
+
+        # Front of the queue, attempt bumped — an interrupted campaign has
+        # already executed its retries instead of never reaching them.
+        assert runner.queue[0] == ("lhs_0000", slot.yaml_path, 1)
+        assert runner.queue[1][0] == "lhs_0001"
+        # Bag parked with the verdict riding along; live paths cleared so
+        # the retry cannot be misread.
+        parked = runner.sweep_dir / "lhs_0000" / "raw.failed0"
+        assert (parked / "raw_0.mcap").is_file()
+        assert "abort_init" in (parked / "run_verdict.json").read_text()
+        assert not verdict_file.exists()
+        assert not (runner.sweep_dir / "lhs_0000" / "raw").exists()
+
+    def test_requeue_without_bag_unlinks_verdict(self, tmp_path):
+        runner = self._runner(tmp_path)
+        slot = self._failed_slot(runner, tmp_path, with_bag=False)
+        verdict_file = runner.sweep_dir / "lhs_0000" / "run_verdict.json"
+        verdict_file.parent.mkdir(parents=True)
+        verdict_file.write_text('{"verdict": "abort_floater"}\n')
+        runner._requeue_for_retry(slot, "abort_floater", verdict_file)
+        assert runner.queue[0] == ("lhs_0000", slot.yaml_path, 1)
+        # Nowhere to park it — gone is correct (a stale verdict would be
+        # read as the retry's conclusion).
+        assert not verdict_file.exists()
+
+
+@needs_scripts
 class TestDomainWindow:
     def test_v2_campaign_shape_is_rejected(self):
         # 64 slots at base 50 -> domains 50..113; 102+ map DDS ports into

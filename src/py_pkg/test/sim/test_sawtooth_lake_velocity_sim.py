@@ -10,18 +10,31 @@ measures steady vertical velocity exactly the way the lake analysis
 did: depth from external pressure, median of 5 s regression slopes over
 the bladder-railed portion of each leg.
 
+Samples are timestamped with SIM time (the ground-truth odometry's own
+header stamp, the same source run_watchdog clocks plausibility on), not
+the wall clock: the full stack + Gazebo runs this host at RTF ~0.5-0.7,
+and wall-clock slopes under-read true sim velocities by exactly that
+factor (a 0.121 m/s descent measured 0.077 at RTF 0.63).
+
 Anchors (dive 4, heave_calibration_targets.csv):
   descent: 0.1245 m/s at V_b=0.866e-3   -> assert 0.1245 +/- 0.020
-  ascent:  0.0677 m/s at V_b=2.465e-3   -> assert within [0.030, 0.080]
+  ascent:  0.0677 m/s at V_b=2.465e-3   -> assert 0.0677 +/- 0.020
 
-The ascent band is deliberately wide: real ascents are systematically
-slower than the symmetric fitted drag curve predicts (fit residuals
-+26/28%), and the sim adds extra low-speed damping from the fin
-LiftDrag plugins, so the sim ascends at ~0.04 m/s where the real
-vehicle did 0.068. That asymmetry is the documented fidelity floor of
-the symmetric zW/zWabsW plant model. The curve-consistency assertion
-(each leg's (dV, v) point vs the fitted curve: 15% descent / 25%
-ascent) keeps both legs honest against the calibration itself.
+The ascent band is anchored like the descent since the
+HeaveAugmentPlugin ascent drag relief landed: the symmetric fit
+over-damps ascent (fit residuals +26/28%, sim measured ~0.04 m/s where
+the real vehicle did 0.068), and the plugin retains only
+retain_fraction (nominal 0.66, fitted to the dive-2/4 ascent legs) of
+the heave drag on ascent. The ascent branch of the curve-consistency
+assertion uses the k-scaled curve accordingly; its tolerance stays at
+25% until the pilot quantifies the fin LiftDrag deficit at the new
+~0.067 m/s operating point.
+
+The scenario pins entry.peak_speed_mps to 0.0: this test's measurand is
+the bladder-railed *steady* window, and the entry transient would only
+shorten the railed depth run (faster early descent puts the vehicle
+deeper before the rail engages) without touching the steady speed. The
+transient has its own gate (test_rate_envelope_sim.py).
 
 Marker-gated ``@pytest.mark.sim``; opt in with ``pytest -m sim``.
 ``SIM_GUI=1`` shows the Gazebo GUI.
@@ -30,7 +43,6 @@ Marker-gated ``@pytest.mark.sim``; opt in with ``pytest -m sim``.
 import math
 import os
 import statistics
-import time
 import unittest
 from collections import deque
 
@@ -45,7 +57,11 @@ from launch.actions import IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.substitutions import FindPackageShare
 from py_pkg.path.missions.factory import MissionId
-from py_pkg.physics import gauge_pressure_pa
+from py_pkg.scenarios.buoyancy import (
+    LAKE_FIT_NEUTRAL_VOLUME_M3,
+    LAKE_FIT_RHO_G,
+    terminal_heave_speed_mps,
+)
 from py_pkg.scenarios.spec.rig import HydrodynamicsSpec
 from py_pkg.uuv_ros_core import (
     UUVTopics,
@@ -58,9 +74,10 @@ from sensor_msgs.msg import Imu
 from std_msgs.msg import Bool, Int32
 
 from ._sim_helpers import (
-    SIM_PA_PER_M,
+    SimClock,
     mission_command,
     reap_lingering_gz,
+    sim_depth_m,
     sim_gui_enabled,
     spin_for,
     spin_until,
@@ -68,16 +85,14 @@ from ._sim_helpers import (
 
 # --- Lake anchors (dive 4, config B) --------------------------------------
 # Provenance: UG-anomaly_detection/lake_test_jun24/investigation/
-# heave_calibration_targets.csv + heave_calibration_fit.json.
-V_NEUTRAL_M3 = 2.097481e-3
-# Drag coefficients come from the spec defaults — those ARE the adopted
-# lake fit, and the SDF parity test ties them to the canonical model.sdf
-# — so a re-fit moves this consistency curve automatically.
-DRAG_D1 = -HydrodynamicsSpec().drag_zW
-DRAG_D2 = -HydrodynamicsSpec().drag_zWabsW
-# The fit's own force convention (heave_calibration_targets.py uses
-# rho*g = 1000*9.8) — deliberately not physics.py's 9.806 gradient.
-RHO_G = 1000.0 * 9.8
+# heave_calibration_targets.csv + heave_calibration_fit.json; the fit
+# anchors themselves live in py_pkg.scenarios.buoyancy next to
+# terminal_heave_speed_mps, whose drag coefficients come from the spec
+# defaults — those ARE the adopted lake fit, parity-locked to the
+# canonical model.sdf — so a re-fit moves the consistency curve here
+# automatically. Same for the ascent drag-relief fraction
+# (HeaveAugmentPlugin retains k of the heave drag while ascending).
+ASCENT_RETAIN_K = HydrodynamicsSpec().ascent_relief.retain_fraction
 
 DESCENT_RAIL_M3 = 0.866e-3  # scenario bladder_min_m3
 ASCENT_RAIL_M3 = 2.465e-3  # scenario bladder_max_m3
@@ -85,7 +100,7 @@ DESCENT_RAIL_ML = round(DESCENT_RAIL_M3 * 1e6)
 ASCENT_RAIL_ML = round(ASCENT_RAIL_M3 * 1e6)
 
 DESCENT_V_BAND = (0.1045, 0.1445)  # 0.1245 +/- 0.020 (real steady leg)
-ASCENT_V_BAND = (0.030, 0.080)  # wide: asymmetry fidelity floor, see docstring
+ASCENT_V_BAND = (0.048, 0.088)  # 0.0677 +/- 0.020 (real steady leg, relief on)
 DESCENT_CURVE_TOL = 0.15
 ASCENT_CURVE_TOL = 0.25
 
@@ -111,10 +126,16 @@ MIN_WINDOW_S = 25.0  # steady window must be at least this long
 SLOPE_WIN_S = 5.0  # regression-slope window, mirrors the lake analysis
 
 
-def _curve_v(dv_m3: float) -> float:
-    """Terminal speed the fitted lake curve predicts for |dV| offset."""
-    force = RHO_G * abs(dv_m3)
-    return (-DRAG_D1 + math.sqrt(DRAG_D1**2 + 4.0 * DRAG_D2 * force)) / (2.0 * DRAG_D2)
+def _curve_v(dv_m3: float, retain_k: float) -> float:
+    """Terminal speed the fitted lake curve predicts for |dV| offset.
+
+    ``retain_k`` scales both drag terms — pass ASCENT_RETAIN_K for the
+    ascent leg, where the HeaveAugmentPlugin leaves only that fraction
+    of the heave drag in play.
+    """
+    return terminal_heave_speed_mps(
+        LAKE_FIT_RHO_G * abs(dv_m3), retain_fraction=retain_k
+    )
 
 
 def _steady_velocity(
@@ -223,15 +244,22 @@ def generate_test_description():
 
 
 class _LakeVelocityDriver(Node):
-    """Kicks SAWTOOTH and captures depth + bladder-volume telemetry."""
+    """Kicks SAWTOOTH and captures depth + bladder-volume telemetry.
+
+    Depth/volume samples are stamped with the latest ground-truth
+    odometry header stamp — Gazebo sim time, ~100 Hz, so the cross-topic
+    skew is <= 10 ms — keeping the 5 s regression slopes honest when the
+    stack drags RTF below 1.
+    """
 
     def __init__(self):
         super().__init__("lake_velocity_test_driver")
-        self.depth_samples: list[tuple[float, float]] = []  # (t, depth m)
+        self.depth_samples: list[tuple[float, float]] = []  # (sim t, depth m)
         self.rail_trackers = {
             ml: _RailedWindowTracker(ml) for ml in (DESCENT_RAIL_ML, ASCENT_RAIL_ML)
         }
         self.imu_msg_count = 0
+        self.sim_clock = SimClock(self)
 
         self.path_pub = create_publisher_for_topic(self, UUVTopics.PATH)
         self.command_pub = create_publisher_for_topic(self, UUVTopics.COMMAND)
@@ -245,13 +273,15 @@ class _LakeVelocityDriver(Node):
         self.imu_msg_count += 1
 
     def _on_pressure(self, msg: Int32) -> None:
-        depth_m = gauge_pressure_pa(float(msg.data)) / SIM_PA_PER_M
-        self.depth_samples.append((time.monotonic(), depth_m))
+        if self.sim_clock.now is None:
+            return
+        self.depth_samples.append((self.sim_clock.now, sim_depth_m(float(msg.data))))
 
     def _on_volume(self, msg: Int32) -> None:
-        t = time.monotonic()
+        if self.sim_clock.now is None:
+            return
         for tracker in self.rail_trackers.values():
-            tracker.add(t, int(msg.data))
+            tracker.add(self.sim_clock.now, int(msg.data))
 
     def publish_mission(self) -> None:
         # shallow_pressure_pa left at 0.0: climb to the surface each dive.
@@ -294,16 +324,20 @@ class SawtoothLakeVelocityTest(unittest.TestCase):
         return self.driver.rail_trackers[rail_ml].window() is not None
 
     def test_leg_velocities_match_lake_dive4(self):
+        # Wall-clock TIMEOUTS only (the measurements clock on sim time):
+        # sized for RTF ~0.5 so a loaded host doesn't fail the discovery
+        # waits before the sim has physically produced the windows.
         startup_timeout_s = 60.0
-        descent_budget_s = 300.0
-        ascent_budget_s = 480.0
+        descent_budget_s = 600.0
+        ascent_budget_s = 900.0
 
         sim_ready = spin_until(
             self.executor,
-            lambda: self.driver.imu_msg_count >= 1,
+            lambda: self.driver.imu_msg_count >= 1
+            and self.driver.sim_clock.now is not None,
             timeout_s=startup_timeout_s,
         )
-        self.assertTrue(sim_ready, "IMU never arrived — sim not up?")
+        self.assertTrue(sim_ready, "IMU/odometry never arrived — sim not up?")
         spin_for(self.executor, 2.0)
 
         self.driver.publish_mission()
@@ -336,7 +370,7 @@ class SawtoothLakeVelocityTest(unittest.TestCase):
         )
 
         # --- Measure each leg exactly like the lake analysis ---
-        for name, rail_ml, rail_m3, sign, band, curve_tol in (
+        for name, rail_ml, rail_m3, sign, band, curve_tol, retain_k in (
             (
                 "descent",
                 DESCENT_RAIL_ML,
@@ -344,6 +378,7 @@ class SawtoothLakeVelocityTest(unittest.TestCase):
                 +1.0,
                 DESCENT_V_BAND,
                 DESCENT_CURVE_TOL,
+                1.0,
             ),
             (
                 "ascent",
@@ -352,6 +387,7 @@ class SawtoothLakeVelocityTest(unittest.TestCase):
                 -1.0,
                 ASCENT_V_BAND,
                 ASCENT_CURVE_TOL,
+                ASCENT_RETAIN_K,
             ),
         ):
             window = self.driver.rail_trackers[rail_ml].window()
@@ -371,7 +407,7 @@ class SawtoothLakeVelocityTest(unittest.TestCase):
                 f"{name} steady speed {v:.4f} m/s above lake envelope {band}",
             )
 
-            v_curve = _curve_v(rail_m3 - V_NEUTRAL_M3)
+            v_curve = _curve_v(rail_m3 - LAKE_FIT_NEUTRAL_VOLUME_M3, retain_k)
             rel = abs(v - v_curve) / v_curve
             self.assertLessEqual(
                 rel,

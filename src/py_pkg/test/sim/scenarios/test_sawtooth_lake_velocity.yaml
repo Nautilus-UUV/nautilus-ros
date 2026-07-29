@@ -10,6 +10,14 @@
 # the sim reproduces dive 4's actual buoyancy offsets instead of railing
 # to the library operating range. Everything else (plant, gains, lake
 # noise ON) inherits the nominal defaults.
+#
+# The entry-momentum transient is pinned OFF: this test's measurand is
+# the bladder-railed STEADY window, and the transient would only put the
+# vehicle deeper before the rail engages, shrinking the railed depth run
+# toward the detector's minimum. It has its own gate
+# (test_rate_envelope_sim.py). Authoring the partial hydrodynamics block
+# renders the Jinja template with every other value at the canonical
+# default (ascent drag relief stays at the fitted 0.66).
 
 seed: 4
 
@@ -22,3 +30,6 @@ rig:
     # bladder-min reading ~16 kPa past tank_pressure_full_pa; pinning
     # keeps this scenario off the map's interval clamp.
     tank_air_volume_m3: 0.0
+  hydrodynamics:
+    entry:
+      peak_speed_mps: 0.0

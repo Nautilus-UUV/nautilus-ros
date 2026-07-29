@@ -509,6 +509,13 @@ class SweepRunner:
             self.launch_file,
             "headless:=true",
             "mission_autostart:=true",
+            # Physics-liveness probe: every sweep run must prove the
+            # buoyancy force path is alive before /sim/ready (the v3
+            # frozen-init race cost 30% of launches). The launches default
+            # it OFF for interactive use; injected here — before
+            # extra_launch_args, so an operator-passed
+            # physics_probe:=false still wins — the sweep opts in.
+            "physics_probe:=true",
             f"sampler_id:={self.sweep_name}",
             f"run_id:={run_id}",
             f"scenario:={scenario_in_container}",
@@ -593,14 +600,22 @@ class SweepRunner:
         # status CSV so analysis can skip aborted runs without opening
         # a single bag. Absent file = legacy run or wall-clock kill.
         watchdog_verdict = ""
+        verdict_detail = ""
         verdict_file: Optional[Path] = None
         if slot.host_bag_path is not None:
             verdict_file = slot.host_bag_path.parent / "run_verdict.json"
             if verdict_file.is_file():
                 try:
-                    watchdog_verdict = str(
-                        json.loads(verdict_file.read_text()).get("verdict", "")
-                    )
+                    payload = json.loads(verdict_file.read_text())
+                    watchdog_verdict = str(payload.get("verdict", ""))
+                    # The gate's verdicts carry WHAT was missing (a dead
+                    # graph link, or the liveness probe's phase +
+                    # measurements); surface the headline of whatever
+                    # verdict provides one so a sweep tail -f reads the
+                    # failure mode without opening JSON files.
+                    missing = payload.get("missing") or []
+                    if missing:
+                        verdict_detail = str(missing[0])
                 except (OSError, ValueError):
                     watchdog_verdict = ""
         attempt = slot.attempt
@@ -641,7 +656,8 @@ class SweepRunner:
         else:
             verdict = f"FAIL (exit {exit_code})"
         if watchdog_verdict:
-            verdict += f" [{watchdog_verdict}]"
+            detail = f": {verdict_detail}" if verdict_detail else ""
+            verdict += f" [{watchdog_verdict}{detail}]"
         print(f"[slot {slot.index}] {slot.run_id} {verdict} in {duration:.1f}s")
 
         bag_present = slot.host_bag_path is not None and any(
@@ -688,30 +704,44 @@ class SweepRunner:
 
         The failed bag directory is renamed ``raw.failed<N>`` (kept for
         forensics, cheap — aborted runs die in ~2 min) and the stale
-        verdict file removed so the retry can't be misread. The run goes
-        to the BACK of the queue: the rest of the sweep drains first,
-        keeping a persistent failure from monopolizing a slot.
+        verdict file parked with it so the retry can't be misread. The run
+        goes to the FRONT of the queue: v3 was interrupted mid-campaign
+        and every one of its 189 requeued runs sat unexecuted behind the
+        ~1350 unstarted ones (all rows attempt=0), so back-of-queue
+        converts any interruption into silent retry loss. The old
+        monopolization worry is bounded by --max-retries: a poisoned run
+        costs at most N consecutive short aborts on one slot — and
+        retrying under the same load phase that broke it is the honest
+        test of the init fix anyway.
         """
         assert slot.run_id is not None and slot.yaml_path is not None
         attempt = slot.attempt
-        if verdict_file is not None and verdict_file.is_file():
-            try:
-                verdict_file.unlink()
-            except OSError:
-                pass
+        parked_dir: Optional[Path] = None
         if slot.host_bag_path is not None and slot.host_bag_path.is_dir():
             parked = slot.host_bag_path.with_name(f"raw.failed{attempt}")
             try:
                 if parked.exists():
                     shutil.rmtree(parked)
                 slot.host_bag_path.rename(parked)
+                parked_dir = parked
             except OSError as exc:
                 print(
                     f"[slot {slot.index}] {slot.run_id} could not park failed "
                     f"bag ({exc}); removing it instead"
                 )
                 shutil.rmtree(slot.host_bag_path, ignore_errors=True)
-        self.queue.append((slot.run_id, slot.yaml_path, attempt + 1))
+        # The verdict must leave the live location either way, but its
+        # detail (probe phase + measurements for abort_init) is the pilot's
+        # forensics — keep it next to the failed bag when there is one.
+        if verdict_file is not None and verdict_file.is_file():
+            try:
+                if parked_dir is not None:
+                    verdict_file.rename(parked_dir / verdict_file.name)
+                else:
+                    verdict_file.unlink()
+            except OSError:
+                pass
+        self.queue.insert(0, (slot.run_id, slot.yaml_path, attempt + 1))
         print(
             f"[slot {slot.index}] {slot.run_id} retrying "
             f"(attempt {attempt + 1}/{self.max_retries}, cause: "

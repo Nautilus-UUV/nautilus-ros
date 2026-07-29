@@ -421,6 +421,40 @@ class FinAeroSpec(StrictModel):
     area: float
 
 
+class AscentDragReliefSpec(StrictModel):
+    """HeaveAugmentPlugin `<ascent_drag_relief>`: fraction of the heave
+    drag (drag_zW / drag_zWabsW) RETAINED while the vehicle ascends.
+
+    The symmetric lake fit is descent-anchored and over-damps ascent by
+    ~35% (real dives 2/4 ascend 0.068-0.074 m/s where the symmetric
+    plant tops out near 0.05). 1.0 is the exact no-op (pre-relief
+    physics). Nominal 0.66: two-point least-squares on the dive-2/4
+    ascent legs (dive 2: 0.0735 m/s @ V_b=2.490e-3, k=0.672; dive 4:
+    0.0677 m/s @ V_b=2.465e-3, k=0.651), residuals within +-1.5%.
+    """
+
+    # (0, 1]: 0 would delete the heave drag outright, > 1 would add drag.
+    retain_fraction: float = Field(0.66, gt=0.0, le=1.0)
+
+
+class EntryMomentumSpec(StrictModel):
+    """HeaveAugmentPlugin `<entry_momentum>`: the descent-entry transient.
+
+    peak_speed_mps is the one severity-like knob — the target 5 s
+    box-smoothed downward-rate peak (the `d_ext_pressure` unit) of the
+    entry hump; <= 0.0 disables the transient entirely (exact no-op).
+    Nominal 0.205: mean of the dive-2/4 measured entry peaks (0.225 /
+    0.184 m/s). The hump rises over rise_time_s and decays with time
+    constant decay_time_s, sized so the transient is spent before the
+    bladder-railed steady descent window (~75 s in) that the lake
+    velocity calibration measures.
+    """
+
+    peak_speed_mps: float = 0.205  # <= 0 disables, so unconstrained
+    rise_time_s: float = Field(20.0, gt=0.0)
+    decay_time_s: float = Field(25.0, gt=0.0)
+
+
 class HydrodynamicsSpec(StrictModel):
     """SDF hydrodynamic coefficients, exposed for sampled parameter sweeps.
 
@@ -478,6 +512,16 @@ class HydrodynamicsSpec(StrictModel):
     drag_kPabsP: float = 0.0
     drag_mQabsQ: float = 0.0
     drag_nRabsR: float = 0.0
+
+    # HeaveAugmentPlugin blocks (model.sdf, right after the Hydrodynamics
+    # plugin). Like the quadratic drags these sit outside the forward-map
+    # slot registries and outside the isotropic jitter (which only touches
+    # top-level float fields): frozen at spec defaults unless a scenario
+    # or sweep dimension sets them directly. The plugin's own zW/zWabsW
+    # leaves render from drag_zW/drag_zWabsW above, so biofouling drag
+    # multipliers reach both plugins consistently.
+    ascent_relief: AscentDragReliefSpec = Field(default_factory=AscentDragReliefSpec)
+    entry: EntryMomentumSpec = Field(default_factory=EntryMomentumSpec)
 
     # In real life, we also trim the weight slightly for each dive.
     # We have these variables here to do the same thing, and achieve the buoyancy profile

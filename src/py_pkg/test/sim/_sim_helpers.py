@@ -18,6 +18,11 @@ the trim/surface convergence assertions share.
 It lives here because each driver used to fill the message field-by-field, so a
 new ``.msg`` field meant an identical edit in six files — and the last one added
 missed one of them.
+
+``SimClock`` sources Gazebo sim time from the ground-truth odometry
+stream. Velocity/time measurements must clock on it, not the wall
+clock: the full stack drags host RTF well below 1, and wall-clock
+slopes under-read true sim velocities by exactly that factor.
 """
 
 import math
@@ -25,14 +30,46 @@ import os
 import subprocess
 import time
 
+from nautilus_hal.constants import SimTopics
 from nautilus_msgs.msg import MissionCommand
 from nav_msgs.msg import Odometry
+from py_pkg.physics import gauge_pressure_pa
 
 # Depth conversion for the sim's sea-pressure plugin gradient
 # (9.80638 kPa/m — the plugin's own constant, deliberately distinct from
 # physics.WATER_PRESSURE_GRADIENT_PA_PER_M). Defined once here so the
 # lake-matching tests can't drift apart on it.
 SIM_PA_PER_M = 9806.38
+
+# Privileged sim-only ground-truth pose stream (deliberately NOT in
+# uuv_ros_core, so production controllers can't depend on it). Its
+# header stamp IS gz sim time — the clock run_watchdog's plausibility
+# rules and every sim-time measurement in these tests use.
+GROUND_TRUTH_ODOM_TOPIC = SimTopics.ODOMETRY.format(model_name="glider_nautilus")
+
+
+def sim_depth_m(absolute_pa: float) -> float:
+    """Depth (m) of an absolute external-pressure sample (Pa) under the
+    sim's sea-pressure gradient."""
+    return gauge_pressure_pa(absolute_pa) / SIM_PA_PER_M
+
+
+class SimClock:
+    """Gazebo sim time for a test driver, read off ground-truth odometry.
+
+    ``now`` is the latest odometry header stamp in seconds (the stream
+    runs ~100 Hz, so cross-topic skew is <= 10 ms) or None until the
+    first message arrives — sample callbacks should drop data until
+    then rather than stamp it with a guess.
+    """
+
+    def __init__(self, node) -> None:
+        self.now: float | None = None
+        node.create_subscription(Odometry, GROUND_TRUTH_ODOM_TOPIC, self._on_odom, 10)
+
+    def _on_odom(self, msg: Odometry) -> None:
+        stamp = msg.header.stamp
+        self.now = stamp.sec + stamp.nanosec * 1e-9
 
 
 def mission_command(mission_id, **fields) -> MissionCommand:

@@ -5,12 +5,21 @@
 # bladder_max operating clamp) so the vehicle floats awash exactly like
 # the real pre-dive state (tank at the empty rail, ~97.8 kPa), and the
 # test replays dive 4's deflate command timeline against it. The
-# rig.hydrodynamics block exists only to move the spawn volume — every
-# other coefficient stays at the canonical value, and the pump/tank
-# transient parameters inherit the fitted PlantSpec defaults.
+# rig.hydrodynamics block exists only to move the spawn volume and pin
+# the entry transient off — every other coefficient stays at the
+# canonical value, and the pump/tank transient parameters inherit the
+# fitted PlantSpec defaults.
+#
+# entry.peak_speed_mps 0.0: the transient targets (t_submerge, ddepth_*)
+# come from the momentum-free Stage-C 1-DOF model, which already sits
+# inside dive 4's measured bands — injecting a dive-4-matched momentum
+# on top would double-count the real transient and push ddepth_30s
+# toward the band ceiling.
 
 seed: 4
 
 rig:
   hydrodynamics:
     bladder_spawn_volume_m3: 0.00245
+    entry:
+      peak_speed_mps: 0.0

@@ -1,0 +1,24 @@
+# Scenario for test_rate_envelope_sim — the d_ext_pressure rate-envelope
+# gate (v4 acceptance sub-check A2b's Tier-3 proxy).
+#
+# Both HeaveAugmentPlugin features run at their recalibrated nominals,
+# authored EXPLICITLY so this gate keeps testing the adopted calibration
+# even if the spec defaults move:
+#   entry.peak_speed_mps 0.205 — mean of the dive-2/4 measured 5 s
+#     box-smoothed entry-descent peaks (0.225 / 0.184 m/s).
+#   ascent_relief.retain_fraction 0.66 — two-point fit to the dive-2/4
+#     ascent legs.
+# Plant clamps stay at the canonical operating range (bladder
+# 0.001/0.00245), unlike the lake-velocity gate which pins dive 4's
+# steady-leg volumes.
+
+seed: 4
+
+rig:
+  hydrodynamics:
+    ascent_relief:
+      retain_fraction: 0.66
+    entry:
+      peak_speed_mps: 0.205
+      rise_time_s: 20.0
+      decay_time_s: 25.0

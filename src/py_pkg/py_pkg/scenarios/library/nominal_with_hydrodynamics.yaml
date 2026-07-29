@@ -126,6 +126,18 @@ rig:
     drag_mQabsQ: 0.0
     drag_nRabsR: 0.0
 
+    # HeaveAugmentPlugin: ascent drag relief (fraction of heave drag
+    # retained on ascent; fitted to the dive-2/4 ascent legs) and the
+    # descent-entry momentum transient (target 5 s box-smoothed rate
+    # peak; mean of the dive-2/4 entry peaks). retain_fraction: 1.0 /
+    # peak_speed_mps: 0.0 are the exact no-op values.
+    ascent_relief:
+      retain_fraction: 0.66
+    entry:
+      peak_speed_mps: 0.205
+      rise_time_s: 20.0
+      decay_time_s: 25.0
+
     # Centerline trim-link masses (see the mass-budget note in
     # model.sdf) — bow + stern solved jointly so the fresh-water neutral
     # bladder volume matches the lake fit (V_n = 2.097e-3 m^3) AND the

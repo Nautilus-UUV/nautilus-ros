@@ -394,8 +394,11 @@ def jitter_hydrodynamics(
         return math.exp(rng.normal(0.0, sigma))
 
     # The 12 body coefficients are exactly the float-valued fields on the
-    # spec (the fins are sub-models, `knobs` is None), so we don't have to
-    # re-list their names here.
+    # spec (the fins and the heave-augment blocks are sub-models, `knobs`
+    # is None), so we don't have to re-list their names here. Keeping the
+    # ascent_relief/entry sub-models out of the jitter is deliberate: their
+    # values are calibrated fractions/targets, sampled as explicit sweep
+    # dimensions instead.
     body = {
         name: getattr(spec, name) * n()
         for name in spec.model_fields

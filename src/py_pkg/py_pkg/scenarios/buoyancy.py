@@ -30,6 +30,7 @@ instead of skewing a sweep.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 from py_pkg.robot_specs import BLADDER_VOLUME_M3
@@ -331,3 +332,36 @@ def check_viability(
         climb_margin_m3=climb_margin,
         reasons=tuple(reasons),
     )
+
+
+# ---------------------------------------------------------------------------
+# Lake-fit heave anchors (2026-06-24 calibration)
+# ---------------------------------------------------------------------------
+
+# The heave fit's own force convention (heave_calibration_targets.py uses
+# rho * g = 1000 * 9.8) — deliberately not physics.py's 9.806 gradient.
+LAKE_FIT_RHO_G = 1000.0 * 9.8
+
+# Neutral bladder volume the lake heave fit anchored on
+# (heave_calibration_fit.json). Deliberately its own constant, NOT
+# NOMINAL_NEUTRAL_VOLUME_M3 above (the canonical-SDF derivation, ~1 mL
+# apart): tests that reproduce the lake analysis must use the fit's own
+# anchor.
+LAKE_FIT_NEUTRAL_VOLUME_M3 = 2.097481e-3
+
+
+def terminal_heave_speed_mps(force_n: float, retain_fraction: float = 1.0) -> float:
+    """Terminal vertical speed on the fitted quadratic heave-drag curve.
+
+    Solves ``d1*v + d2*v^2 = force_n`` for ``v >= 0``, with d1/d2 taken
+    from the HydrodynamicsSpec defaults — those ARE the adopted lake fit,
+    and the SDF parity test ties them to the canonical model.sdf, so a
+    re-fit moves every consumer of this curve automatically.
+    ``retain_fraction`` scales both drag terms: pass the spec's
+    ``ascent_relief.retain_fraction`` for ascent legs, where the
+    HeaveAugmentPlugin leaves only that fraction of the heave drag in
+    play.
+    """
+    d1 = retain_fraction * -_HYDRO_NOMINAL.drag_zW
+    d2 = retain_fraction * -_HYDRO_NOMINAL.drag_zWabsW
+    return (-d1 + math.sqrt(d1**2 + 4.0 * d2 * force_n)) / (2.0 * d2)
