@@ -50,8 +50,9 @@ presentation units.
 import json
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 import paho.mqtt.client as mqtt
 import rclpy
@@ -69,7 +70,6 @@ from py_pkg.uuv_ros_core import (
     now_s,
     spin_node,
 )
-
 
 # All ingress subscriptions use MQTT QoS 1: commands are at-least-once
 # by policy, not per-topic.

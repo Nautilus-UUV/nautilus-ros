@@ -1,23 +1,29 @@
-"""Shared scaffold for the sweep-spec guard tests (test_train_mix_*_spec).
+"""Shared scaffold for the sampling / sweep-spec tests.
 
-The sweep scripts are plain modules two dirs above py_pkg, not a package --
-import them the way run_sweep imports its own siblings, done once here so
-every campaign spec test shares one repo walk, one sys.path entry, and one
-import-failure policy instead of a per-file copy.
+The sweep scripts are plain modules two dirs above py_pkg, not a package —
+the shared ``test/conftest.py`` puts ``scripts/`` on ``sys.path`` before any
+test module imports, so ``sampling.*`` imports plainly here and in the test
+files (and fails loud at collection if the repo layout breaks, same as the
+Tier 3 files that read it).
+
+The ``lhs_sample`` / ``run_sweep`` entry points stay guarded: unlike
+``scripts/sampling`` (pydantic only — present wherever py_pkg's own tests
+run, CI included), they also pull numpy/scipy, which CI does not install.
 """
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pytest
 import yaml
 
-SCRIPTS_DIR = Path(__file__).resolve().parents[4] / "scripts"
+import sampling
 
-if str(SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS_DIR))
+# Derived from the imported package rather than a second depth-counted repo
+# walk, so the conftest's sys.path insert stays the only layout knowledge.
+SCRIPTS_DIR = Path(sampling.__file__).resolve().parents[1]
+
 try:
     import lhs_sample
     import run_sweep

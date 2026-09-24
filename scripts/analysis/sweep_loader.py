@@ -17,10 +17,12 @@ from typing import Iterable
 import numpy as np
 import yaml
 
-# Viability thresholds live in the installed package (pure stdlib, no ROS) so
-# the sim run watchdog's early-abort rule and this offline classifier are the
-# same two numbers rather than two copies that must be edited in lockstep.
-from py_pkg.watchdog.plausibility import MIN_DIVE_M, MIN_RETURN_M
+# Canonical viability thresholds. The sim run watchdog
+# (nautilus_hal.sweep_watchdog.plausibility) restates them for its early-abort
+# rule; parity-locked, and the reason for the copy given, by py_pkg
+# test/sim/test_watchdog_threshold_parity.py.
+MIN_DIVE_M = 2.0
+MIN_RETURN_M = 1.0
 
 _TIMESTAMP_SUFFIX = re.compile(r"_\d{4}_\d{2}_\d{2}-\d{2}_\d{2}_\d{2}$")
 

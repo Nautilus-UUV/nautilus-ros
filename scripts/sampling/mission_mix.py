@@ -42,9 +42,9 @@ from typing import Optional
 from pydantic import model_validator
 
 from py_pkg.physics import WATER_PRESSURE_GRADIENT_PA_PER_M
+from py_pkg.scenarios.seed import derive_seed
+from py_pkg.scenarios.spec._shared import StrictModel
 
-from .seed import derive_seed
-from .spec._shared import StrictModel
 from .stratify import check_weights, stratified_assignment, stratified_counts
 
 # Kept explicit and ORDER-LOCKED: this tuple's order feeds both the

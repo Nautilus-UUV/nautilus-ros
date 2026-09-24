@@ -12,7 +12,8 @@ the Tier 3 parity test (test/sim/test_buoyancy_budget_parity.py).
 """
 
 import pytest
-from py_pkg.scenarios import buoyancy
+
+from sampling import buoyancy
 
 # Wide sampling band: +/- ~11% density around fresh water x the trim
 # envelope both real ballast configs sit in.

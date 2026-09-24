@@ -18,14 +18,15 @@ A re-fit of the nominal k moves those guards automatically.
 
 from __future__ import annotations
 
-from py_pkg.scenarios.buoyancy import (
+from py_pkg.scenarios.spec.rig import HydrodynamicsSpec
+
+from _sweep_specs import lhs_sample, load_sweep_spec, needs_scripts, run_sweep
+
+from sampling.buoyancy import (
     LAKE_FIT_NEUTRAL_VOLUME_M3,
     LAKE_FIT_RHO_G,
     terminal_heave_speed_mps,
 )
-from py_pkg.scenarios.spec.rig import HydrodynamicsSpec
-
-from _sweep_specs import lhs_sample, load_sweep_spec, needs_scripts, run_sweep
 
 _V4_PATH, _V4 = load_sweep_spec("train_validation_mix_v4.yaml")
 _, _V3 = load_sweep_spec("train_validation_mix_v3.yaml")

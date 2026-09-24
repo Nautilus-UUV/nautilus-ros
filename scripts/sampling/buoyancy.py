@@ -34,8 +34,7 @@ import math
 from dataclasses import dataclass
 
 from py_pkg.robot_specs import BLADDER_VOLUME_M3
-
-from .spec.rig import HydrodynamicsSpec
+from py_pkg.scenarios.spec.rig import HydrodynamicsSpec
 
 # ---------------------------------------------------------------------------
 # Constants — provenance: glider_nautilus/model.sdf + dave_ocean_waves.world

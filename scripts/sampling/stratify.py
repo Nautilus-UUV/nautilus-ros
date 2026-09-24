@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import random
 
-from .seed import derive_seed
+from py_pkg.scenarios.seed import derive_seed
 
 
 def check_weights(

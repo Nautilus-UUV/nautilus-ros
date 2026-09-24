@@ -16,23 +16,15 @@ dimension changes, update the sweep spec and this file together.
 from __future__ import annotations
 
 import math
-from pathlib import Path
 
-import pytest
-import yaml
 from py_pkg.robot_specs import VOLUME_PER_REV_M3
-from py_pkg.scenarios.anomaly import AnomalyMixSpec, class_counts
 from py_pkg.scenarios.spec.rig import NoiseSpec, PhysicsKnobs
 
-_SPEC_PATH = (
-    Path(__file__).resolve().parents[4] / "scripts" / "sweeps" / "validation_mix_v1.yaml"
-)
-if not _SPEC_PATH.is_file():  # pragma: no cover — repo-layout guard
-    pytest.skip(
-        f"validation sweep spec not found at {_SPEC_PATH}", allow_module_level=True
-    )
+from _sweep_specs import load_sweep_spec
 
-_RAW = yaml.safe_load(_SPEC_PATH.read_text())
+from sampling.anomaly import AnomalyMixSpec, class_counts
+
+_, _RAW = load_sweep_spec("validation_mix_v1.yaml")
 MIX = AnomalyMixSpec.model_validate(_RAW["anomaly_mix"])
 DIMS = {d["path"]: d for d in _RAW["dimensions"]}
 # 3-sigma multiplicative jitter factor for jittered hydro observables.

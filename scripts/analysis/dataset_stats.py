@@ -19,7 +19,10 @@ from __future__ import annotations
 from collections import Counter
 
 import numpy as np
-from py_pkg.scenarios.anomaly import ANOMALY_CLASSES
+
+# Resolves because the entry point (run_analysis.py) has scripts/ on
+# sys.path — the same way this package reaches py_pkg.
+from sampling.anomaly import ANOMALY_CLASSES
 
 from .sweep_loader import NON_VIABLE_CLASSES, RunEntry
 

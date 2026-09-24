@@ -2,7 +2,7 @@
 
 Sim-artifact test (house rule: SDF-reading tests are Tier 3 even
 without Gazebo — marker-gated ``@pytest.mark.sim``). The correlated
-buoyancy derivation in ``py_pkg.scenarios.buoyancy`` hardcodes the
+buoyancy derivation in ``scripts/sampling/buoyancy.py`` hardcodes the
 glider's mass/volume budget with SDF provenance comments; this test
 re-derives every number from the canonical ``model.sdf`` and
 ``dave_ocean_waves.world`` with ``xml.etree`` and asserts equality.
@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from py_pkg.scenarios import buoyancy
+from sampling import buoyancy
 
 pytestmark = pytest.mark.sim
 

@@ -1,4 +1,4 @@
-"""Tier 1 for the per-run mission-mix sampling (scenarios/mission_mix.py).
+"""Tier 1 for the per-run mission-mix sampling (scripts/sampling/mission_mix.py).
 
 Locks the sweep-campaign contracts: stratified exact profile counts
 (largest-remainder, sawtooth_plain tie-break), seeded determinism,
@@ -14,7 +14,8 @@ import random
 from collections import Counter
 
 import pytest
-from py_pkg.scenarios.mission_mix import (
+
+from sampling.mission_mix import (
     MISSION_PROFILES,
     OPTIMISTIC_ASCENT_MPS,
     OPTIMISTIC_DESCENT_MPS,

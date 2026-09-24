@@ -16,7 +16,8 @@ place that knows the ROS parameter wire names.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable, NamedTuple
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 if TYPE_CHECKING:
     from rclpy.node import Node

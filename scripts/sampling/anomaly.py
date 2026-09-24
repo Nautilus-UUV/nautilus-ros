@@ -1,7 +1,7 @@
 """Per-run anomaly-mix sampling for validation sweeps.
 
 Pure logic, no ROS, stdlib RNG only (same conventions as
-``sensor_noise.py`` / ``buoyancy.py``): the host-side sampler
+``buoyancy.py``): the host-side sampler
 (``scripts/lhs_sample.py``) consumes this to assign every run of a
 sweep a class — ``nominal`` or one of four persistent whole-run
 anomalies — and to draw each anomalous run's severity from bands
@@ -42,9 +42,14 @@ from typing import Literal, Optional, get_args
 
 from pydantic import Field, model_validator
 
-from .seed import derive_seed
-from .spec._shared import StrictModel
-from .spec.rig import FaultScheduleShape, SensorFaultKind, SensorFaultsSpec
+from py_pkg.scenarios.seed import derive_seed
+from py_pkg.scenarios.spec._shared import StrictModel
+from py_pkg.scenarios.spec.rig import (
+    FaultScheduleShape,
+    SensorFaultKind,
+    SensorFaultsSpec,
+)
+
 from .stratify import check_weights, stratified_assignment, stratified_counts
 
 # Kept explicit (not derived from the AnomalyLabelSpec Literal): this

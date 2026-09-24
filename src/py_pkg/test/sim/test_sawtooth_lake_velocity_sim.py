@@ -57,12 +57,12 @@ from launch.actions import IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.substitutions import FindPackageShare
 from py_pkg.path.missions.factory import MissionId
-from py_pkg.scenarios.buoyancy import (
+from py_pkg.scenarios.spec.rig import HydrodynamicsSpec
+from sampling.buoyancy import (
     LAKE_FIT_NEUTRAL_VOLUME_M3,
     LAKE_FIT_RHO_G,
     terminal_heave_speed_mps,
 )
-from py_pkg.scenarios.spec.rig import HydrodynamicsSpec
 from py_pkg.uuv_ros_core import (
     UUVTopics,
     create_publisher_for_topic,
@@ -86,7 +86,7 @@ from ._sim_helpers import (
 # --- Lake anchors (dive 4, config B) --------------------------------------
 # Provenance: UG-anomaly_detection/lake_test_jun24/investigation/
 # heave_calibration_targets.csv + heave_calibration_fit.json; the fit
-# anchors themselves live in py_pkg.scenarios.buoyancy next to
+# anchors themselves live in scripts/sampling/buoyancy.py next to
 # terminal_heave_speed_mps, whose drag coefficients come from the spec
 # defaults — those ARE the adopted lake fit, parity-locked to the
 # canonical model.sdf — so a re-fit moves the consistency curve here

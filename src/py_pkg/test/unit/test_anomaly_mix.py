@@ -1,4 +1,4 @@
-"""Tier 1 for the per-run anomaly-mix sampling (scenarios/anomaly.py).
+"""Tier 1 for the per-run anomaly-mix sampling (scripts/sampling/anomaly.py).
 
 Locks the validation-sweep contracts: stratified exact class counts,
 seeded determinism, stream decoupling (band edits never reshuffle
@@ -17,8 +17,11 @@ from collections import Counter
 
 import pytest
 import yaml
-from py_pkg.scenarios import buoyancy
-from py_pkg.scenarios.anomaly import (
+from py_pkg.scenarios.spec.rig import HydrodynamicsSpec
+from py_pkg.scenarios.spec.scenario import Scenario
+
+from sampling import buoyancy
+from sampling.anomaly import (
     ANOMALY_CLASSES,
     FOULING_ADDED_MASS_SLOTS,
     FOULING_DRAG_SLOTS,
@@ -31,8 +34,6 @@ from py_pkg.scenarios.anomaly import (
     draw_assignment,
     fouled_neutral_volume,
 )
-from py_pkg.scenarios.spec.rig import HydrodynamicsSpec
-from py_pkg.scenarios.spec.scenario import Scenario
 
 
 def _mix_dict() -> dict:

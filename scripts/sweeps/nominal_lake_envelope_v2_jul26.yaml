@@ -8,7 +8,7 @@
 #    the downstream oscillation gate (sinkers/floaters). Here density and
 #    the neutral bladder volume are the sampled pair — density in a
 #    physically plausible lake band — and trim_mass_bow/stern +
-#    bladder_spawn_volume_m3 are DERIVED per-run (scenarios/buoyancy.py)
+#    bladder_spawn_volume_m3 are DERIVED per-run (scripts/sampling/buoyancy.py)
 #    so every plant is oscillation-viable by construction. Spec-corner
 #    margins: dive = 2.055e-3 - 1.2e-3 = 8.55e-4; climb = 2.35e-3 -
 #    2.135e-3 = 2.15e-4 (minima 2.0e-4 / 1.5e-4).

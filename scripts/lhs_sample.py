@@ -20,13 +20,13 @@ mission knobs (target_pressure_pa, n_oscillations, ...) are launch args,
 so their sampled values are recorded in
 manifest.json only. A `mission_mix:` block replaces those dimensions
 entirely (authoring both is rejected): per-run mission profiles are
-assigned/drawn off-matrix (`py_pkg.scenarios.mission_mix`) and their
+assigned/drawn off-matrix (`sampling.mission_mix`) and their
 flat mission.* values ride the manifest the same way.
 
 Dimensions whose path starts with `derive.` are *derivation targets*:
 `derive.neutral_volume_m3` is sampled jointly with the row and fed —
 together with the run's effective fluid_density — to the correlated
-buoyancy derivation (`py_pkg.scenarios.buoyancy`), which computes the
+buoyancy derivation (`sampling.buoyancy`), which computes the
 trim masses and bladder spawn volume written into rig.hydrodynamics so
 every emitted plant is oscillation-viable by construction. The optional
 `buoyancy_derivation:` spec block tunes spawn policy and margins.
@@ -55,8 +55,15 @@ import yaml
 from scipy.stats import qmc
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src/py_pkg"))
-from py_pkg.scenarios import buoyancy
-from py_pkg.scenarios.anomaly import (
+from py_pkg.scenarios.compile import forward_map
+from py_pkg.scenarios.spec.rig import (
+    FinAeroSpec,
+    HydrodynamicsSpec,
+    PhysicsKnobs,
+    RigScenario,
+)
+from sampling import buoyancy
+from sampling.anomaly import (
     AnomalyAssignment,
     AnomalyMixSpec,
     apply_anomaly,
@@ -65,19 +72,12 @@ from py_pkg.scenarios.anomaly import (
     draw_assignment,
     fouled_neutral_volume,
 )
-from py_pkg.scenarios.compile import forward_map
-from py_pkg.scenarios.mission_mix import (
+from sampling.mission_mix import (
     MissionAssignment,
     MissionMixSpec,
     assign_profiles,
     draw_mission,
     expected_mission_duration_s,
-)
-from py_pkg.scenarios.spec.rig import (
-    FinAeroSpec,
-    HydrodynamicsSpec,
-    PhysicsKnobs,
-    RigScenario,
 )
 
 # 2.0.0: persistent-fault schema (rig.faults.bcu_pump/sensors/comms) +
@@ -94,7 +94,7 @@ MISSION_PREFIX = "mission."
 
 # Dimensions under this prefix are *derivation targets*: sampled jointly
 # with the rest of the row but consumed by the correlated buoyancy
-# derivation (py_pkg.scenarios.buoyancy) rather than written to the
+# derivation (sampling.buoyancy) rather than written to the
 # scenario as-is. The only recognized path is DERIVE_NEUTRAL_VOLUME; the
 # derivation computes trim_mass_bow / trim_mass_stern /
 # bladder_spawn_volume_m3 from (fluid_density, neutral-volume target) so

@@ -19,10 +19,10 @@ sweep after minutes of work. The bound is arithmetic, so assert it.
 from __future__ import annotations
 
 import pytest
-from py_pkg.scenarios.anomaly import AnomalyMixSpec, class_counts
-from py_pkg.scenarios.mission_mix import MissionMixSpec, profile_counts
-
 from _sweep_specs import lhs_sample, load_sweep_spec, needs_scripts, run_sweep
+
+from sampling.anomaly import AnomalyMixSpec, class_counts
+from sampling.mission_mix import MissionMixSpec, profile_counts
 
 _V3_PATH, _V3 = load_sweep_spec("train_validation_mix_v3.yaml")
 _, _V2 = load_sweep_spec("train_validation_mix_v2.yaml")

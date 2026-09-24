@@ -67,8 +67,8 @@ class PlantSpec(StrictModel):
     tank_pressure_empty_pa: float = 97_800.0  # tank drained (bladder full)
     tank_pressure_full_pa: float = 190_000.0  # tank full of oil (bladder empty)
 
-    # Pump/tank transient dynamics (plant_dynamics.py). Fitted to the
-    # 2026-06-24 lake test — provenance:
+    # Pump/tank transient dynamics (nautilus_hal.sim_models.plant_dynamics).
+    # Fitted to the 2026-06-24 lake test — provenance:
     # UG-anomaly_detection/analysis/lake_test_jun24/pump_transient_fit.json.
     # The real pump holds still for a dead time after a command, then ramps
     # at a constant slew to the target (no exponential tail); <= 0 disables
@@ -105,14 +105,16 @@ class PlantSpec(StrictModel):
 
 SensorFaultKind = Literal["none", "bias", "drift", "stuck", "dropout"]
 
-# Wire spelling of sensor_faults.FAULT_SCHEDULE_SHAPES (kept a literal so
-# it stays statically checkable; test_fault_schedule locks the two
-# together, and anomaly.ONSET_SHAPES derives from this one).
+# Wire spelling of nautilus_hal.sim_models.sensor_faults.FAULT_SCHEDULE_SHAPES
+# (kept a literal so it stays statically checkable; test_fault_schedule —
+# in nautilus_hal's test tree — locks the two together, and
+# sampling.anomaly.ONSET_SHAPES derives from this one).
 FaultScheduleShape = Literal["step", "ramp", "intermittent"]
 
 
 class FaultScheduleSpec(StrictModel):
-    """Onset + progression envelope for one fault (sensor_faults.FaultSchedule).
+    """Onset + progression envelope for one fault
+    (nautilus_hal.sim_models.sensor_faults.FaultSchedule).
 
     ``m(t)`` in [0, 1] scales the fault's one drawn severity:
 
