@@ -1,6 +1,13 @@
-# UUV - ROS2 Stack
 
-ROS2 navigation and control system for Nautilus's autonomous underwater vehicle, designed to run on RaspberryPie.
+ROS2 navigation and control system for Nautilus's autonomous glider (UG).
+
+# Development
+
+
+
+# Deployment
+
+
 
 ## [Getting Started](docs/getting-started.md)
 All about prerequisites, setup, development, package's architecture, testing and debugging.

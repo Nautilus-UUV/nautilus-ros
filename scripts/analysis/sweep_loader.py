@@ -19,8 +19,7 @@ import yaml
 
 # Canonical viability thresholds. The sim run watchdog
 # (nautilus_hal.sweep_watchdog.plausibility) restates them for its early-abort
-# rule; parity-locked, and the reason for the copy given, by py_pkg
-# test/sim/test_watchdog_threshold_parity.py.
+# rule (neither side can import the other); change both copies together.
 MIN_DIVE_M = 2.0
 MIN_RETURN_M = 1.0
 

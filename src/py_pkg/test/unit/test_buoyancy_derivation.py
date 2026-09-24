@@ -6,9 +6,6 @@ V_n = 2.0963072e-3 -> bow 3.157 / stern 0.2765 / spawn 0.0022), then
 exercises the (density, neutral-volume) envelope the sampler draws
 from: round-trip neutrality, the level-trim moment invariant,
 monotonicity, positivity, and the viability gate's edge cases.
-
-The constants themselves are locked to model.sdf / the world file by
-the Tier 3 parity test (test/sim/test_buoyancy_budget_parity.py).
 """
 
 import pytest

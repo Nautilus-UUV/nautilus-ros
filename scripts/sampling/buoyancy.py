@@ -22,10 +22,8 @@ about x must equal the buoyancy centroid at the spawn volume times the
 total mass, so the vehicle floats level at rest (CoM_x = CoB_x => no
 static pitch couple, regardless of net buoyancy magnitude).
 
-Pure functions only — no numpy, no I/O. The Tier 3 parity test
-(``test/sim/test_buoyancy_budget_parity.py``) locks every constant below
-to the canonical SDF/world files, so a silent model edit trips a test
-instead of skewing a sweep.
+Pure functions only — no numpy, no I/O. The constants below restate the
+canonical SDF/world files by hand; re-derive them after any model edit.
 """
 
 from __future__ import annotations
