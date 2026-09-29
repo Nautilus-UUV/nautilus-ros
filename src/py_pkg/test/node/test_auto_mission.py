@@ -112,7 +112,7 @@ def _make_auto_mission(monkeypatch, **overrides) -> AutoMission:
 def test_default_params_publish_no_dive_init_but_still_publish_path(am_harness):
     # Default tank endpoints are 0.0/0.0 -> tank_limits_valid is False, so
     # NO DiveInit is published. The MissionCommand still goes out.
-    auto = am_harness.add(AutoMission())
+    am_harness.add(AutoMission())
     sub = am_harness.add(_InitSubscriber())
 
     got_path = am_harness.spin_until(lambda: len(sub.missions) >= 1, timeout=3.0)

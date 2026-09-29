@@ -12,7 +12,6 @@ seed's severities; non-immediate onsets land as validating
 
 from __future__ import annotations
 
-import copy
 from collections import Counter
 
 import pytest

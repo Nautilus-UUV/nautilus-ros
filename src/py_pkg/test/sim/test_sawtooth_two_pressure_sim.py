@@ -66,6 +66,7 @@ from sensor_msgs.msg import Imu
 from std_msgs.msg import Bool, Int32
 
 from ._sim_helpers import (
+    SimClock,
     mission_command,
     reap_lingering_gz,
     sim_gui_enabled,
@@ -131,6 +132,8 @@ class _TwoPressureTestDriver(Node):
         self.gauge_pressure_pa: list[tuple[float, float]] = []
         self.imu_msg_count: int = 0
         self.mission_complete: bool = False
+        # The mission budget is sim time: host RTF scales wall-clock durations.
+        self.sim_clock = SimClock(self)
 
         self.path_pub = create_publisher_for_topic(self, UUVTopics.PATH)
         self.command_pub = create_publisher_for_topic(self, UUVTopics.COMMAND)
@@ -256,12 +259,15 @@ class SawtoothTwoPressureSimTest(unittest.TestCase):
     def test_two_oscillations_then_surface(self):
         startup_timeout_s = 60.0
         post_ready_settle_s = 2.0
-        # Two ~3 m-amplitude oscillations (~3.6 m <-> ~5.6 m turn points) plus a
-        # final ~5 m ascent to the surface: ~10 m of glide, comparable to the
-        # single-cycle baseline's 300 s budget. This is only the UPPER BOUND --
-        # the run ends on /mission/complete, so a healthy mission costs its real
-        # duration (~300 s) and only a broken one pays the full 600 s.
-        mission_budget_s = 600.0
+        # Measured 2026-09-29 at RTF 1.0, in sim time: deep turn at 34 s,
+        # shallow turn at 293 s, deep turn at 367 s, surfaced and complete at
+        # 622 s. The budget leaves ~45% on top of that. It is only the UPPER
+        # BOUND -- the run ends on /mission/complete, so a healthy mission costs
+        # its real duration and only a broken one pays the full budget.
+        mission_budget_sim_s = 900.0
+        # Wall-clock hang guard only (world frozen, odometry gone). Sized for
+        # RTF 0.5, so on any host at or above that the sim budget decides.
+        mission_wall_cap_s = 2.0 * mission_budget_sim_s
         drain_s = 2.0
         # The setpoint stream must fall silent for at least this long before the
         # window ends -- that silence is how we detect pathfinding reset on
@@ -270,13 +276,15 @@ class SawtoothTwoPressureSimTest(unittest.TestCase):
 
         sim_ready = spin_until(
             self.executor,
-            lambda: self.driver.imu_msg_count >= 1,
+            lambda: self.driver.imu_msg_count >= 1
+            and self.driver.sim_clock.now is not None,
             timeout_s=startup_timeout_s,
         )
         self.assertTrue(
             sim_ready,
-            f"IMU never arrived within {startup_timeout_s}s -- "
-            "is Gazebo up and is the model spawned with its IMU plugin?",
+            f"IMU or ground-truth odometry never arrived within "
+            f"{startup_timeout_s}s -- is Gazebo up and is the model spawned "
+            "with its IMU plugin?",
         )
 
         spin_for(self.executor, post_ready_settle_s)
@@ -286,15 +294,23 @@ class SawtoothTwoPressureSimTest(unittest.TestCase):
         self.driver.publish_start()
 
         mission_start_t = time.monotonic()
-        completed = spin_until(
+        sim_start_t = self.driver.sim_clock.now
+
+        def sim_elapsed_s() -> float:
+            return self.driver.sim_clock.now - sim_start_t
+
+        spin_until(
             self.executor,
-            lambda: self.driver.mission_complete,
-            timeout_s=mission_budget_s,
+            lambda: self.driver.mission_complete
+            or sim_elapsed_s() >= mission_budget_sim_s,
+            timeout_s=mission_wall_cap_s,
         )
         self.assertTrue(
-            completed,
+            self.driver.mission_complete,
             f"mission never published /mission/complete within "
-            f"{mission_budget_s}s -- it did not self-terminate after surfacing.",
+            f"{mission_budget_sim_s}s of sim time ({sim_elapsed_s():.0f}s sim "
+            f"elapsed, {time.monotonic() - mission_start_t:.0f}s wall) -- it did "
+            "not self-terminate after surfacing.",
         )
         # Hold the window open past completion so assertion 4 has a genuine
         # silent stretch of POSITION_TARGET to measure. drain_s on top collects
