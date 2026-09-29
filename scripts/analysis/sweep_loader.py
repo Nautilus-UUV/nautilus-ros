@@ -1,4 +1,5 @@
-"""Discover the runs in a sweep directory and drop the ones that failed on startup.
+"""Discover the runs in a sweep directory and classify each one's viability
+(oscillated / floater / sinker / no-odometry), keeping only the oscillated runs.
 
 A sweep on disk is `sim_data/{name}/` with one `{run_id}_{timestamp}/raw/` subdir
 per run, plus a `sweep_status.csv` keyed on `run_id` (its `yaml_path` column
@@ -16,7 +17,18 @@ from typing import Iterable
 import numpy as np
 import yaml
 
+# Canonical viability thresholds. The sim run watchdog
+# (nautilus_hal.sweep_watchdog.plausibility) restates them for its early-abort
+# rule (neither side can import the other); change both copies together.
+MIN_DIVE_M = 2.0
+MIN_RETURN_M = 1.0
+
 _TIMESTAMP_SUFFIX = re.compile(r"_\d{4}_\d{2}_\d{2}-\d{2}_\d{2}_\d{2}$")
+
+# The non-viable verdicts `classify_run` can return (everything except
+# "oscillated"), in report order. Consumers (dataset_stats' viability
+# section) key off this tuple, so a new class added there is one edit here.
+NON_VIABLE_CLASSES = ("floater", "sinker", "no_odometry")
 
 
 @dataclass(frozen=True)
@@ -26,6 +38,12 @@ class RunEntry:
     bag_dir: Path
     scenario_yaml_path: str | None
     is_nominal: bool
+    # Run-watchdog / sim-gate verdict from sweep_status.csv
+    # ("mission_complete" / "abort_floater" / "abort_sinker" /
+    # "abort_bad_start" / "abort_init"); "" for legacy sweeps and
+    # wall-clock kills — classify from the bag in that case. Retried
+    # runs resolve to their final attempt's verdict (last CSV row wins).
+    verdict: str = ""
 
 
 def _looks_nominal(yaml_path: str | None) -> bool:
@@ -34,7 +52,10 @@ def _looks_nominal(yaml_path: str | None) -> bool:
 
 def _read_status_csv(sweep_dir: Path) -> dict[str, dict]:
     """`run_id -> row` map. Empty if the file is missing (ad-hoc runs, or a sweep
-    that crashed before the orchestrator wrote rows)."""
+    that crashed before the orchestrator wrote rows). run_sweep's retry
+    path appends one row per attempt for the same run_id; the dict
+    comprehension keeps the LAST row — the final attempt, whose bag is
+    the one on disk (failed attempts' bags are parked as raw.failedN)."""
     status_csv = sweep_dir / "sweep_status.csv"
     if not status_csv.is_file():
         return {}
@@ -76,7 +97,14 @@ def discover_sweep(
             else _looks_nominal(yaml_path)
         )
         entries.append(
-            RunEntry(run_id, run_dir, bag_dir, yaml_path, is_nominal)
+            RunEntry(
+                run_id,
+                run_dir,
+                bag_dir,
+                yaml_path,
+                is_nominal,
+                verdict=str(row.get("verdict", "") or "").strip(),
+            )
         )
 
     if nominal_run_id is not None and not any(e.is_nominal for e in entries):
@@ -86,33 +114,75 @@ def discover_sweep(
     return entries
 
 
-def select_dived_runs(
+def classify_run(
+    z: np.ndarray, *, min_dive_m: float = MIN_DIVE_M, min_return_m: float = MIN_RETURN_M
+) -> str:
+    """Classify a run's vertical viability from its odometry z trace.
+
+    Returns one of:
+
+    - `"no_odometry"` — the bag recorded no odometry samples;
+    - `"floater"`     — never descended `min_dive_m` below its spawn depth
+                        (startup failure: bobs at the surface);
+    - `"sinker"`      — dived but never climbed back `min_return_m` from its
+                        running-deepest point (mis-buoyant plant, sinks forever);
+    - `"oscillated"`  — completed at least one dive + climb-back cycle.
+
+    Odometry z is negative-down, so dive depth is `z[0] - z.min()` and the
+    climb-back ("drawup") from the running-deepest is
+    `(z - np.minimum.accumulate(z)).max()`.
+
+    The thresholds are numerically identical to the downstream `_oscillated`
+    gate (`UG-anomaly_detection/src/data/build_dataset.py`), but the basis
+    differs deliberately: this classifier reads ground-truth odometry while the
+    downstream gate reads external-pressure-derived depth. Downstream stays the
+    final authority on what enters a dataset — this exists for generation-time
+    visibility into a sweep's viable-run yield.
+    """
+    if z.size == 0:
+        return "no_odometry"
+    if float(z[0] - z.min()) < min_dive_m:
+        return "floater"
+    drawup = float((z - np.minimum.accumulate(z)).max())
+    if drawup < min_return_m:
+        return "sinker"
+    return "oscillated"
+
+
+def select_oscillated_runs(
     entries: Iterable[RunEntry],
     *,
     model_name: str = "glider_nautilus",
-    min_dive_m: float = 2.0,
-) -> tuple[list[tuple[RunEntry, dict[str, np.ndarray]]], list[str]]:
-    """Drop runs that float at the surface and never dive — the startup-failure mode
-    in these sweeps (a run spawns at ~-5 m, fails to initialise, and bobs at the
-    surface instead of executing the dive). A run is kept when it descends at least
-    `min_dive_m` below its spawn depth; the gap between the two populations is wide
-    (floaters dive ~0 m, real runs >=5 m), so the threshold is not delicate.
+    min_dive_m: float = MIN_DIVE_M,
+    min_return_m: float = MIN_RETURN_M,
+) -> tuple[list[tuple[RunEntry, dict[str, np.ndarray]]], dict[str, str]]:
+    """Keep only runs that oscillated (dived and climbed back — `classify_run`),
+    dropping surface-floaters, continuous sinkers, and odometry-less runs.
 
-    Reads odometry once per run and returns `(kept_with_traj, dropped_ids)` so the
-    pose plot can reuse the trajectories without re-reading the bags.
+    Reads odometry once per run and returns `(kept_with_traj, dropped)` — where
+    `dropped` maps `run_id -> reason` — so the pose plot can reuse the
+    trajectories without re-reading the bags.
     """
     # Local import keeps this module's import light (rosbags/scipy load only here).
     from .bag_reader import read_odometry
 
     kept: list[tuple[RunEntry, dict[str, np.ndarray]]] = []
-    dropped: list[str] = []
+    dropped: dict[str, str] = {}
     for entry in entries:
-        traj = read_odometry(entry.bag_dir, model_name=model_name)
-        z = traj["z"]
-        if z.size and float(z[0] - z.min()) >= min_dive_m:
+        try:
+            traj = read_odometry(entry.bag_dir, model_name=model_name)
+        except FileNotFoundError:
+            # Truncated recording (mcap present, metadata.yaml never written —
+            # run killed mid-write): no readable odometry.
+            dropped[entry.run_id] = "no_odometry"
+            continue
+        verdict = classify_run(
+            traj["z"], min_dive_m=min_dive_m, min_return_m=min_return_m
+        )
+        if verdict == "oscillated":
             kept.append((entry, traj))
         else:
-            dropped.append(entry.run_id)
+            dropped[entry.run_id] = verdict
     return kept, dropped
 
 
@@ -126,36 +196,35 @@ def read_launch_args(sweep_dir: Path) -> dict[str, str]:
     p = Path(sweep_dir) / "launch_args.txt"
     if not p.is_file():
         return {}
-    return dict(
-        tok.split(":=", 1) for tok in p.read_text().split() if ":=" in tok
-    )
+    return dict(tok.split(":=", 1) for tok in p.read_text().split() if ":=" in tok)
 
 
-def read_scenario_faults(
+def read_scenario_anomaly(
     entry: RunEntry, *, sweep_dir: Path | None = None
-) -> dict[str, float] | None:
-    """The BCU fault-injector knobs a run was *initialised* with.
+) -> dict | None:
+    """The anomaly label a run carries, from its scenario YAML.
 
-    Reads `rig.faults.bcu_rpm` from the run's scenario YAML and returns
-    `{"mttf_sec": ..., "num_levels": ...}` — the configured mean time between
-    successive degradation steps, as opposed to the ladder actually realised in
-    the bag (`read_fault_levels`). `mttf_sec <= 0` means faults were disabled.
+    Reads the top-level `anomaly:` label block (written by the sampler
+    and validated against `rig.faults` at load time). Returns
+    `{"class", "channel", "archetype"}` — a YAML without a label block
+    is an explicit `"nominal"` record (absence of the label never has
+    to be inferred downstream). Per-timestamp ground truth lives in the
+    bag's `/anomaly/label` stream; this is the run-level view.
 
     `entry.scenario_yaml_path` is recorded relative to the sweep's launch cwd
     (the workspace root), so we try it verbatim and then against each parent of
     `sweep_dir`, letting analysis run from any working directory. Returns None
-    when the path is missing, unresolvable, or carries no `bcu_rpm` fault block.
+    only when the YAML itself is missing or unresolvable.
     """
     path = _resolve_scenario_yaml(entry.scenario_yaml_path, sweep_dir)
     if path is None:
         return None
     doc = yaml.safe_load(path.read_text()) or {}
-    bcu = ((doc.get("rig") or {}).get("faults") or {}).get("bcu_rpm") or {}
-    if "mttf_sec" not in bcu:
-        return None
+    label = doc.get("anomaly") or {}
     return {
-        "mttf_sec": float(bcu["mttf_sec"]),
-        "num_levels": int(bcu.get("num_levels", 5)),
+        "class": label.get("anomaly_class", "nominal"),
+        "channel": label.get("channel", ""),
+        "archetype": label.get("archetype", ""),
     }
 
 

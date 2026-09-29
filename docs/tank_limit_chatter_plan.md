@@ -1,5 +1,17 @@
 # BCU valve flicker at the tank-pressure limit — diagnosis & fix
 
+> **SUPERSEDED (2026-07-27).** The BCU depth loop is now bang-bang, and most of
+> the machinery this document designs no longer exists: `BcuCommandGate`,
+> `TrimPulser`, the RPM deadband, the `pid_pressure` gains and the
+> `tank_release_band` hysteresis were all deleted along with the PID. The
+> chatter they suppressed came from a continuously modulated command; with one
+> speed, one direction and a turn only at a mission leg boundary, there is
+> nothing left to dither. What survives, and is still live: `BcuSafeStopBurst`
+> (`control/bcu_safe_stop_burst.py`) with its manual-yield, and
+> `TankLimitGuard` (`control/tank_limit_guard.py`), now a single-band latch at
+> 5% released only by a command reversal. Kept for the diagnosis and the
+> hardware failure modes it records, not as guidance.
+
 ## Symptom
 
 Bench "Trim & Neutral" test, depth target 7 m. On the bench the vehicle cannot
@@ -58,10 +70,12 @@ still-armed gate downstream just sees a steady `(0,0,0)` and holds the valves cl
 
 ## Files changed (all under `src/nautilus-ros/src/py_pkg/`)
 
-- **New `py_pkg/pid/tank_limit_guard.py`** — `clamp_to_tank_limits` (moved here from
-  `bcu_node.py`, reused by the guard for both the stop and release thresholds) plus
-  `class TankLimitGuard`.
-- **`py_pkg/pid/bcu_node.py`** — `solve_bcu_command` drops the clamp step and its tank
+- **New `py_pkg/control/tank_limit_guard.py`** — `class TankLimitGuard`, over the single
+  threshold check distilled from `bcu_node.py`'s old `clamp_to_tank_limits` and used
+  for both the stop and release thresholds. That check lives in
+  `math_utils.at_span_endpoint`, shared with the lifeguard's blow stand-down
+  (`mqtt/lifeguard.tank_blow_exhausted`) so the two safety gates can't drift apart.
+- **`py_pkg/control/bcu_node.py`** — `solve_bcu_command` drops the clamp step and its tank
   params (returns the raw direction the guard needs); `BCUNode` instantiates
   `self._tank_guard`, applies it in `control_loop`, and resets it on mission-stop and
   dive-init.
@@ -69,9 +83,12 @@ still-armed gate downstream just sees a steady `(0,0,0)` and holds the valves cl
   and `tank_release_band` (0.12), with a validator (`0 ≤ band < 0.5`, release ≥ stop).
 - **`py_pkg/scenarios/compile.py`** — both fields wired forward (`params_for_bcu_node`)
   and inverse (`bcu_spec_from_node`).
-- **Tests** — new `test/unit/test_tank_limit_guard.py` (Tier 1, incl. the
-  hold-through-noise regression); `test/unit/test_tank_limit_clamp.py` import updated
-  to the new module; `test/node/test_bcu_node.py::TestTankLimitClamp` passes unchanged.
+- **Tests** — new `test/unit/test_tank_limit_guard.py` (Tier 1) owns both layers: the
+  hold-through-noise regression, and the bare threshold tables (via a `_bare` helper
+  driving a fresh no-hysteresis guard per tick) that the since-deleted
+  `test/unit/test_tank_limit_clamp.py` used to hold behind a shim named after the
+  removed production function; `test/node/test_bcu_node.py::TestTankLimitClamp` passes
+  unchanged.
 
 ## Verification
 

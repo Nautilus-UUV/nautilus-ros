@@ -10,11 +10,86 @@ reap the gz-sim-server child of the Ruby ``gz sim`` wrapper.
 every sim test needs, and ``sim_gui_enabled`` reads the single shared
 ``SIM_GUI`` switch — defined once here so the polling slice and the
 env vocabulary can't drift between tests.
+
+``window`` / ``speed`` / ``omega`` are the timeseries-analysis helpers
+the trim/surface convergence assertions share.
+
+``mission_command`` builds the ``MissionCommand`` every sim driver publishes.
+It lives here because each driver used to fill the message field-by-field, so a
+new ``.msg`` field meant an identical edit in six files — and the last one added
+missed one of them.
+
+``SimClock`` sources Gazebo sim time from the ground-truth odometry
+stream. Velocity/time measurements must clock on it, not the wall
+clock: the full stack drags host RTF well below 1, and wall-clock
+slopes under-read true sim velocities by exactly that factor.
 """
 
+import math
 import os
 import subprocess
 import time
+
+from nautilus_hal.constants import SimTopics
+from nautilus_msgs.msg import MissionCommand
+from nav_msgs.msg import Odometry
+from py_pkg.physics import gauge_pressure_pa
+
+# Depth conversion for the sim's sea-pressure plugin gradient
+# (9.80638 kPa/m — the plugin's own constant, deliberately distinct from
+# physics.WATER_PRESSURE_GRADIENT_PA_PER_M). Defined once here so the
+# lake-matching tests can't drift apart on it.
+SIM_PA_PER_M = 9806.38
+
+# Privileged sim-only ground-truth pose stream (deliberately NOT in
+# uuv_ros_core, so production controllers can't depend on it). Its
+# header stamp IS gz sim time — the clock run_watchdog's plausibility
+# rules and every sim-time measurement in these tests use.
+GROUND_TRUTH_ODOM_TOPIC = SimTopics.ODOMETRY.format(model_name="glider_nautilus")
+
+
+def sim_depth_m(absolute_pa: float) -> float:
+    """Depth (m) of an absolute external-pressure sample (Pa) under the
+    sim's sea-pressure gradient."""
+    return gauge_pressure_pa(absolute_pa) / SIM_PA_PER_M
+
+
+class SimClock:
+    """Gazebo sim time for a test driver, read off ground-truth odometry.
+
+    ``now`` is the latest odometry header stamp in seconds (the stream
+    runs ~100 Hz, so cross-topic skew is <= 10 ms) or None until the
+    first message arrives — sample callbacks should drop data until
+    then rather than stamp it with a guess.
+    """
+
+    def __init__(self, node) -> None:
+        self.now: float | None = None
+        node.create_subscription(Odometry, GROUND_TRUTH_ODOM_TOPIC, self._on_odom, 10)
+
+    def _on_odom(self, msg: Odometry) -> None:
+        stamp = msg.header.stamp
+        self.now = stamp.sec + stamp.nanosec * 1e-9
+
+
+def mission_command(mission_id, **fields) -> MissionCommand:
+    """One ``MissionCommand`` for a sim driver to publish.
+
+    Every field not named stays at its ``.msg`` default (0 / 0.0), which is what
+    the profiles treat as "operator left this alone" -- so a test only spells out
+    the parameters its mission actually reads, and a new message field needs no
+    edit here or in any driver.
+
+    ``**fields`` are message field names, so the wire name (``n_resurfaces``)
+    applies rather than the operator-facing ``n_oscillations``.
+    """
+    cmd = MissionCommand()
+    cmd.mission_id = int(mission_id)
+    for name, value in fields.items():
+        # getattr first: a typo'd field would otherwise be silently attached to
+        # the message object instead of failing the test.
+        setattr(cmd, name, type(getattr(cmd, name))(value))
+    return cmd
 
 
 def spin_for(executor, duration_s: float, slice_s: float = 0.05) -> None:
@@ -38,6 +113,26 @@ def spin_until(executor, predicate, timeout_s: float, slice_s: float = 0.05) -> 
 def sim_gui_enabled() -> bool:
     """``SIM_GUI=1`` (or true/yes/on) shows the Gazebo GUI."""
     return os.environ.get("SIM_GUI", "").lower() in ("1", "true", "yes", "on")
+
+
+def window(
+    samples: list[tuple[float, object]],
+    window_start_t: float,
+) -> list[object]:
+    """Samples at or after ``window_start_t`` from a (t, sample) series."""
+    return [s for (t, s) in samples if t >= window_start_t]
+
+
+def speed(odom: Odometry) -> float:
+    """Ground-truth linear speed |v| of one odometry sample."""
+    v = odom.twist.twist.linear
+    return math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z)
+
+
+def omega(odom: Odometry) -> float:
+    """Ground-truth angular rate |w| of one odometry sample."""
+    w = odom.twist.twist.angular
+    return math.sqrt(w.x * w.x + w.y * w.y + w.z * w.z)
 
 
 # Catches the Ruby wrapper for our world, and the "gz sim server" child

@@ -36,10 +36,11 @@ class PIDController:
         self.output_min, self.output_max = output_limits
         self.derivative_filter_coeff = derivative_filter
 
-        self.prev_error = 0.0
         self.prev_input = 0.0
         self.prev_time = None
         self.integral = 0.0
+        # EMA accumulator for the D-term, carried across updates. Only read
+        # when `derivative_filter` > 0; internal state, not an output.
         self.filtered_derivative = 0.0
 
     def update(self, target: float, input: float, time: float) -> float:
@@ -65,7 +66,6 @@ class PIDController:
 
         # First call initialization
         if self.prev_time is None:
-            self.prev_error = error
             self.prev_input = input
             self.prev_time = time
             return 0.0
@@ -106,7 +106,6 @@ class PIDController:
         output = max(self.output_min, min(self.output_max, output))
 
         # Store previous values
-        self.prev_error = error
         self.prev_input = input
         self.prev_time = time
 
@@ -116,6 +115,5 @@ class PIDController:
         """Reset controller state."""
         self.integral = 0.0
         self.filtered_derivative = 0.0
-        self.prev_error = 0.0
         self.prev_input = 0.0
         self.prev_time = None

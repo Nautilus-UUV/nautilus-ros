@@ -21,15 +21,19 @@ The harness publishes:
 
 import pytest
 
-from py_pkg.robot_specs import ACU_ROLL_CDEG_PER_DEG, ACU_ROLL_MAX_ANGLE_DEG
+from py_pkg.robot_specs import (
+    ACU_PITCH_MM_PER_M,
+    ACU_ROLL_CDEG_PER_DEG,
+    ACU_ROLL_MAX_ANGLE_DEG,
+)
 from py_pkg.scenarios.spec.control import AcuPitchSpec
 
 # Bang-bang pitch wire values, mirrored from acu_node.py. Index 0 is the
 # "back" extreme (selected when shallower than setpoint), index 1 is the
 # "front" extreme (selected when deeper than or equal to setpoint).
 _PITCH_OUTPUT_LIMITS_M = AcuPitchSpec().output_limits
-PITCH_BACK_MM = int(round(_PITCH_OUTPUT_LIMITS_M[0] * 1000.0))
-PITCH_FRONT_MM = int(round(_PITCH_OUTPUT_LIMITS_M[1] * 1000.0))
+PITCH_BACK_MM = int(round(_PITCH_OUTPUT_LIMITS_M[0] * ACU_PITCH_MM_PER_M))
+PITCH_FRONT_MM = int(round(_PITCH_OUTPUT_LIMITS_M[1] * ACU_PITCH_MM_PER_M))
 
 ROLL_MAX_CDEG = int(round(ACU_ROLL_MAX_ANGLE_DEG * ACU_ROLL_CDEG_PER_DEG))
 
@@ -315,3 +319,158 @@ class TestStopResetsAndSilences:
         assert (
             h.received_roll_cdeg == []
         ), f"roll must stay silent after stop, got {h.received_roll_cdeg}"
+
+
+class TestMissionCompleteStops:
+    """A finished mission neutralizes the ACU through MISSION_COMPLETE alone.
+
+    Same contract as the operator stop above, reached by the other event. It
+    matters most here because the STM re-ships the last value forever: without
+    this subscription, a completed mission would leave its final mass-shifter
+    position latched on the wire with nothing left to clear it."""
+
+    def test_completion_emits_neutral_then_silent(self, acu_node_harness):
+        h = acu_node_harness
+        # Drive a pitch + roll command first (shallower than target -> diving).
+        h.publish_target(roll_deg=20.0, target_pressure_pa=80000.0)
+        h.publish_current_attitude(gauge_pa=20000.0)
+        h.spin_until(lambda: len(h.received_pitch_mm) >= 2, timeout=1.5)
+        assert h.received_pitch_mm[-1] != 0, "precondition: pitch actively driven"
+
+        # Completion only -- no /command anywhere in this test.
+        h.publish_mission_complete()
+        h.spin_until(lambda: h.node.target_pressure_pa is None, timeout=1.0)
+        assert h.node.target_pressure_pa is None
+        h.spin_for(0.2)  # let the one-shot neutral land
+        assert h.received_pitch_mm and h.received_pitch_mm[-1] == 0
+        assert h.received_roll_cdeg and h.received_roll_cdeg[-1] == 0
+
+        # Loop gated off: attitude keeps flowing, nothing new goes out.
+        h.received_pitch_mm.clear()
+        h.received_roll_cdeg.clear()
+        for _ in range(8):
+            h.publish_current_attitude(gauge_pa=20000.0)
+            h.spin_for(0.05)
+        assert (
+            h.received_pitch_mm == []
+        ), f"pitch must stay silent after completion, got {h.received_pitch_mm}"
+        assert (
+            h.received_roll_cdeg == []
+        ), f"roll must stay silent after completion, got {h.received_roll_cdeg}"
+
+    def test_completion_false_is_ignored(self, acu_node_harness):
+        # Bool(false) on MISSION_COMPLETE is not a completion; a running
+        # mission must survive it.
+        h = acu_node_harness
+        h.publish_target(roll_deg=20.0, target_pressure_pa=80000.0)
+        h.publish_current_attitude(gauge_pa=20000.0)
+        h.spin_until(lambda: len(h.received_pitch_mm) >= 2, timeout=1.5)
+
+        h.publish_mission_complete(False)
+        h.spin_for(0.3)
+        assert h.node.target_pressure_pa == pytest.approx(80000.0)
+        assert h.received_pitch_mm[-1] != 0, "pitch must still be driven"
+
+
+class TestStopIsEdgeTriggered:
+    """A stop while already stopped must put NOTHING on the ACU wire.
+
+    There is no arbiter on /acu/pitch + /acu/roll -- last writer wins at the
+    STM -- and the UI sends /command=false before every manual command. Without
+    the edge trigger each of those stops drops a neutral on top of the
+    operator's pitch/roll and silently undoes the command they just sent. Note
+    this is a stronger requirement than the BCU's version of the same guard:
+    there the duplicate stop re-arms a safe-stop burst, here a single stray
+    sample is already enough to move the mass shifter."""
+
+    def _drive_then_stop(self, h):
+        h.publish_target(roll_deg=20.0, target_pressure_pa=80000.0)
+        h.publish_current_attitude(gauge_pa=20000.0)
+        h.spin_until(lambda: len(h.received_pitch_mm) >= 2, timeout=1.5)
+        h.publish_command(False)
+        h.spin_until(lambda: h.node.target_pressure_pa is None, timeout=1.0)
+        h.spin_for(0.2)  # let the one legitimate neutral land
+
+    def test_repeated_stop_emits_nothing(self, acu_node_harness):
+        h = acu_node_harness
+        self._drive_then_stop(h)
+        h.received_pitch_mm.clear()
+        h.received_roll_cdeg.clear()
+
+        h.publish_command(False)
+        h.spin_for(0.4)
+        assert (
+            h.received_pitch_mm == []
+        ), f"a repeated stop must not re-emit pitch, got {h.received_pitch_mm}"
+        assert (
+            h.received_roll_cdeg == []
+        ), f"a repeated stop must not re-emit roll, got {h.received_roll_cdeg}"
+
+    def test_stop_does_not_clobber_a_manual_command(self, acu_node_harness):
+        # The engageManual order the UI actually sends: stop, then the manual
+        # setpoint. A second stop arrives before the NEXT manual command -- and
+        # must not land a neutral between them. Modelled here by checking that
+        # acu_node contributes nothing at all once stopped, so whatever
+        # acu_debug put on the wire is still the last word.
+        h = acu_node_harness
+        self._drive_then_stop(h)
+        h.received_pitch_mm.clear()
+        h.received_roll_cdeg.clear()
+
+        for _ in range(4):
+            h.publish_command(False)
+            h.publish_current_attitude(roll_deg=15.0, gauge_pa=20000.0)
+            h.spin_for(0.1)
+        assert h.received_pitch_mm == [] and h.received_roll_cdeg == [], (
+            "acu_node must stay off the wire while stopped, leaving the manual "
+            f"driver's value latched; got pitch={h.received_pitch_mm} "
+            f"roll={h.received_roll_cdeg}"
+        )
+
+    def test_a_fresh_target_re_arms_the_stop(self, acu_node_harness):
+        # The guard must not wedge the node: a new mission target makes the
+        # next stop emit its neutral again.
+        h = acu_node_harness
+        self._drive_then_stop(h)
+        h.publish_target(roll_deg=20.0, target_pressure_pa=80000.0)
+        h.publish_current_attitude(gauge_pa=20000.0)
+        h.spin_until(lambda: h.node.target_pressure_pa is not None, timeout=1.0)
+        h.received_pitch_mm.clear()
+        h.received_roll_cdeg.clear()
+
+        h.publish_command(False)
+        h.spin_until(lambda: h.node.target_pressure_pa is None, timeout=1.0)
+        h.spin_for(0.2)
+        assert h.received_pitch_mm and h.received_pitch_mm[-1] == 0
+        assert h.received_roll_cdeg and h.received_roll_cdeg[-1] == 0
+
+
+class TestTeardownParksTheWire:
+    """destroy_node emits a neutral, mirroring bcu_node's teardown safe-stop.
+
+    The STM latches the last value it was sent and has no staleness watchdog,
+    so a node exiting mid-mission (Ctrl-C, launch shutdown, crash-restart)
+    would otherwise leave the mass shifter parked at the last commanded
+    pitch/roll with nothing left running to move it."""
+
+    def test_destroy_node_emits_neutral(self, acu_node_harness):
+        h = acu_node_harness
+        # A live mission with a non-neutral command on the wire.
+        h.publish_target(roll_deg=20.0, target_pressure_pa=80000.0)
+        h.publish_current_attitude(gauge_pa=20000.0)
+        h.spin_until(lambda: len(h.received_pitch_mm) >= 2, timeout=1.5)
+        assert h.received_pitch_mm[-1] != 0, "precondition: pitch off neutral"
+        h.received_pitch_mm.clear()
+        h.received_roll_cdeg.clear()
+
+        # Exit without any stop at all. The tester keeps spinning, so what the
+        # node emitted on its way out is observable.
+        h.destroy_node_under_test()
+        h.spin_for(0.5)
+
+        assert h.received_pitch_mm[-1:] == [
+            0
+        ], f"teardown must park pitch at neutral, got {h.received_pitch_mm}"
+        assert h.received_roll_cdeg[-1:] == [
+            0
+        ], f"teardown must park roll at neutral, got {h.received_roll_cdeg}"

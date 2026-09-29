@@ -2,15 +2,13 @@
 
 Authors what controllers and the mission look like for one run.
 Knows nothing about faults, sim plant, or world identifiers — those
-live in `rig.py`. Defaults reproduce today's literal values in
-`pid/depth_config.py` and `pid/acu_roll_config.py`, with one deliberate
-exception: the BCU pump deadband (`DepthPlantModel.min_rpm` /
-`min_operating_rpm`) defaults to active (500/1000), because the pump's
-minimum reliable speed is a hardware floor that applies on every run.
+live in `rig.py`.
 
-DepthPlantModel is deliberately separate from RigScenario.plant.
-At nominal both mirror robot_specs; MC perturbs them independently
-to study controller-model-vs-actual-plant mismatch.
+The BCU depth loop is bang-bang, so it has no gains and no model of the
+plant: it compares the depth error against one deadband and commands the
+pump at one speed in one direction. That is why `DepthSpec` is four
+fields where it used to be twenty — everything else was either PID tuning
+or machinery to stop a modulated command from chattering.
 """
 
 from __future__ import annotations
@@ -20,118 +18,71 @@ from pydantic import Field, model_validator
 from py_pkg.robot_specs import (
     ACU_ROLL_MAX_ANGLE_DEG,
     BCU_MOTOR_MAX_RPM,
-    BLADDER_VOLUME_M3,
 )
 
 from ._shared import StrictModel
 
 
-class PIDPressureSpec(StrictModel):
-    """Inner-loop pressure PID gains for the depth controller.
-
-    kp drives the main pump speed — tuned so a 2.5 m error runs the
-    pump at ~4000 RPM. kd damps the approach against quantised
-    pressure-sensor noise; `derivative_filter` is the smoothing
-    coefficient that makes kd usable at all. ki is kept tiny on
-    purpose — long deep dives accumulate huge error, and a larger ki
-    would memorise that error and overshoot the target.
-    """
-
-    kp: float = 4.0e-7
-    ki: float = 1.0e-8
-    kd: float = 1.5e-5
-    integral_limits: tuple[float, float] = (-0.0025, 0.0025)
-    output_limits: tuple[float, float] = (-0.010, 0.010)
-    derivative_filter: float = 0.3
-
-
-class DepthPlantModel(StrictModel):
-    """The controller's *model* of the buoyancy plant.
-
-    Distinct from RigScenario.plant: that is what the simulator
-    actually does. This is what the controller thinks the plant is.
-    Identical at nominal; MC sweeps can perturb either independently.
-
-    pump_efficiency is the volumetric efficiency the controller assumes
-    when inverting q (flow ratio) → motor RPM. Lives here, not in
-    robot_specs, because it's a tunable plant-model parameter — the
-    real pump's efficiency drifts with wear and operating point, and
-    MC sweeps want to study controller-vs-actual mismatch on it.
-    """
-
-    bladder_nominal_m3: float = BLADDER_VOLUME_M3
-    initial_proportion_full: float = 1.0
-    # Pump deadband, applied to the RPM command in the control loop. The
-    # pump can't run reliably at low speed, so the loop snaps the command
-    # into three regions: |rpm| < min_rpm -> 0,
-    # min_rpm <= |rpm| < min_operating_rpm -> +/-min_operating_rpm, and
-    # everything above passes through saturated to +/-max_rpm. On by
-    # default — the floor is a hardware fact, not a per-scenario choice —
-    # though MC sweeps may override it. min_rpm / min_operating_rpm are
-    # control knobs, not robot_specs mirrors; only max_rpm mirrors the
-    # hardware ceiling.
-    min_rpm: int = 500
-    min_operating_rpm: int = 1000
-    max_rpm: int = BCU_MOTOR_MAX_RPM
-    # Nominal pump volumetric efficiency between 1000 and 3000 RPM.
-    pump_efficiency: float = 0.93
-
-
 class DepthSpec(StrictModel):
+    """BCU depth loop — bang-bang on the sign of the depth error.
+
+    The pump runs at `pump_rpm` in whichever direction closes the error,
+    and keeps running until either the tank reaches `tank_stop_band` of an
+    endpoint or the mission advances to a leg whose target flips the sign.
+    Nothing modulates, so there is no chatter to suppress.
+    """
+
     frequency_hz: int = 10
-    pid_pressure: PIDPressureSpec = Field(default_factory=PIDPressureSpec)
-    plant_model: DepthPlantModel = Field(default_factory=DepthPlantModel)
 
-    # Near-setpoint command gate (BcuCommandGate). Anti-chatter for the
-    # case that broke a bench test: a depth target ~= current depth, where
-    # sensor noise dither would otherwise flip the pump and valves every
-    # tick. The pump is held idle inside `error_disarm_pa` of the target and
-    # only re-arms past the wider `error_arm_pa` (hysteresis); the valve
-    # bitmask is rate-limited to one change per `min_valve_dwell_s` to
-    # protect the solenoids in every regime. Defaults are ON -- the chatter
-    # is a real hardware hazard, not a per-scenario choice -- but a sweep can
-    # zero all three to recover the raw pre-gate command.
-    error_disarm_pa: float = 2000.0  # ~0.2 m: hold idle within this of target
-    error_arm_pa: float = 4000.0  # ~0.4 m: re-arm the pump past this
-    min_valve_dwell_s: float = 0.5  # hold each valve state at least this long
+    # The single bang-bang command magnitude. Defaults to the hardware
+    # ceiling: full authority is the point of the law, and a leg that ends
+    # sooner is a leg with less pump-on time. A sweep can lower it to study
+    # a weaker pump without touching robot_specs.
+    pump_rpm: int = BCU_MOTOR_MAX_RPM
 
-    # Latching tank-endpoint cutoff (TankLimitGuard). Sister anti-chatter for
-    # the other case that broke a bench test: with the vehicle on the bench it
-    # can't dive, so the loop drives the tank onto the stop guard and parks
-    # there -- and a bare threshold sitting on noise chatters the valves. The
-    # guard latches the stop and only releases once the tank retreats past the
-    # wider `tank_release_band` guard (hysteresis), or the command reverses.
-    # Both are fractions of the empty->full span; release >= stop.
-    tank_stop_band: float = 0.10  # latch the stop within this of an endpoint
-    tank_release_band: float = 0.12  # release only once back outside this
+    # Below this |error| the pump is off and both valves are shut. NOT
+    # hysteresis and NOT a latch -- it exists because SURFACE targets gauge
+    # 0 Pa, where the reading bobs across zero on sensor noise; without it
+    # the error's sign would flip on that noise and the pump would start
+    # filling the tank at the surface.
+    #
+    # Sizing: 2000 Pa is ~0.2 m, comfortably above the depth sensor's 100 Pa
+    # quantisation and surface bob, and comfortably below every mission's
+    # arrival tolerance (TRIM's NEAR_GOAL_PA is 4903 Pa; the sawtooth /
+    # staircase / surface bands are 7845 Pa), so it can never truncate a leg
+    # -- the mission always turns before the deadband is reached.
+    deadband_pa: float = 2000.0
+
+    # Latching tank-endpoint cutoff (TankLimitGuard), as a fraction of the
+    # empty->full span. This is the stop condition every bang-bang leg runs
+    # into: pump one way until the tank rails here, then coast until the
+    # mission's next leg reverses the command. It also fixes the bench-test
+    # bug -- with the vehicle held on the bench it can't dive, so the loop
+    # drives the tank onto the guard and parks there, and a bare threshold
+    # sitting on tank-sensor noise chatters the valves. The latch holds
+    # through that noise; only a command reversal or a reset releases it.
+    tank_stop_band: float = 0.05
 
     @model_validator(mode="after")
     def _check_depth_params(self) -> DepthSpec:
-        if self.error_disarm_pa < 0.0 or self.error_arm_pa < 0.0:
-            raise ValueError("error_arm_pa and error_disarm_pa must be >= 0")
-        if self.error_disarm_pa > self.error_arm_pa:
-            raise ValueError(
-                "error_disarm_pa must be <= error_arm_pa "
-                f"(got {self.error_disarm_pa} > {self.error_arm_pa}); the "
-                "disarm band is the inner edge of the arm hysteresis"
-            )
-        if self.min_valve_dwell_s < 0.0:
-            raise ValueError("min_valve_dwell_s must be >= 0")
+        if self.pump_rpm <= 0:
+            raise ValueError(f"pump_rpm must be > 0 (got {self.pump_rpm})")
+        if self.deadband_pa < 0.0:
+            raise ValueError(f"deadband_pa must be >= 0 (got {self.deadband_pa})")
         if not 0.0 <= self.tank_stop_band < 0.5:
-            raise ValueError("tank_stop_band must be in [0, 0.5)")
-        if not 0.0 <= self.tank_release_band < 0.5:
-            raise ValueError("tank_release_band must be in [0, 0.5)")
-        if self.tank_release_band < self.tank_stop_band:
             raise ValueError(
-                "tank_release_band must be >= tank_stop_band "
-                f"(got {self.tank_release_band} < {self.tank_stop_band}); the "
-                "release guard sits at or inside the stop guard"
+                f"tank_stop_band must be in [0, 0.5) (got {self.tank_stop_band})"
             )
         return self
 
 
 class AcuPitchSpec(StrictModel):
     """ACU pitch axis — soft-saturation limits for the bang-bang loop.
+
+    DEPRECATED / NOT IMPLEMENTED IN SIM: the simulated ACU actuator was
+    removed (the glider_nautilus model is now static, symmetric, BCU-only).
+    These limits are retained for the real-hardware ACU path and are not
+    exercised in simulation.
 
     The pitch loop has no PID; the node throws the mass-shifter to one
     of two extremes pulled from `output_limits` (front, back) in metres.
@@ -147,12 +98,16 @@ class AcuPitchSpec(StrictModel):
     ACU node's timer, set by AcuRollSpec.
     """
 
-    name: str = "pitch"
     output_limits: tuple[float, float] = (-0.11, -0.01)
 
 
 class AcuRollSpec(StrictModel):
     """ACU roll axis PID.
+
+    DEPRECATED / NOT IMPLEMENTED IN SIM: the simulated ACU actuator was
+    removed (the glider_nautilus model is now static, symmetric, BCU-only).
+    These gains are retained for the real-hardware ACU path and are not
+    exercised in simulation.
 
     Conservative gains so the roll loop doesn't induce pitch
     coupling. command_tolerance sits just above estimator roll noise
@@ -165,7 +120,6 @@ class AcuRollSpec(StrictModel):
     """
 
     frequency_hz: int = 10
-    name: str = "roll"
     kp: float = 0.5
     ki: float = 0.005
     kd: float = 0.05
@@ -185,7 +139,29 @@ class ControllersSpec(StrictModel):
 
 
 class ImuPrefilterSpec(StrictModel):
-    pass  # no tunables yet; placeholder so future params have a home
+    """Raw-IMU EMA prefilter — the first stage of the estimation front-end.
+
+    `alpha` is the EMA coefficient (0 = very smooth, 1 = no filtering) applied
+    to the six accel/gyro components. It sets the bandwidth of the signal the
+    attitude estimator sees, since `attitude_node` adds no filter of its own,
+    and it is also what band-limits the stream the MQTT egress decimates to
+    10 Hz by sample-dropping.
+
+    0.15 puts the -3 dB cutoff at ~5 Hz for a 200 Hz IMU
+    (alpha = 1 - exp(-2*pi*fc/fs)) with ~28 ms of group delay
+    (~(1-alpha)/alpha samples).
+    """
+
+    alpha: float = 0.15
+
+    @model_validator(mode="after")
+    def _check_prefilter_params(self) -> ImuPrefilterSpec:
+        if not 0.0 < self.alpha <= 1.0:
+            raise ValueError(
+                f"prefilter alpha must be in (0, 1] (got {self.alpha}); "
+                "0 would freeze the filter on its first sample"
+            )
+        return self
 
 
 class AttitudeSpec(StrictModel):

@@ -26,6 +26,8 @@ from launch import LaunchDescription
 from launch.actions import IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.substitutions import FindPackageShare
+from py_pkg.robot_specs import BCU_MOTOR_VALVE_MASK
+from py_pkg.scenarios.spec.rig import NoiseSpec
 from py_pkg.uuv_ros_core import (
     UUVTopics,
     create_publisher_for_topic,
@@ -34,9 +36,9 @@ from py_pkg.uuv_ros_core import (
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from sensor_msgs.msg import Imu
-from std_msgs.msg import Float32, Int16, Int32
+from std_msgs.msg import Float32, Int16, Int32, UInt8
 
-from ._sim_helpers import reap_lingering_gz, sim_gui_enabled
+from ._sim_helpers import reap_lingering_gz, sim_gui_enabled, spin_for, spin_until
 
 # ---------------------------------------------------------------------------
 # Launch description — composed, NOT a wholesale include of an end-to-end
@@ -119,11 +121,18 @@ class _BCUTestDriver(Node):
         super().__init__("bcu_sim_test_driver")
         self.received_flow: list[float] = []
         self.received_volume_ml: list[int] = []
+        self.received_tank_pa: list[int] = []
+        self.received_external_pa: list[int] = []
         self.imu_msg_count: int = 0
 
         self.rpm_pub = create_publisher_for_topic(self, UUVTopics.BCU_RPM)
+        self.valves_pub = create_publisher_for_topic(self, UUVTopics.BCU_VALVES)
         create_subscription_for_topic(self, UUVTopics.BCU_FLOW_RATE, self._on_flow)
         create_subscription_for_topic(self, UUVTopics.BCU_VOLUME, self._on_volume)
+        create_subscription_for_topic(self, UUVTopics.BCU_PRESSURE, self._on_tank)
+        create_subscription_for_topic(
+            self, UUVTopics.EXTERNAL_PRESSURE, self._on_external
+        )
         # IMU is the sim-readiness signal: imu_sim_bridge has no timer,
         # so any message proves Gazebo physics + plugins are alive.
         create_subscription_for_topic(self, UUVTopics.IMU, self._on_imu)
@@ -134,13 +143,25 @@ class _BCUTestDriver(Node):
     def _on_volume(self, msg: Int32) -> None:
         self.received_volume_ml.append(int(msg.data))
 
+    def _on_tank(self, msg: Int32) -> None:
+        self.received_tank_pa.append(int(msg.data))
+
+    def _on_external(self, msg: Int32) -> None:
+        self.received_external_pa.append(int(msg.data))
+
     def _on_imu(self, msg: Imu) -> None:
         self.imu_msg_count += 1
 
     def publish_rpm(self, rpm: int) -> None:
+        # Mirror bcu_node's wire shape: a nonzero RPM rides with valve 2
+        # (motor way) open, a stop closes the valves. The bridge gates the
+        # hydraulic transfer on valve 2, so RPM alone must not move oil.
         msg = Int16()
         msg.data = int(rpm)
         self.rpm_pub.publish(msg)
+        valves = UInt8()
+        valves.data = BCU_MOTOR_VALVE_MASK if rpm != 0 else 0
+        self.valves_pub.publish(valves)
 
 
 # ---------------------------------------------------------------------------
@@ -172,21 +193,6 @@ class BCUSimTest(unittest.TestCase):
         self.driver.destroy_node()
         self.executor.shutdown()
 
-    # ---- helpers ----------------------------------------------------------
-
-    def _spin_for(self, duration_s: float, slice_s: float = 0.05) -> None:
-        deadline = time.monotonic() + duration_s
-        while time.monotonic() < deadline:
-            self.executor.spin_once(timeout_sec=slice_s)
-
-    def _spin_until(self, predicate, timeout_s: float, slice_s: float = 0.05):
-        deadline = time.monotonic() + timeout_s
-        while time.monotonic() < deadline:
-            if predicate():
-                return True
-            self.executor.spin_once(timeout_sec=slice_s)
-        return predicate()
-
     # ---- the test ---------------------------------------------------------
 
     def test_positive_rpm_fills_bladder(self):
@@ -210,7 +216,8 @@ class BCUSimTest(unittest.TestCase):
 
         # 1) Wait for sim. IMU is the readiness signal — BCU_VOLUME
         # isn't (its timer publishes 0 immediately).
-        sim_ready = self._spin_until(
+        sim_ready = spin_until(
+            self.executor,
             lambda: self.driver.imu_msg_count >= 1,
             timeout_s=startup_timeout_s,
         )
@@ -221,14 +228,14 @@ class BCUSimTest(unittest.TestCase):
         )
 
         # 2) Let the buoyancy plugin finish loading.
-        self._spin_for(post_ready_settle_s)
+        spin_for(self.executor, post_ready_settle_s)
 
         # 3) Fire the bridge's startup clamp to rig.plant.bladder_min_m3 by
         #    publishing RPM=0, then let the volume roundtrip settle.
         for _ in range(3):
             self.driver.publish_rpm(0)
             self.executor.spin_once(timeout_sec=0.05)
-        self._spin_for(sync_settle_s)
+        spin_for(self.executor, sync_settle_s)
 
         self.assertGreater(
             len(self.driver.received_volume_ml),
@@ -253,7 +260,7 @@ class BCUSimTest(unittest.TestCase):
 
         # 6) Stop the pump and let queues drain.
         self.driver.publish_rpm(0)
-        self._spin_for(settle_s)
+        spin_for(self.executor, settle_s)
 
         # 7a) Need >=1 positive flow sample (not all — the first can land
         # before the subscription handshake completes).
@@ -281,6 +288,73 @@ class BCUSimTest(unittest.TestCase):
             starting_volume_ml,
             f"bladder volume did not increase under sustained +RPM: "
             f"start={starting_volume_ml} mL, end={ending_volume_ml} mL",
+        )
+
+    def test_sensor_noise_combs(self):
+        """Injected sensor noise lands on the real sensors' quantization combs.
+
+        The default scenario (nominal.yaml) runs with lake-fitted noise ON:
+        tank pressure is sigma=353 Pa rounded to the 600 Pa grid, external
+        pressure is quantization-only on a 100 Pa grid. Collect a window of
+        telemetry and assert (a) every sample sits on its comb, and (b) the
+        tank stream actually dithers (>=2 distinct values in a steady
+        window) — i.e. the Gaussian term is alive, not just rounding.
+        """
+        startup_timeout_s = 60.0
+        n_samples = 50  # 10 Hz publish rate -> ~5 s of telemetry
+
+        sim_ready = spin_until(
+            self.executor,
+            lambda: self.driver.imu_msg_count >= 1,
+            timeout_s=startup_timeout_s,
+        )
+        self.assertTrue(sim_ready, "IMU never arrived — sim not up?")
+
+        collected = spin_until(
+            self.executor,
+            lambda: (
+                len(self.driver.received_tank_pa) >= n_samples
+                and len(self.driver.received_external_pa) >= n_samples
+            ),
+            timeout_s=30.0,
+        )
+        self.assertTrue(
+            collected,
+            f"expected >= {n_samples} tank + external samples; got "
+            f"{len(self.driver.received_tank_pa)} tank / "
+            f"{len(self.driver.received_external_pa)} external",
+        )
+
+        tank = self.driver.received_tank_pa[-n_samples:]
+        external = self.driver.received_external_pa[-n_samples:]
+
+        # Comb steps come from the spec defaults; a Tier 1 test locks the
+        # launched nominal.yaml to those same values, so a noise re-fit
+        # updates this test automatically.
+        noise = NoiseSpec()
+        tank_step = round(noise.tank_pressure.quantization_pa)
+        external_step = round(noise.external_pressure.quantization_pa)
+
+        off_comb_tank = [v for v in tank if v % tank_step != 0]
+        self.assertEqual(
+            off_comb_tank,
+            [],
+            f"tank pressure samples off the {tank_step} Pa comb: {off_comb_tank[:5]!r}",
+        )
+        self.assertGreaterEqual(
+            len(set(tank)),
+            2,
+            f"tank pressure never dithered (sigma="
+            f"{noise.tank_pressure.sigma_pa:.0f} Pa should move it "
+            f"across the {tank_step} Pa grid): {sorted(set(tank))!r}",
+        )
+
+        off_comb_external = [v for v in external if v % external_step != 0]
+        self.assertEqual(
+            off_comb_external,
+            [],
+            f"external pressure samples off the {external_step} Pa comb: "
+            f"{off_comb_external[:5]!r}",
         )
 
 

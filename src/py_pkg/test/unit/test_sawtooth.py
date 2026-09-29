@@ -13,26 +13,32 @@ import pytest
 from geometry_msgs.msg import Pose
 
 from py_pkg.math_utils import quaternion_to_roll_pitch
-from py_pkg.path.missions.profile import MissionState
-from py_pkg.path.missions.sawtooth import (
+from py_pkg.path.missions.profile import (
     DESCEND_TOLERANCE_PA,
     SHALLOW_TOLERANCE_PA,
     SURFACE_THRESHOLD_PA,
-    SawtoothMission,
+    MissionState,
 )
+from py_pkg.path.missions.sawtooth import SawtoothMission
 
 DEEP_PA = 200_000.0
 SHALLOW_PA = 50_000.0
 
 
 def _make_state(
-    target_pa=DEEP_PA, shallow_pa=SHALLOW_PA, angle_rad=0.4, n_oscillations=2
+    target_pa=DEEP_PA,
+    shallow_pa=SHALLOW_PA,
+    angle_rad=0.4,
+    n_oscillations=2,
 ):
+    # The helper speaks the operator/launch-arg word "oscillations"; the msg
+    # and MissionState field it lands on is `n_resurfaces`. Same count -- one
+    # dive to the deep extremum and back up.
     return MissionState(
         target_pressure_pa=target_pa,
         shallow_pressure_pa=shallow_pa,
         angle_rad=angle_rad,
-        n_oscillations=n_oscillations,
+        n_resurfaces=n_oscillations,
     )
 
 
@@ -281,23 +287,18 @@ class TestShallowZeroBackwardCompat:
     profile: every climb goes to the surface, where it both turns and
     (on the final dive) completes."""
 
-    def test_ascend_targets_surface_when_shallow_zero(self):
+    @pytest.mark.parametrize(
+        "shallow_pa",
+        [
+            0.0,  # the legacy request, spelled explicitly
+            DEEP_PA,  # shallow >= deep is degenerate -> clamp to the surface
+            -10_000.0,  # below the surface is degenerate too
+        ],
+    )
+    def test_ascend_targets_surface(self, shallow_pa):
         m = SawtoothMission()
-        m.start(_make_state(shallow_pa=0.0, n_oscillations=2))
+        m.start(_make_state(target_pa=DEEP_PA, shallow_pa=shallow_pa, n_oscillations=2))
         m.update(DEEP_PA)  # first dive -> non-final ascend
-        assert m.reference(0.0).position.z == pytest.approx(0.0)
-
-    def test_inverted_shallow_falls_back_to_surface(self):
-        # shallow >= deep is degenerate -> clamp to the legacy 0 (surface).
-        m = SawtoothMission()
-        m.start(_make_state(target_pa=DEEP_PA, shallow_pa=DEEP_PA, n_oscillations=2))
-        m.update(DEEP_PA)
-        assert m.reference(0.0).position.z == pytest.approx(0.0)
-
-    def test_negative_shallow_falls_back_to_surface(self):
-        m = SawtoothMission()
-        m.start(_make_state(shallow_pa=-10_000.0, n_oscillations=2))
-        m.update(DEEP_PA)
         assert m.reference(0.0).position.z == pytest.approx(0.0)
 
 
@@ -335,3 +336,54 @@ class TestQuaternionUnitNorm:
         q = m.reference(0.0).orientation
         norm = math.sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w)
         assert norm == pytest.approx(1.0, abs=1e-9)
+
+
+class TestTurnIsImmediateOnArrival:
+    """Arrival at an extremum flips the leg on the same tick -- there is no
+    station-keep phase in between.
+
+    This is what reverses the bang-bang BCU: the new leg's target sits on
+    the far side of the vehicle, so the depth error changes sign at the
+    turn and the pump reverses. A hold here would have left the controller
+    with a target it cannot sit on, since the bladder is at a tank rail by
+    the time the extremum is reached.
+    """
+
+    def test_deep_arrival_flips_straight_to_the_ascend_leg(self):
+        m = SawtoothMission()
+        m.start(_make_state(shallow_pa=0.0))
+        m.update(200_000.0)
+        pose = m.reference(0.0)
+        assert pose.position.z == pytest.approx(0.0)
+        assert _pitch_of(pose) == pytest.approx(+0.4)
+
+    def test_reference_is_time_invariant_after_a_turn(self):
+        # No timer anywhere in the state machine: the setpoint depends only
+        # on the leg, so replaying `reference` at any t gives the same pose.
+        m = SawtoothMission()
+        m.start(_make_state(shallow_pa=0.0))
+        m.update(200_000.0)
+        poses = [m.reference(t) for t in (0.0, 1.0, 30.0, 130.0, 1e6)]
+        assert {p.position.z for p in poses} == {0.0}
+        assert all(_pitch_of(p) == pytest.approx(+0.4) for p in poses)
+
+    def test_target_sign_flips_across_the_turn(self):
+        # The controller-facing contract, stated directly: approaching the
+        # deep extremum the target is below the vehicle; one tick after
+        # arrival it is above. The BCU reads exactly this sign.
+        m = SawtoothMission()
+        m.start(_make_state(shallow_pa=0.0))
+        current = 200_000.0 - DESCEND_TOLERANCE_PA - 1.0
+        m.update(current)
+        assert m.reference(0.0).position.z - current > 0  # dive
+        m.update(200_000.0)
+        assert m.reference(0.0).position.z - 200_000.0 < 0  # climb
+
+    def test_full_cycle_terminates(self):
+        m = SawtoothMission()
+        m.start(_make_state(target_pa=200_000.0, shallow_pa=0.0, n_oscillations=1))
+        assert not m.is_done(0.0)
+        m.update(200_000.0)  # depth reached, ascending
+        assert not m.is_done(0.0)
+        m.update(0.0)  # resurfaced, count=1
+        assert m.is_done(0.0) is True

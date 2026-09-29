@@ -2,8 +2,10 @@
 """`run_analysis` CLI: summarise + plot a ros-collected sweep dataset.
 
 Discovers the runs in a dataset dir (form of `sim_data/bcu_fault_dataset/`), drops
-the ones that failed on startup (floated at the surface, never dived), then always
-writes a markdown statistics report and, on top of that, the requested plot(s).
+the non-viable ones (surface-floaters that never dived, continuous sinkers that
+never climbed back, runs without odometry), then always writes a markdown
+statistics report — including the per-reason run-viability breakdown — and, on
+top of that, the requested plot(s).
 """
 
 from __future__ import annotations
@@ -18,18 +20,16 @@ from pathlib import Path
 _SCRIPTS_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(_SCRIPTS_DIR.parent / "src/py_pkg"))
 
-from analysis.bag_reader import read_fault_levels
 from analysis.dataset_stats import summarize_dataset
-from analysis.plotting.error_box_plot import plot_error_box
 from analysis.plotting.pose_multi_plot import plot_pose_multi
 from analysis.sweep_loader import (
     discover_sweep,
     read_launch_args,
-    read_scenario_faults,
-    select_dived_runs,
+    read_scenario_anomaly,
+    select_oscillated_runs,
 )
 
-_CHOICES = ("pose_multi_plot", "error_box_plot", "all")
+_CHOICES = ("pose_multi_plot", "all")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -59,20 +59,19 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     # All runs in these fixed-duration sweeps are SIGTERM'd at the time limit
-    # (exit_code=-15), so keep them and let the floater filter be the quality gate.
+    # (exit_code=-15), so keep them and let the viability filter be the quality gate.
     entries = discover_sweep(input_path, include_failed=True)
     if not entries:
         print(f"no runs found in {input_path}", file=sys.stderr)
         return 1
 
-    kept, dropped = select_dived_runs(entries)
+    kept, dropped = select_oscillated_runs(entries)
     if dropped:
-        print(
-            f"dropped {len(dropped)} startup-failed (surface-floater) runs: {', '.join(dropped)}"
-        )
+        drops = ", ".join(f"{rid} ({reason})" for rid, reason in dropped.items())
+        print(f"dropped {len(dropped)} non-viable runs: {drops}")
     if not kept:
         print(
-            "no runs survived the startup-failure filter; nothing to analyse",
+            "no runs survived the viability filter; nothing to analyse",
             file=sys.stderr,
         )
         return 1
@@ -81,28 +80,23 @@ def main(argv: list[str] | None = None) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     sweep = input_path.resolve().name
 
-    # Fault streams feed both the always-on stats report and the (optional) box
-    # plot; read each bag's fault topic once and share the result.
-    faults = [(entry, read_fault_levels(entry.bag_dir)) for entry, _ in kept]
-    # The MTTF each run was *initialised* with, read from its scenario YAML (None
-    # for fault-free sweeps that record no MTTF on disk).
-    fault_cfgs = [
-        read_scenario_faults(entry, sweep_dir=input_path) for entry, _ in kept
+    # Per-run anomaly labels (nominal / bcu_pump / sensor / comms /
+    # biofouling), read from each run's scenario YAML — the run-level view
+    # of the label the bag also carries per timestamp on /anomaly/label.
+    anomaly_records = [
+        read_scenario_anomaly(entry, sweep_dir=input_path) for entry, _ in kept
     ]
 
     # The statistics report runs by default, whichever plots were requested.
     stats_md = summarize_dataset(
-        kept, faults, title=sweep, n_dropped=len(dropped), fault_cfgs=fault_cfgs
+        kept, title=sweep, dropped=dropped, anomaly_records=anomaly_records
     )
     stats_path = out_dir / f"{sweep}_stats.md"
     stats_path.write_text(stats_md)
     print(stats_md)
     print(f"wrote {stats_path}  ({len(kept)} runs)")
 
-    want_pose = args.plot in ("pose_multi_plot", "all")
-    want_box = args.plot in ("error_box_plot", "all")
-
-    if want_pose:
+    if args.plot in ("pose_multi_plot", "all"):
         target_pa = _target_pressure_pa(input_path)
         written = plot_pose_multi(
             kept,
@@ -112,12 +106,6 @@ def main(argv: list[str] | None = None) -> int:
             mark_best_pitch=False,
             mark_best_depth=False,
             mark_best_combined=False,
-        )
-        print(f"wrote {written}  ({len(kept)} runs)")
-
-    if want_box:
-        written = plot_error_box(
-            faults, out_dir / f"{sweep}_error_box_plot.png", title=sweep
         )
         print(f"wrote {written}  ({len(kept)} runs)")
 

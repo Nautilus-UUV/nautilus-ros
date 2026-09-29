@@ -23,7 +23,6 @@ from py_pkg.robot_specs import (
     IMU_GYRO_AXIS_MAP,
     STM_ACCEL_MG_PER_LSB,
     STM_GYRO_DPS_PER_LSB,
-    VOLUME_PER_REV_M3,
 )
 
 # Standard atmosphere (Pa) — the FALLBACK gauge reference. The operator
@@ -32,18 +31,18 @@ from py_pkg.robot_specs import (
 # constant off the absolute reading from the external pressure sensor.
 ATMOSPHERIC_PRESSURE_PA = 101_325.0
 
-# Fresh-water density (kg/m^3). Override for salt water if needed.
-WATER_DENSITY_KG_M3 = 1_025.0
+# Fresh-water density (kg/m^3), matching the lake deployment environment
+# (2026-06-24 lake test) and the sim's fresh-water calibration. Override
+# for salt water if needed (~1025).
+WATER_DENSITY_KG_M3 = 1_000.0
 
 # Gravitational acceleration (m/s^2).
 GRAVITY_M_S2 = 9.806
 
 # Hydrostatic pressure rise per metre of submersion (Pa/m). The control
 # stack uses gauge pressure as its primary state; this constant is the
-# only place depth-in-metres ↔ pressure-in-Pa conversions get scaled.
+# only place depth-in-metres <-> pressure-in-Pa conversions get scaled.
 WATER_PRESSURE_GRADIENT_PA_PER_M = WATER_DENSITY_KG_M3 * GRAVITY_M_S2
-
-SECONDS_PER_MINUTE = 60
 
 
 def gauge_pressure_pa(
@@ -117,23 +116,6 @@ class SurfaceReference:
         self._surface_pa = float(surface_pa)
         return True
 
-    def register_logged(self, surface_pa: float, logger) -> bool:
-        """:meth:`register` plus the standard accept/reject log lines.
-
-        Every DIVE_INIT consumer wants the same outcome logging; keeping
-        the wording here means a policy or message change lands in one
-        place. ``logger`` is any object with ``info``/``error`` (a node
-        logger) so this module stays ROS-free.
-        """
-        if self.register(surface_pa):
-            logger.info(f"dive init: gauge reference = {self.reference_pa:.0f} Pa")
-            return True
-        logger.error(
-            f"dive init: surface pressure {surface_pa:.0f} Pa "
-            "rejected -- keeping previous reference"
-        )
-        return False
-
     @property
     def reference_pa(self) -> float:
         """Current reference: registered surface, else standard atmosphere."""
@@ -144,21 +126,6 @@ class SurfaceReference:
     def gauge(self, absolute_pa: float) -> float:
         """Absolute Pa → gauge Pa against the current reference."""
         return gauge_pressure_pa(absolute_pa, atmospheric_pa=self.reference_pa)
-
-
-def q_to_rpm(q: float, bladder_volume: float, pump_efficiency: float) -> float:
-    """
-    Convert bladder flow-rate ratio (1/s) to motor RPM.
-
-    :param q: bladder flow rate as a fraction of total volume per second (1/s)
-    :param bladder_volume: bladder volume (m^3)
-    :param pump_efficiency: volumetric efficiency the controller assumes
-        when inverting flow → RPM. Lives on DepthPlantModel so MC sweeps
-        can perturb controller-vs-actual pump efficiency.
-    :return: motor speed (RPM)
-    """
-    flow_rate = q * bladder_volume  # m^3/s
-    return SECONDS_PER_MINUTE / (VOLUME_PER_REV_M3 * pump_efficiency) * flow_rate
 
 
 # ---------------------------------------------------------------------------

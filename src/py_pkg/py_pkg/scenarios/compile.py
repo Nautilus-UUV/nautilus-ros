@@ -16,7 +16,8 @@ place that knows the ROS parameter wire names.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Callable, NamedTuple
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 if TYPE_CHECKING:
     from rclpy.node import Node
@@ -32,123 +33,68 @@ from .spec.control import (
     AcuPitchSpec,
     AcuRollSpec,
     ControlScenario,
-    DepthPlantModel,
     DepthSpec,
-    PIDPressureSpec,
+    ImuPrefilterSpec,
 )
-from .spec.rig import FinAeroSpec, HydrodynamicsSpec, PhysicsKnobs, RigScenario
+from .spec.rig import (
+    FaultScheduleSpec,
+    FinAeroSpec,
+    HydrodynamicsSpec,
+    ImuNoiseSpec,
+    NoiseSpec,
+    PhysicsKnobs,
+    PressureNoiseSpec,
+    RigScenario,
+    SensorFaultSpec,
+)
+from .spec.scenario import Scenario
 
 # ---------------------------------------------------------------------------
 # Control-side: forward (params_for_*) and inverse (*_spec_from_node)
 # ---------------------------------------------------------------------------
 
 
+def _param(node: Node, name: str, default: Any) -> Any:
+    """Declare one ROS parameter and return its override-resolved value."""
+    return node.declare_parameter(name, default).value
+
+
 def params_for_bcu_node(scen: ControlScenario) -> dict[str, Any]:
     d = scen.controllers.depth
     return {
         "frequency_hz": d.frequency_hz,
-        "pid_pressure.kp": d.pid_pressure.kp,
-        "pid_pressure.ki": d.pid_pressure.ki,
-        "pid_pressure.kd": d.pid_pressure.kd,
-        "pid_pressure.integral_limit_low": d.pid_pressure.integral_limits[0],
-        "pid_pressure.integral_limit_high": d.pid_pressure.integral_limits[1],
-        "pid_pressure.output_limit_low": d.pid_pressure.output_limits[0],
-        "pid_pressure.output_limit_high": d.pid_pressure.output_limits[1],
-        "pid_pressure.derivative_filter": d.pid_pressure.derivative_filter,
-        "plant_model.bladder_nominal_m3": d.plant_model.bladder_nominal_m3,
-        "plant_model.initial_proportion_full": d.plant_model.initial_proportion_full,
-        "plant_model.min_rpm": d.plant_model.min_rpm,
-        "plant_model.min_operating_rpm": d.plant_model.min_operating_rpm,
-        "plant_model.max_rpm": d.plant_model.max_rpm,
-        "plant_model.pump_efficiency": d.plant_model.pump_efficiency,
-        "error_disarm_pa": d.error_disarm_pa,
-        "error_arm_pa": d.error_arm_pa,
-        "min_valve_dwell_s": d.min_valve_dwell_s,
+        "pump_rpm": d.pump_rpm,
+        "deadband_pa": d.deadband_pa,
         "tank_stop_band": d.tank_stop_band,
-        "tank_release_band": d.tank_release_band,
     }
 
 
 def bcu_spec_from_node(node: Node) -> DepthSpec:
     """Read depth-controller params off `node` into a typed DepthSpec.
 
-    Defaults come from the dataclass — absent any scenario override at
-    launch time, behaviour matches the literal values that used to live
-    in `init_control` / `init_buoyancy_engine` / `init_motor`.
+    Defaults come from the spec, so a bare `ros2 run bcu_node` with no
+    scenario behaves exactly like the installed nominal.yaml.
     """
 
     default = DepthSpec()
-    pp = default.pid_pressure
-    pm = default.plant_model
-
-    node.declare_parameter("frequency_hz", default.frequency_hz)
-
-    node.declare_parameter("pid_pressure.kp", pp.kp)
-    node.declare_parameter("pid_pressure.ki", pp.ki)
-    node.declare_parameter("pid_pressure.kd", pp.kd)
-    node.declare_parameter("pid_pressure.integral_limit_low", pp.integral_limits[0])
-    node.declare_parameter("pid_pressure.integral_limit_high", pp.integral_limits[1])
-    node.declare_parameter("pid_pressure.output_limit_low", pp.output_limits[0])
-    node.declare_parameter("pid_pressure.output_limit_high", pp.output_limits[1])
-    node.declare_parameter("pid_pressure.derivative_filter", pp.derivative_filter)
-
-    node.declare_parameter("plant_model.bladder_nominal_m3", pm.bladder_nominal_m3)
-    node.declare_parameter(
-        "plant_model.initial_proportion_full", pm.initial_proportion_full
-    )
-    node.declare_parameter("plant_model.min_rpm", pm.min_rpm)
-    node.declare_parameter("plant_model.min_operating_rpm", pm.min_operating_rpm)
-    node.declare_parameter("plant_model.max_rpm", pm.max_rpm)
-    node.declare_parameter("plant_model.pump_efficiency", pm.pump_efficiency)
-
-    node.declare_parameter("error_disarm_pa", default.error_disarm_pa)
-    node.declare_parameter("error_arm_pa", default.error_arm_pa)
-    node.declare_parameter("min_valve_dwell_s", default.min_valve_dwell_s)
-    node.declare_parameter("tank_stop_band", default.tank_stop_band)
-    node.declare_parameter("tank_release_band", default.tank_release_band)
-
-    g = node.get_parameter
     return DepthSpec(
-        frequency_hz=g("frequency_hz").value,
-        error_disarm_pa=g("error_disarm_pa").value,
-        error_arm_pa=g("error_arm_pa").value,
-        min_valve_dwell_s=g("min_valve_dwell_s").value,
-        tank_stop_band=g("tank_stop_band").value,
-        tank_release_band=g("tank_release_band").value,
-        pid_pressure=PIDPressureSpec(
-            kp=g("pid_pressure.kp").value,
-            ki=g("pid_pressure.ki").value,
-            kd=g("pid_pressure.kd").value,
-            integral_limits=(
-                g("pid_pressure.integral_limit_low").value,
-                g("pid_pressure.integral_limit_high").value,
-            ),
-            output_limits=(
-                g("pid_pressure.output_limit_low").value,
-                g("pid_pressure.output_limit_high").value,
-            ),
-            derivative_filter=g("pid_pressure.derivative_filter").value,
-        ),
-        plant_model=DepthPlantModel(
-            bladder_nominal_m3=g("plant_model.bladder_nominal_m3").value,
-            initial_proportion_full=g("plant_model.initial_proportion_full").value,
-            min_rpm=g("plant_model.min_rpm").value,
-            min_operating_rpm=g("plant_model.min_operating_rpm").value,
-            max_rpm=g("plant_model.max_rpm").value,
-            pump_efficiency=g("plant_model.pump_efficiency").value,
-        ),
+        frequency_hz=_param(node, "frequency_hz", default.frequency_hz),
+        pump_rpm=_param(node, "pump_rpm", default.pump_rpm),
+        deadband_pa=_param(node, "deadband_pa", default.deadband_pa),
+        tank_stop_band=_param(node, "tank_stop_band", default.tank_stop_band),
     )
 
 
 def params_for_acu_node(scen: ControlScenario) -> dict[str, Any]:
+    # DEPRECATED / NOT IMPLEMENTED IN SIM: the sim ACU actuator was removed
+    # (glider_nautilus is now static, symmetric, BCU-only). Retained for the
+    # real-hardware ACU path (acu_node -> can_com_node); unused in simulation.
     p = scen.controllers.acu_pitch
     r = scen.controllers.acu_roll
     return {
-        "acu_pitch.name": p.name,
         "acu_pitch.output_limit_low": p.output_limits[0],
         "acu_pitch.output_limit_high": p.output_limits[1],
         "acu_roll.frequency_hz": r.frequency_hz,
-        "acu_roll.name": r.name,
         "acu_roll.kp": r.kp,
         "acu_roll.ki": r.ki,
         "acu_roll.kd": r.kd,
@@ -164,22 +110,19 @@ def params_for_acu_node(scen: ControlScenario) -> dict[str, Any]:
 def acu_pitch_spec_from_node(node: Node) -> AcuPitchSpec:
     """Read ACU pitch-axis params off `node` into a typed AcuPitchSpec.
 
+    DEPRECATED / NOT IMPLEMENTED IN SIM: the sim ACU actuator was removed;
+    retained for the real-hardware ACU path only.
+
     The pitch axis is bang-bang, so the only knobs are the two
     output_limits (front, back) in metres.
     """
 
     default = AcuPitchSpec()
 
-    node.declare_parameter("acu_pitch.name", default.name)
-    node.declare_parameter("acu_pitch.output_limit_low", default.output_limits[0])
-    node.declare_parameter("acu_pitch.output_limit_high", default.output_limits[1])
-
-    g = node.get_parameter
     return AcuPitchSpec(
-        name=g("acu_pitch.name").value,
         output_limits=(
-            g("acu_pitch.output_limit_low").value,
-            g("acu_pitch.output_limit_high").value,
+            _param(node, "acu_pitch.output_limit_low", default.output_limits[0]),
+            _param(node, "acu_pitch.output_limit_high", default.output_limits[1]),
         ),
     )
 
@@ -187,42 +130,47 @@ def acu_pitch_spec_from_node(node: Node) -> AcuPitchSpec:
 def acu_roll_spec_from_node(node: Node) -> AcuRollSpec:
     """Read ACU roll-controller params off `node` into a typed AcuRollSpec.
 
+    DEPRECATED / NOT IMPLEMENTED IN SIM: the sim ACU actuator was removed;
+    retained for the real-hardware ACU path only.
+
     Defaults match the literal values that used to live in the
     `init_acu_roll` dict.
     """
 
     default = AcuRollSpec()
 
-    node.declare_parameter("acu_roll.frequency_hz", default.frequency_hz)
-    node.declare_parameter("acu_roll.name", default.name)
-    node.declare_parameter("acu_roll.kp", default.kp)
-    node.declare_parameter("acu_roll.ki", default.ki)
-    node.declare_parameter("acu_roll.kd", default.kd)
-    node.declare_parameter("acu_roll.command_tolerance", default.command_tolerance)
-    node.declare_parameter("acu_roll.integral_limit_low", default.integral_limits[0])
-    node.declare_parameter("acu_roll.integral_limit_high", default.integral_limits[1])
-    node.declare_parameter("acu_roll.output_limit_low", default.output_limits[0])
-    node.declare_parameter("acu_roll.output_limit_high", default.output_limits[1])
-    node.declare_parameter("acu_roll.derivative_filter", default.derivative_filter)
-
-    g = node.get_parameter
     return AcuRollSpec(
-        frequency_hz=g("acu_roll.frequency_hz").value,
-        name=g("acu_roll.name").value,
-        kp=g("acu_roll.kp").value,
-        ki=g("acu_roll.ki").value,
-        kd=g("acu_roll.kd").value,
-        command_tolerance=g("acu_roll.command_tolerance").value,
+        frequency_hz=_param(node, "acu_roll.frequency_hz", default.frequency_hz),
+        kp=_param(node, "acu_roll.kp", default.kp),
+        ki=_param(node, "acu_roll.ki", default.ki),
+        kd=_param(node, "acu_roll.kd", default.kd),
+        command_tolerance=_param(
+            node, "acu_roll.command_tolerance", default.command_tolerance
+        ),
         integral_limits=(
-            g("acu_roll.integral_limit_low").value,
-            g("acu_roll.integral_limit_high").value,
+            _param(node, "acu_roll.integral_limit_low", default.integral_limits[0]),
+            _param(node, "acu_roll.integral_limit_high", default.integral_limits[1]),
         ),
         output_limits=(
-            g("acu_roll.output_limit_low").value,
-            g("acu_roll.output_limit_high").value,
+            _param(node, "acu_roll.output_limit_low", default.output_limits[0]),
+            _param(node, "acu_roll.output_limit_high", default.output_limits[1]),
         ),
-        derivative_filter=g("acu_roll.derivative_filter").value,
+        derivative_filter=_param(
+            node, "acu_roll.derivative_filter", default.derivative_filter
+        ),
     )
+
+
+def params_for_imu_prefilter(scen: ControlScenario) -> dict[str, Any]:
+    return {"alpha": scen.estimator.prefilter.alpha}
+
+
+def imu_prefilter_spec_from_node(node: Node) -> ImuPrefilterSpec:
+    """Read prefilter params off `node` into a typed ImuPrefilterSpec."""
+
+    default = ImuPrefilterSpec()
+
+    return ImuPrefilterSpec(alpha=_param(node, "alpha", default.alpha))
 
 
 # ---------------------------------------------------------------------------
@@ -230,45 +178,163 @@ def acu_roll_spec_from_node(node: Node) -> AcuRollSpec:
 # ---------------------------------------------------------------------------
 
 
+_NOISE_OFF = NoiseSpec(
+    enabled=False,
+    imu=ImuNoiseSpec(accel_sigma_mps2=(0.0, 0.0, 0.0), gyro_sigma_rads=(0.0, 0.0, 0.0)),
+    external_pressure=PressureNoiseSpec(sigma_pa=0.0, quantization_pa=0.0),
+    tank_pressure=PressureNoiseSpec(sigma_pa=0.0, quantization_pa=0.0),
+)
+
+
+def _effective_noise(scen: RigScenario) -> NoiseSpec:
+    """Resolve the scenario's `enabled` gate to plain per-channel numbers.
+
+    The bridges never see a boolean: a disabled scenario compiles to
+    all-zero sigmas/steps, which the noise model treats as exact
+    passthrough. Keeps the gate testable at Tier 1.
+    """
+    return scen.noise if scen.noise.enabled else _NOISE_OFF
+
+
+def _fault_schedule_params(prefix: str, s: FaultScheduleSpec) -> dict[str, Any]:
+    """Wire params for one fault's onset/progression envelope.
+
+    Emitted unconditionally (defaults are the inert step-at-t=0
+    schedule) so the wire shape never depends on whether a run is
+    faulted.
+    """
+    return {
+        f"{prefix}onset_s": s.onset_s,
+        f"{prefix}shape": s.shape,
+        f"{prefix}ramp_s": s.ramp_s,
+        f"{prefix}period_s": s.period_s,
+        f"{prefix}duty": s.duty,
+    }
+
+
+def _sensor_fault_params(
+    prefix: str, f: SensorFaultSpec, parent_seed: int, component_id: str
+) -> dict[str, Any]:
+    """Wire params for one persistent sensor-fault channel.
+
+    The seed is emitted unconditionally (only dropout consumes RNG;
+    harmless otherwise) so the wire shape never depends on the kind.
+    """
+    return {
+        f"{prefix}fault_kind": f.kind,
+        f"{prefix}fault_magnitude": f.magnitude,
+        f"{prefix}fault_drop_prob": f.drop_prob,
+        f"{prefix}fault_seed": derive_seed(parent_seed, component_id),
+        **_fault_schedule_params(f"{prefix}fault_", f.schedule),
+    }
+
+
 def params_for_bcu_bridge(scen: RigScenario, parent_seed: int = 0) -> dict[str, Any]:
     p = scen.plant
-    f = scen.faults.bcu_rpm
+    f = scen.faults
     b = scen.bridges.bcu
+    n = _effective_noise(scen)
     return {
         "model_name": scen.sim.model_name,
         "volume_per_rev_m3": p.volume_per_rev_m3,
         "bladder_min_m3": p.bladder_min_m3,
         "bladder_max_m3": p.bladder_max_m3,
-        "fault_mttf_sec": f.mttf_sec,
-        "fault_num_levels": f.num_levels,
-        "rng_seed": derive_seed(parent_seed, "bcu_rpm_fault"),
+        "fault_effectiveness": f.bcu_pump.effectiveness,
+        **_fault_schedule_params("fault_", f.bcu_pump.schedule),
         "publish_rate_hz": b.publish_rate_hz,
         "tank_pressure_empty_pa": p.tank_pressure_empty_pa,
         "tank_pressure_full_pa": p.tank_pressure_full_pa,
-        "tank_pressure_vacuum_offset_pa": p.tank_pressure_vacuum_offset_pa,
+        "pump_response_delay_s": p.pump_response_delay_s,
+        "pump_slew_rpm_per_s": p.pump_slew_rpm_per_s,
+        "pump_overshoot_frac": p.pump_overshoot_frac,
+        "tank_map_shape": p.tank_map_shape,
+        "tank_air_volume_m3": p.tank_air_volume_m3,
+        "tank_noise_seed": derive_seed(parent_seed, "tank_pressure_noise"),
+        "tank_noise_sigma_pa": n.tank_pressure.sigma_pa,
+        "tank_noise_quantization_pa": n.tank_pressure.quantization_pa,
+        **_sensor_fault_params(
+            "tank_", f.sensors.tank_pressure, parent_seed, "tank_pressure_fault"
+        ),
+        "comms_drop_prob": f.comms.drop_prob,
+        "comms_seed": derive_seed(parent_seed, "bcu_comms_drop"),
     }
 
 
-def params_for_acu_bridge(scen: RigScenario) -> dict[str, Any]:
+def params_for_imu_bridge(scen: RigScenario, parent_seed: int = 0) -> dict[str, Any]:
+    n = _effective_noise(scen)
     return {
         "model_name": scen.sim.model_name,
-        "world_name": scen.sim.world_name,
+        "noise_seed": derive_seed(parent_seed, "imu_noise"),
+        # (x, y, z) as ROS double-array parameters.
+        "noise_accel_sigma": list(n.imu.accel_sigma_mps2),
+        "noise_gyro_sigma": list(n.imu.gyro_sigma_rads),
+        # Comms fault only — the IMU is excluded from sensor-fault
+        # injection by design (SensorFaultsSpec).
+        "comms_drop_prob": scen.faults.comms.drop_prob,
+        "comms_seed": derive_seed(parent_seed, "imu_comms_drop"),
     }
 
 
-def params_for_imu_bridge(scen: RigScenario) -> dict[str, Any]:
-    return {"model_name": scen.sim.model_name}
-
-
-def params_for_external_sensor_bridge(scen: RigScenario) -> dict[str, Any]:
+def params_for_external_sensor_bridge(
+    scen: RigScenario, parent_seed: int = 0
+) -> dict[str, Any]:
+    n = _effective_noise(scen)
     return {
         "model_name": scen.sim.model_name,
         "publish_rate_hz": scen.bridges.external_sensor.publish_rate_hz,
+        "noise_seed": derive_seed(parent_seed, "external_pressure_noise"),
+        "noise_sigma_pa": n.external_pressure.sigma_pa,
+        "noise_quantization_pa": n.external_pressure.quantization_pa,
+        **_sensor_fault_params(
+            "",
+            scen.faults.sensors.external_pressure,
+            parent_seed,
+            "external_pressure_fault",
+        ),
+        "comms_drop_prob": scen.faults.comms.drop_prob,
+        "comms_seed": derive_seed(parent_seed, "external_pressure_comms_drop"),
     }
 
 
 def params_for_gt_pose_bridge(scen: RigScenario) -> dict[str, Any]:
     return {"model_name": scen.sim.model_name}
+
+
+def params_for_anomaly_label(scen: Scenario) -> dict[str, Any]:
+    """Wire params for the sim-only anomaly_label_bridge.
+
+    The only consumer of `Scenario.anomaly` — the spec's fields ARE the
+    wire params (the bridge re-validates them through AnomalyLabelSpec
+    and broadcasts them verbatim, plus its per-class `active` gating),
+    so a field added to the spec reaches the wire without re-listing.
+
+    The labeled class's fault schedule rides along under a `schedule_`
+    prefix so the bridge's `active` flag can honor the onset. Which block
+    the label points at is `Scenario.labeled_fault` (the schedule's
+    authority is `rig.faults`, and that property sits beside the
+    validator enforcing the mapping); nominal/biofouling/comms have no
+    such block and carry the inert default.
+    """
+    fault = scen.labeled_fault
+    sched = fault.schedule if fault is not None else FaultScheduleSpec()
+    return {
+        **scen.anomaly.model_dump(),
+        **_fault_schedule_params("schedule_", sched),
+    }
+
+
+def params_for_auto_mission(scen: Scenario) -> dict[str, Any]:
+    """Wire params for the sim mission autostart (debug/auto_mission).
+
+    The tank endpoints arm bcu_node's `TankLimitGuard` through the
+    same DIVE_INIT path the operator UI uses on hardware. Sampled plant
+    truth on purpose: the hardware value is a pre-dive *measurement* of
+    the actual tank, so the sim surrogate measures the sampled plant.
+    """
+    return {
+        "dive_init_tank_empty_pa": scen.rig.plant.tank_pressure_empty_pa,
+        "dive_init_tank_full_pa": scen.rig.plant.tank_pressure_full_pa,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -320,7 +386,7 @@ def _load_nominal_data() -> dict[str, Any]:
         )
         return {
             "physics_knobs": PhysicsKnobs().model_dump(),
-            "fluid_constants": {"rho": 1025.0, "nu": 1.05e-6, "u_ref": 0.3},
+            "fluid_constants": {"rho": 1000.0, "nu": 1.05e-6, "u_ref": 0.3},
             "structural_constants": {"z_r": 0.119},
         }
 
@@ -388,6 +454,11 @@ def _canonical_values(spec: HydrodynamicsSpec) -> dict[str, float]:
 # Closed-form strip theory (§3-§8): one small pure helper per doc section.
 
 
+def _ittc_cf(Re: float) -> float:
+    """ITTC-57 flat-plate friction line, floored for degenerate Reynolds."""
+    return 0.075 / (math.log10(Re) - 2) ** 2 if Re > 100 else 0.01
+
+
 def _lamb_factors(L: float, D: float) -> tuple[float, float, float]:
     """Imlay 1961 added-mass k-factors (axial k1, transverse k2, pitch/yaw k')."""
     if L <= D:
@@ -439,7 +510,7 @@ def _hull_damping(g: PhysicsKnobs, c: _Constants) -> dict[str, float]:
     M_q_q = -(1.0 / 24.0) * g.C_d_c * c.rho * g.L**3 * g.D * sqrt_Cp
 
     Re = c.u_ref * g.L / c.nu
-    C_F = 0.075 / (math.log10(Re) - 2) ** 2 if Re > 100 else 0.01
+    C_F = _ittc_cf(Re)
     C_D = C_F * g.one_plus_k + g.C_p_base
     X_u_u = -(math.pi / 8.0) * c.rho * g.D**2 * C_D
 
@@ -502,10 +573,8 @@ def _fin_lift_slope(g: PhysicsKnobs) -> tuple[float, float]:
 def _fin_profile_drag(g: PhysicsKnobs, c: _Constants) -> tuple[float, float]:
     """§8 Hoerner profile drag at fin Reynolds (horiz, vert) — wires in t/c."""
     hoerner = 1 + 2 * g.t_over_c + 60 * g.t_over_c**4
-    Re_f = c.u_ref * g.c_f / c.nu
-    Re_r = c.u_ref * g.c_r / c.nu
-    C_F_f = 0.075 / (math.log10(Re_f) - 2) ** 2 if Re_f > 100 else 0.01
-    C_F_r = 0.075 / (math.log10(Re_r) - 2) ** 2 if Re_r > 100 else 0.01
+    C_F_f = _ittc_cf(c.u_ref * g.c_f / c.nu)
+    C_F_r = _ittc_cf(c.u_ref * g.c_r / c.nu)
     return 2 * C_F_f * hoerner, 2 * C_F_r * hoerner
 
 

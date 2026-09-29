@@ -1,0 +1,77 @@
+# Nominal-only synthetic dataset: envelope around the 2026-06-24 lake test.
+#
+# Goal: training data for the FDIR models in UG-anomaly_detection. The sweep
+# spreads the sim plant *around* the lake-calibrated nominal widely enough
+# that the real nominal dives (1, 2, 4) plausibly sit inside the simulated
+# input envelope (commanded RPM, external pressure, tank pressure, IMU).
+# Band sizing + analytic coverage check: dave_ws/tmp/nominal_envelope_jun24/.
+#
+# No faults (base scenario disables the BCU ladder), lake-fitted sensor
+# noise stays ON. Missions are per-run sampled sawtooths: `mission.*`
+# dimensions are launch args carried by manifest.json (run_sweep.py maps
+# them to target_pressure_pa:= / n_oscillations:= per run), NOT scenario
+# fields. Run with the remaining mission knobs fixed globally:
+#
+#   run_sweep.py ... --launch sawtooth_sim.launch.py \
+#       --per-run-timeout 4800 --launch-args angle_rad:=0.0 z:=-1.0
+#
+# angle_rad 0.0: the real nominal dives were flown level (pure heave bobs);
+# the ACU is not implemented in sim, pitch authority is BCU-only.
+# z -1.0: spawn near the surface like the real deployments (default -5 would
+# make targets shallower than ~5.8 m degenerate).
+
+description: >
+  Nominal envelope around the 2026-06-24 lake calibration: physics-knob
+  hydrodynamics (bcu_hydro_coarse bands) + trim-mass neutral-volume shift
+  covering both real ballast configs + BCU plant/tank-map spread, with
+  per-run sawtooth missions sampled over 4-20 m targets and 1-3
+  oscillations. Faults off, lake-fitted noise on.
+
+n_samples: 256
+seed: 624
+base_scenario: "nominal_with_hydrodynamics.yaml"
+sampling_mode: "physics"
+isotropic_jitter_sigma: 0.05
+
+dimensions:
+  # --- hull / fin geometry causes (identical bands to bcu_hydro_coarse) ---
+  - { path: L,                  distribution: loguniform, low: 1.470,   high: 1.530 }
+  - { path: D,                  distribution: loguniform, low: 0.1455,  high: 0.1545 }
+  - { path: nabla,              distribution: loguniform, low: 0.01782, high: 0.01818 }
+  - { path: b_f,                distribution: loguniform, low: 0.3135,  high: 0.3465 }
+  - { path: c_f,                distribution: loguniform, low: 0.2090,  high: 0.2310 }
+  - { path: x_f,                distribution: loguniform, low: 0.6650,  high: 0.7350 }
+  - { path: b_r,                distribution: loguniform, low: 0.2090,  high: 0.2310 }
+  - { path: c_r,                distribution: loguniform, low: 0.1045,  high: 0.1155 }
+  - { path: x_r,                distribution: loguniform, low: 0.89205, high: 0.98595 }
+  - { path: t_over_c,           distribution: loguniform, low: 0.0840,  high: 0.1560 }
+  - { path: alpha_stall_horiz,  distribution: loguniform, low: 0.1360,  high: 0.2040 }
+  - { path: alpha_stall_rudder, distribution: loguniform, low: 0.1360,  high: 0.2040 }
+  - { path: C_d_c,              distribution: loguniform, low: 0.9350,  high: 1.2650 }
+  - { path: one_plus_k,         distribution: loguniform, low: 1.0200,  high: 1.3800 }
+  - { path: C_p_base,           distribution: loguniform, low: 0.0560,  high: 0.1040 }
+  - { path: C_La_mult,          distribution: loguniform, low: 0.8250,  high: 1.3750 }
+
+  # --- ballast trim: +/- 0.02 kg each => net neutral-volume shift +/- 40 mL,
+  # V_n in [2059, 2136] mL, bracketing both real configs (A 2065, B 2097).
+  - { path: rig.hydrodynamics.trim_mass_bow,   distribution: uniform, low: 3.137,  high: 3.177 }
+  - { path: rig.hydrodynamics.trim_mass_stern, distribution: uniform, low: 0.2565, high: 0.2965 }
+
+  # --- BCU plant truth (controller beliefs stay at nominal on purpose) ---
+  # Tank sensor endpoints: both lake init calibrations observed
+  # (config A full=194.9 kPa, config B full=172 kPa; floors 97.5-98.3 kPa).
+  - { path: rig.plant.tank_pressure_empty_pa, distribution: uniform, low: 97000.0,  high: 99000.0 }
+  - { path: rig.plant.tank_pressure_full_pa,  distribution: uniform, low: 165000.0, high: 195000.0 }
+  # Pump displacement +/- 10% (wear / efficiency spread).
+  - { path: rig.plant.volume_per_rev_m3, distribution: loguniform, low: 2.88e-7, high: 3.52e-7 }
+  # Bladder clamps: +/- 20% around the lake-matched floor; ceiling up to the
+  # 2.5 L mechanical max (real ascent legs operated at 2465-2497 mL, above
+  # the nominal 2% end-stop guard of 2450 mL).
+  - { path: rig.plant.bladder_min_m3, distribution: uniform, low: 0.0008,  high: 0.0012 }
+  - { path: rig.plant.bladder_max_m3, distribution: uniform, low: 0.00235, high: 0.0025 }
+
+  # --- per-run mission (launch args via manifest.json, not scenario fields) ---
+  # 4-20 m sawtooth targets, uniform in depth (gauge Pa = depth * 9806).
+  - { path: mission.target_pressure_pa, distribution: uniform, low: 39224.0, high: 196120.0 }
+  # floor(uniform [1,4)) => 1-3 full descend+ascend cycles, uniform.
+  - { path: mission.n_oscillations, distribution: uniform, low: 1.0, high: 4.0, integer: true }

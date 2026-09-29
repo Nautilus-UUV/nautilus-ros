@@ -38,7 +38,7 @@ ros2 launch nautilus_hal trim_sim.launch.py \
 ros2 topic pub --once \
     --qos-reliability reliable --qos-durability transient_local \
     /path nautilus_msgs/msg/MissionCommand \
-    "{mission_id: 0, target_pressure_pa: 60295.0, shallow_pressure_pa: 0.0, angle_rad: 0.0, n_oscillations: 0}"
+    "{mission_id: 0, target_pressure_pa: 60295.0, shallow_pressure_pa: 0.0, angle_rad: 0.0, n_resurfaces: 0}"
 
 ros2 topic pub --once \
     --qos-reliability reliable --qos-durability transient_local \
@@ -70,7 +70,7 @@ final ascent to the surface after `n_oscillations` dives.
 ros2 topic pub --once \
     --qos-reliability reliable --qos-durability transient_local \
     /path nautilus_msgs/msg/MissionCommand \
-    "{mission_id: 1, target_pressure_pa: 147150.0, shallow_pressure_pa: 49050.0, angle_rad: 0.6109, n_oscillations: 2}"
+    "{mission_id: 1, target_pressure_pa: 147150.0, shallow_pressure_pa: 49050.0, angle_rad: 0.6109, n_resurfaces: 2}"
 
 ros2 topic pub --once \
     --qos-reliability reliable --qos-durability transient_local \
@@ -92,7 +92,7 @@ ros2 launch nautilus_hal surface_sim.launch.py \
 ros2 topic pub --once \
     --qos-reliability reliable --qos-durability transient_local \
     /path nautilus_msgs/msg/MissionCommand \
-    "{mission_id: 2, target_pressure_pa: 0.0, shallow_pressure_pa: 0.0, angle_rad: 0.0, n_oscillations: 0}"
+    "{mission_id: 2, target_pressure_pa: 0.0, shallow_pressure_pa: 0.0, angle_rad: 0.0, n_resurfaces: 0}"
 
 ros2 topic pub --once \
     --qos-reliability reliable --qos-durability transient_local \

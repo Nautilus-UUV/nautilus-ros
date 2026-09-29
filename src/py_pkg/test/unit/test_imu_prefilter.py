@@ -1,9 +1,8 @@
 """Tier 1 unit tests for the EMA math in py_pkg.imu_prefilter.
 
 The prefilter is a ROS node, but its smoothing logic is the pure
-function `ema(self, x_new, x_prev)` that only depends on `self.alpha`.
-We exercise it as an unbound method with a SimpleNamespace stand-in for
-`self` to keep these tests Tier 1 — no rclpy.init(), no ROS context.
+module-level function `ema(alpha, x_new, x_prev)`, exercised here
+directly — no rclpy.init(), no ROS context.
 
 Two goals:
 
@@ -15,15 +14,8 @@ Two goals:
    first-sample bypass, or alpha mis-application (alpha vs 1-alpha).
 """
 
-from types import SimpleNamespace
-
 import pytest
-from py_pkg.imu_prefilter.imu_prefilter import ImuPrefilter
-
-
-def ema(alpha, x_new, x_prev):
-    """Call ImuPrefilter.ema as an unbound method with a fake self."""
-    return ImuPrefilter.ema(SimpleNamespace(alpha=alpha), x_new, x_prev)
+from py_pkg.imu_prefilter.imu_prefilter import ema
 
 
 class TestFirstSample:
@@ -130,14 +122,12 @@ class TestStepResponse:
 
 
 class TestNoSideEffects:
-    """The ema function must not depend on any state besides self.alpha
-    and its arguments. If a refactor adds hidden state (e.g. internal
-    buffer), this catches it by exercising it through a fresh
-    SimpleNamespace each call."""
+    """The ema function must not depend on any state besides its
+    arguments. If a refactor adds hidden state (e.g. an internal
+    buffer), this catches it."""
 
     def test_repeated_calls_with_same_inputs_give_same_output(self):
         a, b, c = 0.3, 5.0, 2.0
         first = ema(a, b, c)
-        # Construct a brand-new fake self each time
         for _ in range(10):
             assert ema(a, b, c) == pytest.approx(first)

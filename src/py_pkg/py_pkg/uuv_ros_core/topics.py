@@ -21,7 +21,6 @@ class UUVTopics:
     INTERNAL_TEMPERATURE = "/internal/temperature"
     INTERNAL_PRESSURE = "/internal/pressure"
     INTERNAL_LEAK = "/internal/leak"
-    INTERNAL_HUMIDITY = "/internal/humidity"
 
     # External sensors
     EXTERNAL_TEMPERATURE = "/external/temperature"
@@ -51,15 +50,15 @@ class UUVTopics:
     POSITION_ESTIMATION = "/position/estimation"
     PATH = "/path"
     COMMAND = "/command"
+    # Published once (latched) by pathfinding when the active mission's
+    # is_done fires; consumed by the sim run watchdog.
+    MISSION_COMPLETE = "/mission/complete"
 
     # Operator initialization. One latched message carries the pre-dive
     # registrations (surface pressure + tank empty/full endpoints) -- a
     # single topic because the UI registers all three atomically with one
     # button, so consumers can never see a torn empty/full pair.
     DIVE_INIT = "/init/dive"
-
-    # CAN communication
-    CAN_OUT = "/can/out"
 
     # Debug / bench overrides
     DEBUG_BCU_RPM = "/debug/bcu/rpm"
@@ -91,3 +90,17 @@ class UUVTopics:
     # from a freshness watchdog over the steady glider-side feedback/sensor
     # streams.
     STATUS_LIVENESS = "/status/liveness"
+
+    # Sim-only ground truth: per-timestamp anomaly label broadcast by the
+    # anomaly_label_bridge and recorded into every bag. Never routed
+    # through any fault/comms gate — it must stay intact precisely when
+    # the faulted streams go quiet.
+    ANOMALY_LABEL = "/anomaly/label"
+
+    # Sim-only bringup-ready flag: latched true by the nautilus_hal
+    # sim_ready_gate once every required node is discovered and the
+    # (paused-spawned) Gazebo world has been unpaused and verified
+    # stepping. auto_mission holds the mission start until it lands, so
+    # a sweep run can never begin while part of the graph is still
+    # coming up. Never published on hardware.
+    SIM_READY = "/sim/ready"

@@ -13,8 +13,7 @@ mission has a single, fixed goal.
 
 from geometry_msgs.msg import Pose
 
-from .profile import MissionState
-from .sawtooth import SURFACE_THRESHOLD_PA
+from .profile import SURFACE_THRESHOLD_PA, MissionState
 
 DWELL_AT_SURFACE_S = 10.0
 

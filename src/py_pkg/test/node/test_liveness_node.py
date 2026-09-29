@@ -7,11 +7,8 @@ UI reads across the tether, since the byte ``level`` doesn't survive the JSON
 egress as a number.
 """
 
-import time
-
 import pytest
 from diagnostic_msgs.msg import DiagnosticArray
-from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from sensor_msgs.msg import Imu
@@ -23,6 +20,8 @@ from py_pkg.uuv_ros_core import (
     create_publisher_for_topic,
     create_subscription_for_topic,
 )
+
+from conftest import NodeHarness
 
 STALENESS_S = 0.5
 ALL_ROWS = {
@@ -64,48 +63,26 @@ class _LivenessTesterNode(Node):
         self.valves_pub.publish(m)
 
 
-class LivenessNodeHarness:
+class LivenessNodeHarness(NodeHarness):
+    """NodeHarness specialised for LivenessNode (needs parameter overrides)."""
+
     def __init__(self):
-        self.node = LivenessNode(
-            parameter_overrides=[
-                Parameter(
-                    "staleness_timeout_s", Parameter.Type.DOUBLE, STALENESS_S
-                ),
-                Parameter("publish_rate_hz", Parameter.Type.DOUBLE, 20.0),
-            ]
+        super().__init__(
+            lambda: LivenessNode(
+                parameter_overrides=[
+                    Parameter(
+                        "staleness_timeout_s", Parameter.Type.DOUBLE, STALENESS_S
+                    ),
+                    Parameter("publish_rate_hz", Parameter.Type.DOUBLE, 20.0),
+                ]
+            ),
+            _LivenessTesterNode,
         )
-        self.tester = _LivenessTesterNode()
-        self.executor = SingleThreadedExecutor()
-        self.executor.add_node(self.node)
-        self.executor.add_node(self.tester)
-
-    def spin_for(self, duration_s: float, slice_s: float = 0.02) -> None:
-        deadline = time.monotonic() + duration_s
-        while time.monotonic() < deadline:
-            self.executor.spin_once(timeout_sec=slice_s)
-
-    def spin_until(self, predicate, timeout: float = 2.0, slice_s: float = 0.02):
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if predicate():
-                return
-            self.executor.spin_once(timeout_sec=slice_s)
-        if not predicate():
-            raise TimeoutError(f"predicate did not become true within {timeout}s")
 
     def states(self) -> dict[str, str]:
         if self.tester.latest is None:
             return {}
         return {s.name: s.message for s in self.tester.latest.status}
-
-    def shutdown(self) -> None:
-        try:
-            self.executor.remove_node(self.node)
-            self.executor.remove_node(self.tester)
-        finally:
-            self.node.destroy_node()
-            self.tester.destroy_node()
-            self.executor.shutdown()
 
 
 @pytest.fixture

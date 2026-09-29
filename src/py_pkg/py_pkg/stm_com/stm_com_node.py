@@ -71,6 +71,7 @@ from py_pkg.uuv_ros_core import (
     UUVTopics,
     create_publisher_for_topic,
     create_subscription_for_topic,
+    now_s,
     spin_node,
 )
 
@@ -110,12 +111,9 @@ IMU_VAR_IDS = (
 # estimator reads accel/gyro directly), but kept descriptive and stable.
 IMU_FRAME_ID = "imu"
 
-PAYLOAD_FMT = "<h"  # little-endian signed 16-bit
-BCU_RPM_PAYLOAD_LEN = struct.calcsize(PAYLOAD_FMT)
-
-# Inbound payload shapes -- size-checked before each unpack.
+# Payload shapes, shared by TX and RX -- size-checked before each unpack.
 UINT16_FMT = "<H"
-INT16_FMT = "<h"
+INT16_FMT = "<h"  # little-endian signed 16-bit (also the BCU RPM TX payload)
 UINT8_FMT = "<B"
 UINT16_LEN = struct.calcsize(UINT16_FMT)
 INT16_LEN = struct.calcsize(INT16_FMT)
@@ -125,8 +123,10 @@ UINT8_LEN = struct.calcsize(UINT8_FMT)
 class STMComNode(Node):
     """Bridges ``/bcu/rpm`` to the STM32 over UART."""
 
-    def __init__(self) -> None:
-        super().__init__("stm_com")
+    def __init__(self, **kwargs) -> None:
+        # **kwargs forwards rclpy Node options (notably parameter_overrides, how
+        # the Tier-2 harness shortens the heartbeat and dead-man windows).
+        super().__init__("stm_com", **kwargs)
 
         self.declare_parameter("port", "/dev/serial0")
         self.declare_parameter("baud", 115200)
@@ -168,7 +168,7 @@ class STMComNode(Node):
 
         # Staleness watchdog state: wall time of the last /bcu/rpm command and
         # whether we're currently failed-safe (so the log fires once per edge).
-        self._last_cmd_t = self._now_s()
+        self._last_cmd_t = now_s(self)
         self._cmd_stale = False
 
         create_subscription_for_topic(self, UUVTopics.BCU_RPM, self._on_rpm)
@@ -209,14 +209,11 @@ class STMComNode(Node):
         # the same topic the sim bridge publishes and the prefilter consumes.
         self._imu_pub = create_publisher_for_topic(self, UUVTopics.IMU)
 
-    def _now_s(self) -> float:
-        return self.get_clock().now().nanoseconds / 1e9
-
     def _on_rpm(self, msg) -> None:
         self._latest_rpm = int(msg.data)
         # bcu_node publishes rpm + valves together every tick, so a fresh rpm
         # is proof the command path is alive -- pet the watchdog off it.
-        self._last_cmd_t = self._now_s()
+        self._last_cmd_t = now_s(self)
         if self._cmd_stale:
             self._cmd_stale = False
             self.get_logger().info("/bcu/rpm resumed -- staleness watchdog cleared")
@@ -246,7 +243,8 @@ class STMComNode(Node):
 
             if len(self._rx_buf) < 1 + HEADER_LEN:
                 return  # wait for the rest of the header
-            var_id, length = struct.unpack(HEADER_FMT, self._rx_buf[1 : 1 + HEADER_LEN])
+            # unpack_from parses in place -- no header slice per frame.
+            var_id, length = struct.unpack_from(HEADER_FMT, self._rx_buf, 1)
 
             frame_len = 1 + HEADER_LEN + length
             if len(self._rx_buf) < frame_len:
@@ -382,7 +380,7 @@ class STMComNode(Node):
         # timer (not cued by inbound frames), so the cached setpoints keep
         # going down even if the STM goes quiet, and a silent command path
         # fails the actuator safe instead of latching the last value.
-        if self._now_s() - self._last_cmd_t > self._command_timeout_s:
+        if now_s(self) - self._last_cmd_t > self._command_timeout_s:
             if not self._cmd_stale:
                 self._cmd_stale = True
                 self.get_logger().warning(
@@ -406,8 +404,8 @@ class STMComNode(Node):
         wire_rpm = STM_BCU_RPM_SIGN * self._latest_rpm
         packet = (
             SYNC_BYTE
-            + struct.pack(HEADER_FMT, BCU_RPM_VAR_ID, BCU_RPM_PAYLOAD_LEN)
-            + struct.pack(PAYLOAD_FMT, wire_rpm)
+            + struct.pack(HEADER_FMT, BCU_RPM_VAR_ID, INT16_LEN)
+            + struct.pack(INT16_FMT, wire_rpm)
         )
         self._ser.write(packet)
         self.get_logger().debug(f"tx bcu rpm: {wire_rpm} (ros {self._latest_rpm})")

@@ -19,6 +19,7 @@ from py_pkg.uuv_ros_core import (
     UUVTopics,
     create_publisher_for_topic,
     create_subscription_for_topic,
+    now_s,
     spin_node,
 )
 
@@ -73,7 +74,7 @@ class LivenessNode(Node):
                 self,
                 src.topic,
                 lambda _msg, names=src.subsystems: self._watchdog.mark_seen(
-                    names, self._now()
+                    names, now_s(self)
                 ),
             )
 
@@ -85,16 +86,12 @@ class LivenessNode(Node):
             f"staleness={timeout}s"
         )
 
-    def _now(self) -> float:
-        # Same clock the timer runs on, consistent under both wall time and sim time.
-        return self.get_clock().now().nanoseconds * 1e-9
-
     def _publish_liveness(self) -> None:
         array = DiagnosticArray()
         # header.stamp left at zero on purpose: keeps the serialized payload
         # byte-stable while nothing changes, so the MQTT egress on_change dedup
         # forwards only real transitions across the tether.
-        now = self._now()
+        now = now_s(self)
         for name, online in self._watchdog.snapshot(now):
             status = DiagnosticStatus()
             status.name = name

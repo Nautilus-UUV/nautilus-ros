@@ -13,10 +13,12 @@ Inputs (what this node listens to):
                depth expressed as a gauge pressure (0 at the surface);
                orientation is the current attitude.
 
-Output:
+Outputs:
   - POSITION_TARGET (Pose)    -- the setpoint the controllers track.
                position.z is gauge Pa (bcu_node's contract); orientation
                carries the roll/pitch targets for acu_node.
+  - /mission/complete (Bool)  -- latched true, once, when the running
+               mission finishes. See "how a run ends" below.
 
 The node's situation is just read off three fields each tick:
   - _mission        -- is a mission loaded?
@@ -26,9 +28,20 @@ The node's situation is just read off three fields each tick:
 
 _tick handles the one transition that matters: once a mission is loaded,
 the operator has asked to run, and we have a pressure reading, it calls
-mission.start() once and stamps t0. A stop clears everything; the
-controllers reset themselves off the same /command=false (they subscribe
-to it directly), so this node doesn't have to tell them.
+mission.start() once and stamps t0.
+
+How a run ends -- two causes, two topics, each published by whoever owns it:
+  - an OPERATOR stop arrives on /command=false. This node resets; the
+    controllers hear that same message and safe-stop themselves.
+  - COMPLETION is ours to announce, and only ours: a latched Bool(true) on
+    /mission/complete. bcu_node and acu_node subscribe to it and run the
+    same safe-stop path they run on an operator stop, so neither holds its
+    last setpoint after the mission ends.
+
+This node never publishes /command. That channel carries the operator's
+intent and nothing else, which is what keeps "finished" distinguishable from
+"aborted" for every subscriber -- including a node that joins late and reads
+the topic's TRANSIENT_LOCAL latch.
 """
 
 import rclpy
@@ -41,6 +54,7 @@ from ..uuv_ros_core import (
     UUVTopics,
     create_publisher_for_topic,
     create_subscription_for_topic,
+    now_s,
     spin_node,
 )
 from .missions import MissionProfile, MissionState, create_mission
@@ -68,9 +82,12 @@ class PathfindingNode(Node):
         create_subscription_for_topic(self, UUVTopics.PATH, self._on_path)
 
         self._target_pub = create_publisher_for_topic(self, UUVTopics.POSITION_TARGET)
-        # On completion we drive /command=false ourselves so the controllers
-        # run their safe-stop -- without it they hold the last target forever.
-        self._command_pub = create_publisher_for_topic(self, UUVTopics.COMMAND)
+        # Latched completion event (one per finished mission), and the only
+        # thing that ends a run other than the operator. An operator stop
+        # (/command=false) is NOT a completion and never publishes here.
+        self._complete_pub = create_publisher_for_topic(
+            self, UUVTopics.MISSION_COMPLETE
+        )
         self.create_timer(1.0 / REFERENCE_RATE_HZ, self._tick)
 
         self.get_logger().info("pathfinding_node started (mission-id dispatch).")
@@ -105,7 +122,8 @@ class PathfindingNode(Node):
         )
         if not self._run_requested:
             # Stop: forget the mission and go back to the initial state. We
-            # don't publish anything
+            # don't publish anything -- the controllers hear this same
+            # /command=false themselves and safe-stop on it.
             self._reset()
             self.get_logger().info("Mission stopped; stack reset to initial state.")
 
@@ -133,32 +151,29 @@ class PathfindingNode(Node):
                     target_pressure_pa=float(self._mission_cmd.target_pressure_pa),
                     shallow_pressure_pa=float(self._mission_cmd.shallow_pressure_pa),
                     angle_rad=float(self._mission_cmd.angle_rad),
-                    n_oscillations=int(self._mission_cmd.n_oscillations),
+                    n_resurfaces=int(self._mission_cmd.n_resurfaces),
+                    n_steps=int(self._mission_cmd.n_steps),
                 )
             )
-            self._mission_t0_s = self.get_clock().now().nanoseconds / 1e9
+            self._mission_t0_s = now_s(self)
             self.get_logger().info("Mission running.")
 
         if self._mission_t0_s is None or self._current_pressure_pa is None:
             return
-        mission_t = self.get_clock().now().nanoseconds / 1e9 - self._mission_t0_s
-
+        mission_t = now_s(self) - self._mission_t0_s
         self._mission.update(self._current_pressure_pa)
         if self._mission.is_done(mission_t):
             self.get_logger().info("Mission complete.")
-            # Stop the actuators: completion is not a stop signal on its own,
-            # so emit /command=false
-            self._command_pub.publish(Bool(data=False))
+            # The one announcement this event gets. bcu_node and acu_node
+            # safe-stop off it; run_watchdog concludes on it. Nothing here
+            # touches /command -- see the module docstring.
+            done = Bool()
+            done.data = True
+            self._complete_pub.publish(done)
             self._reset()
             return
 
-        # A mission can choose not to issue a setpoint this tick (reference
-        # returns None) -- e.g. SURFACE/SAWTOOTH while between phases. When that
-        # happens we publish nothing, so the controllers just hold their last
-        # target instead of chasing a stale one.
-        ref = self._mission.reference(mission_t)
-        if ref is not None:
-            self._target_pub.publish(ref)
+        self._target_pub.publish(self._mission.reference(mission_t))
 
 
 def main(args=None):

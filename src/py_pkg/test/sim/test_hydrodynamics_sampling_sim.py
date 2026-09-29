@@ -43,9 +43,8 @@ from launch import LaunchDescription
 from launch.actions import IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.substitutions import FindPackageShare
-from nautilus_msgs.msg import MissionCommand
 from py_pkg.path.missions.factory import MissionId
-from py_pkg.path.missions.sawtooth import DESCEND_TOLERANCE_PA
+from py_pkg.path.missions.profile import DESCEND_TOLERANCE_PA
 from py_pkg.physics import ATMOSPHERIC_PRESSURE_PA
 from py_pkg.scenarios.loader import load_scenario
 
@@ -63,7 +62,13 @@ from rclpy.node import Node
 from sensor_msgs.msg import Imu
 from std_msgs.msg import Bool
 
-from ._sim_helpers import reap_lingering_gz, sim_gui_enabled
+from ._sim_helpers import (
+    mission_command,
+    reap_lingering_gz,
+    sim_gui_enabled,
+    spin_for,
+    spin_until,
+)
 
 # Short sawtooth: spawn at z=-5 m (~50 kPa gauge) → dive to ~6 m
 # (~60 kPa) → return to surface. About 1 m of glide each leg, a tiny
@@ -169,13 +174,15 @@ class _SawtoothSamplingDriver(Node):
         self.pressure_samples.append((time.monotonic(), float(msg.data)))
 
     def publish_mission(self) -> None:
-        cmd = MissionCommand()
-        cmd.mission_id = int(MissionId.SAWTOOTH)
-        cmd.target_pressure_pa = float(TARGET_PRESSURE_PA)
-        cmd.shallow_pressure_pa = 0.0  # legacy: climb to the surface each dive
-        cmd.angle_rad = float(PITCH_RAD)
-        cmd.n_oscillations = int(N_OSCILLATIONS)
-        self.path_pub.publish(cmd)
+        # shallow_pressure_pa left at 0.0: climb to the surface each dive.
+        self.path_pub.publish(
+            mission_command(
+                MissionId.SAWTOOTH,
+                target_pressure_pa=TARGET_PRESSURE_PA,
+                angle_rad=PITCH_RAD,
+                n_resurfaces=N_OSCILLATIONS,
+            )
+        )
 
     def publish_start(self) -> None:
         msg = Bool()
@@ -207,19 +214,6 @@ class HydroSamplingSimTest(unittest.TestCase):
         self.driver.destroy_node()
         self.executor.shutdown()
 
-    def _spin_for(self, duration_s: float, slice_s: float = 0.05) -> None:
-        deadline = time.monotonic() + duration_s
-        while time.monotonic() < deadline:
-            self.executor.spin_once(timeout_sec=slice_s)
-
-    def _spin_until(self, predicate, timeout_s: float, slice_s: float = 0.05):
-        deadline = time.monotonic() + timeout_s
-        while time.monotonic() < deadline:
-            if predicate():
-                return True
-            self.executor.spin_once(timeout_sec=slice_s)
-        return predicate()
-
     def test_sampled_sawtooth_round_trip(self, scenario_yaml):
         startup_timeout_s = 60.0
         post_ready_settle_s = 2.0
@@ -229,7 +223,8 @@ class HydroSamplingSimTest(unittest.TestCase):
         mission_duration_s = 120.0
         drain_s = 2.0
 
-        sim_ready = self._spin_until(
+        sim_ready = spin_until(
+            self.executor,
             lambda: self.driver.imu_msg_count >= 1,
             timeout_s=startup_timeout_s,
         )
@@ -240,15 +235,15 @@ class HydroSamplingSimTest(unittest.TestCase):
             "Check the launch log for the 'Spawning SDF: ...' line.",
         )
 
-        self._spin_for(post_ready_settle_s)
+        spin_for(self.executor, post_ready_settle_s)
 
         self.driver.publish_mission()
-        self._spin_for(0.5)
+        spin_for(self.executor, 0.5)
         self.driver.publish_start()
 
         mission_start_t = time.monotonic()
-        self._spin_for(mission_duration_s)
-        self._spin_for(drain_s)
+        spin_for(self.executor, mission_duration_s)
+        spin_for(self.executor, drain_s)
         mission_end_t = time.monotonic() - drain_s
 
         targets_during = [

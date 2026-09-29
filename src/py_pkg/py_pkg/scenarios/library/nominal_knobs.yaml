@@ -2,7 +2,8 @@
 # These values generate SDF coefficients that reproduce the canonical SDF.
 
 fluid_constants:
-  rho: 1025.0
+  # Fresh water: lake-calibrated sim default (2026-06-24 lake test).
+  rho: 1000.0
   nu: 1.05e-6
   u_ref: 0.3
 
