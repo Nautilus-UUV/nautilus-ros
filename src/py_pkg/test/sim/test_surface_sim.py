@@ -47,10 +47,9 @@ from launch import LaunchDescription
 from launch.actions import IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.substitutions import FindPackageShare
-from nautilus_msgs.msg import MissionCommand
 from nav_msgs.msg import Odometry
 from py_pkg.path.missions.factory import MissionId
-from py_pkg.path.missions.sawtooth import SURFACE_THRESHOLD_PA
+from py_pkg.path.missions.profile import SURFACE_THRESHOLD_PA
 from py_pkg.physics import gauge_pressure_pa
 from py_pkg.uuv_ros_core import (
     UUVTopics,
@@ -62,7 +61,16 @@ from rclpy.node import Node
 from sensor_msgs.msg import Imu
 from std_msgs.msg import Bool, Int32
 
-from ._sim_helpers import reap_lingering_gz, sim_gui_enabled
+from ._sim_helpers import (
+    mission_command,
+    omega,
+    reap_lingering_gz,
+    sim_gui_enabled,
+    speed,
+    spin_for,
+    spin_until,
+    window,
+)
 
 GROUND_TRUTH_TOPIC = "/model/glider_nautilus/odometry"
 
@@ -143,26 +151,13 @@ class _SurfaceTestDriver(Node):
         self.odom_samples.append((time.monotonic(), msg))
 
     def publish_mission(self) -> None:
-        cmd = MissionCommand()
-        cmd.mission_id = int(MissionId.SURFACE)
-        # SURFACE has no operator parameters; leave them all at zero.
-        cmd.target_pressure_pa = 0.0
-        cmd.shallow_pressure_pa = 0.0
-        cmd.angle_rad = 0.0
-        cmd.n_oscillations = 0
-        self.path_pub.publish(cmd)
+        # SURFACE has no operator parameters; every field stays at zero.
+        self.path_pub.publish(mission_command(MissionId.SURFACE))
 
     def publish_start(self) -> None:
         msg = Bool()
         msg.data = True
         self.command_pub.publish(msg)
-
-
-def _window(
-    samples: list[tuple[float, object]],
-    window_start_t: float,
-) -> list[object]:
-    return [s for (t, s) in samples if t >= window_start_t]
 
 
 @pytest.mark.sim
@@ -187,31 +182,14 @@ class SurfaceSimTest(unittest.TestCase):
         self.driver.destroy_node()
         self.executor.shutdown()
 
-    def _spin_for(self, duration_s: float, slice_s: float = 0.05) -> None:
-        deadline = time.monotonic() + duration_s
-        while time.monotonic() < deadline:
-            self.executor.spin_once(timeout_sec=slice_s)
-
-    def _spin_until(self, predicate, timeout_s: float, slice_s: float = 0.05):
-        deadline = time.monotonic() + timeout_s
-        while time.monotonic() < deadline:
-            if predicate():
-                return True
-            self.executor.spin_once(timeout_sec=slice_s)
-        return predicate()
-
     def test_surface_mission_ascends_and_self_terminates(self):
         """SURFACE mission -> gauge pressure ~0, then mission completes."""
         startup_timeout_s = 60.0
         post_ready_settle_s = 2.0
-        # ~5 m ascent (BCU-bladder rate-limited) + 10 s surface dwell + margin.
-        # Spawn is z=-5 (~49 kPa gauge); the BCU surfaces at the bladder-limited
-        # rate measured in sim (~300-340 Pa/s, ~0.03 m/s), so gauge pressure
-        # crosses SURFACE_THRESHOLD_PA (5 kPa) ~150 s after `start`, and the
-        # dwell completes ~10 s after that. 220 s leaves comfortable margin on
-        # top of the ~160 s the full ascent + dwell actually needs. (The trim
-        # test only moves ~1.5 m, so its 120 s budget doesn't transfer here.)
-        mission_duration_s = 220.0
+        # ~4.2 m ascent (BCU-bladder rate-limited) + 10 s surface dwell +
+        # margin. Spawn is z=-5 (~49 kPa gauge). On the lake-calibrated
+        # plant the ascent runs ~0.035-0.04 m/s at the railed bladder;
+        mission_duration_s = 300.0
         drain_s = 2.0
         # Last 5 s of the mission window — the dwell guarantees the glider
         # has been at the surface for at least 10 s by then.
@@ -226,7 +204,8 @@ class SurfaceSimTest(unittest.TestCase):
         omega_max = 0.15  # rad/s
 
         # 1) Wait for sim. IMU is the readiness signal.
-        sim_ready = self._spin_until(
+        sim_ready = spin_until(
+            self.executor,
             lambda: self.driver.imu_msg_count >= 1,
             timeout_s=startup_timeout_s,
         )
@@ -237,28 +216,28 @@ class SurfaceSimTest(unittest.TestCase):
         )
 
         # 2) Let subscriptions handshake.
-        self._spin_for(post_ready_settle_s)
+        spin_for(self.executor, post_ready_settle_s)
 
         # 3) Kick the mission.
         self.driver.publish_mission()
-        self._spin_for(0.5)
+        spin_for(self.executor, 0.5)
         self.driver.publish_start()
 
         # 4) Run the closed loop. Don't early-exit on ascent: we want the
         #    full duration so we can assert the no-emission window after
         #    self-termination.
         mission_start_t = time.monotonic()
-        self._spin_for(mission_duration_s)
-        self._spin_for(drain_s)
+        spin_for(self.executor, mission_duration_s)
+        spin_for(self.executor, drain_s)
 
         # 5) Take the last `assert_window_s` of each stream.
         window_start_t = time.monotonic() - drain_s - assert_window_s
-        window_pressure = _window(self.driver.gauge_pressure_pa, window_start_t)
-        window_odom = _window(self.driver.odom_samples, window_start_t)
+        window_pressure = window(self.driver.gauge_pressure_pa, window_start_t)
+        window_odom = window(self.driver.odom_samples, window_start_t)
 
         # 6a) Pathfinding broadcast at ~10 Hz across the early portion of
         #     the mission (before self-termination).
-        targets_during = _window(self.driver.target_samples, mission_start_t)
+        targets_during = window(self.driver.target_samples, mission_start_t)
         self.assertGreaterEqual(
             len(targets_during),
             50,
@@ -285,7 +264,7 @@ class SurfaceSimTest(unittest.TestCase):
         #     pathfinding_node clears its mission and the 10 Hz tick
         #     becomes a no-op.
         no_target_start = time.monotonic() - drain_s - no_target_window_s
-        late_targets = _window(self.driver.target_samples, no_target_start)
+        late_targets = window(self.driver.target_samples, no_target_start)
         self.assertEqual(
             len(late_targets),
             0,
@@ -309,7 +288,7 @@ class SurfaceSimTest(unittest.TestCase):
             msg=(
                 f"mean gauge pressure over last {assert_window_s}s = "
                 f"{mean_gauge:.0f} Pa, expected <= {SURFACE_THRESHOLD_PA:.0f} Pa "
-                "(SURFACE_THRESHOLD_PA, ~0.5 m). Glider didn't fully surface."
+                "(SURFACE_THRESHOLD_PA, ~0.8 m). Glider didn't fully surface."
             ),
         )
 
@@ -322,8 +301,8 @@ class SurfaceSimTest(unittest.TestCase):
             f"only {len(window_odom)} odometry samples in last "
             f"{assert_window_s}s — sim ground-truth bridge stalled.",
         )
-        mean_v = sum(_speed(o) for o in window_odom) / len(window_odom)
-        mean_w = sum(_omega(o) for o in window_odom) / len(window_odom)
+        mean_v = sum(speed(o) for o in window_odom) / len(window_odom)
+        mean_w = sum(omega(o) for o in window_odom) / len(window_odom)
         self.assertLess(
             mean_v,
             v_linear_max,
@@ -354,16 +333,6 @@ class SurfaceSimTest(unittest.TestCase):
                 delta=0.02,
                 msg=f"odom[{i}].orientation |q|^2 = {norm_sq:.6f}",
             )
-
-
-def _speed(odom: Odometry) -> float:
-    v = odom.twist.twist.linear
-    return math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z)
-
-
-def _omega(odom: Odometry) -> float:
-    w = odom.twist.twist.angular
-    return math.sqrt(w.x * w.x + w.y * w.y + w.z * w.z)
 
 
 @launch_testing.post_shutdown_test()

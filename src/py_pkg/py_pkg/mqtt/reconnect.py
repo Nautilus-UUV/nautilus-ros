@@ -8,10 +8,10 @@ left believing it's still connected while nothing actually flows. The bridge
 process stays alive the whole time, so a reboot is the only thing that brings
 the link back. That's the bug this guards against.
 
-No ROS, no paho, no clock of its own. Fed (connected, rx_age, now) on a timer,
-it decides one thing: should the bridge tear the client down and build a fresh
-one. A rebuild is the in-process equivalent of that reboot -- a brand new
-``connect_async`` that can't inherit the wedged socket.
+No ROS, no paho, no clock of its own. Fed (connected, ever_connected, rx_age,
+now) on a timer, it decides one thing: should the bridge tear the client down
+and build a fresh one. A rebuild is the in-process equivalent of that reboot --
+a brand new ``connect_async`` that can't inherit the wedged socket.
 """
 
 from __future__ import annotations
@@ -34,15 +34,30 @@ class ReconnectSupervisor:
         self._down_since: float | None = None
 
     def should_rebuild(
-        self, *, connected: bool, rx_age_s: float | None, now: float
+        self,
+        *,
+        connected: bool,
+        ever_connected: bool,
+        rx_age_s: float | None,
+        now: float,
     ) -> bool:
         """Return True when the client should be rebuilt.
 
-        ``connected`` is paho's own view (``is_connected()``). ``rx_age_s`` is
+        ``connected`` is paho's own view (``is_connected()``). ``ever_connected``
+        says whether this client has ever completed a connect. ``rx_age_s`` is
         the time since the last inbound MQTT message, or None if nothing has
         ever arrived. ``now`` is a monotonic timestamp.
         """
         if not connected:
+            # Never connected at all is not a wedge -- it's a broker that isn't
+            # up yet (the vehicle-boots-before-the-laptop order the bridge
+            # docstring calls common, and every sim/sweep run, which has no
+            # mosquitto). paho's own 1->30 s backoff is exactly right for that,
+            # and rebuilding on a cadence would permanently truncate it. Only a
+            # link that once worked can be wedged.
+            if not ever_connected:
+                self._down_since = None
+                return False
             # Stuck disconnected: let paho's backoff try first, then escalate.
             if self._down_since is None:
                 self._down_since = now

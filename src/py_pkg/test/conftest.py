@@ -1,14 +1,25 @@
-"""Skip-collection hook for Tier 3 (sim) and Tier 4 (hil) tests.
+"""Skip-collection hook for Tier 3 (sim) and Tier 4 (hil) tests, plus the
+``scripts/`` path hook shared by every tier.
 
 Stricter than the pytest.ini marker filter: pytest applies markers AFTER
 importing modules, so without this hook a default ``pytest test/`` would
 still pay the launch_testing import cost (and crash if it's missing).
 
 Opt in with ``pytest -m sim`` or by targeting the dir (``pytest test/sim/``).
+
+The sys.path insert makes the host-side sweep modules under the repo's
+``scripts/`` (``sampling.*``, ``analysis.*``, ``lhs_sample``, …) importable
+from any test tier — the sampling-spec unit tests and the sim parity tests
+both read them. Done once here, before any test module imports.
 """
 
 import os
 import sys
+from pathlib import Path
+
+_SCRIPTS_DIR = Path(__file__).resolve().parents[3] / "scripts"
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
 
 
 def _opted_in_for(marker: str, target_dir: str) -> bool:

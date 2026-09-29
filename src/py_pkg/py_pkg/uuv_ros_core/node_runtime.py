@@ -23,6 +23,14 @@ import rclpy
 from rclpy.executors import ExternalShutdownException
 
 
+def now_s(node) -> float:
+    """Current node-clock time in seconds.
+
+    The one home for the ``nanoseconds / 1e9`` conversion every node needs.
+    """
+    return node.get_clock().now().nanoseconds / 1e9
+
+
 def spin_node(node) -> None:
     """Spin ``node`` until shutdown, then tear it down cleanly.
 

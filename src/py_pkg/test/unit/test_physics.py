@@ -5,7 +5,6 @@ input/output edges of the BCU control pipeline:
   - gauge_pressure_pa: external pressure sensor (abs Pa) -> gauge (Pa)
   - depth_to_pressure_pa: depth (m) -> absolute pressure (Pa)
   - pressure_to_depth: absolute pressure (Pa) -> depth (m), legacy/log helper
-  - q_to_rpm: bladder flow ratio (1/s) -> motor RPM
 """
 
 import pytest
@@ -16,12 +15,7 @@ from py_pkg.physics import (
     depth_to_pressure_pa,
     gauge_pressure_pa,
     pressure_to_depth,
-    q_to_rpm,
 )
-from py_pkg.robot_specs import BLADDER_VOLUME_M3
-from py_pkg.scenarios.spec.control import DepthPlantModel
-
-PUMP_EFFICIENCY = DepthPlantModel().pump_efficiency
 
 
 class TestGaugePressurePa:
@@ -126,24 +120,3 @@ class TestSurfaceReference:
         ref.register(98_000.0)
         assert ref.register(103_000.0) is True
         assert ref.reference_pa == pytest.approx(103_000.0)
-
-
-class TestQToRpm:
-    """q (flow ratio, 1/s) maps linearly to motor RPM."""
-
-    def test_zero_q_is_zero_rpm(self):
-        assert q_to_rpm(0, BLADDER_VOLUME_M3, PUMP_EFFICIENCY) == 0.0
-
-    def test_signs_are_preserved(self):
-        assert q_to_rpm(0.1, BLADDER_VOLUME_M3, PUMP_EFFICIENCY) > 0
-        assert q_to_rpm(-0.1, BLADDER_VOLUME_M3, PUMP_EFFICIENCY) < 0
-
-    def test_rpm_scales_linearly_with_q(self):
-        rpm_a = q_to_rpm(0.05, BLADDER_VOLUME_M3, PUMP_EFFICIENCY)
-        rpm_b = q_to_rpm(0.10, BLADDER_VOLUME_M3, PUMP_EFFICIENCY)
-        assert rpm_b == pytest.approx(2 * rpm_a)
-
-    def test_rpm_scales_linearly_with_volume(self):
-        rpm_small = q_to_rpm(0.05, 0.001, PUMP_EFFICIENCY)
-        rpm_large = q_to_rpm(0.05, 0.002, PUMP_EFFICIENCY)
-        assert rpm_large == pytest.approx(2 * rpm_small)

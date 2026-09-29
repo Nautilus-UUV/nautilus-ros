@@ -37,11 +37,14 @@ from nautilus_msgs.msg import BcuPumpCommand, BcuPumpUntilPressureCommand
 from rclpy.node import Node
 from std_msgs.msg import Bool, Empty, Int16, Int32, UInt8
 
+from py_pkg.debug import FLUSH_TICKS, PUBLISH_PERIOD_S
+from py_pkg.math_utils import clamp
 from py_pkg.robot_specs import BCU_MOTOR_VALVE_MASK
 from py_pkg.uuv_ros_core import (
     UUVTopics,
     create_publisher_for_topic,
     create_subscription_for_topic,
+    now_s,
     spin_node,
 )
 
@@ -49,26 +52,9 @@ from py_pkg.uuv_ros_core import (
 # typo'd UI input (3000 instead of 3) can't leave the motor running for ages.
 MAX_PUMP_S = 300.0
 
-# Re-publish cadence while a command is held; 10 Hz matches the MQTT egress
-# throttle so each tick refreshes the bridge's per-topic clock.
-PUBLISH_PERIOD_S = 0.1
-
 # Emergency-surface pump speed, shared by the operator's slider and the
 # lifeguard failsafe. Tier 2/3 tests assert it on the wire.
 EMERGENCY_SURFACE_RPM = 3000
-
-# Ticks to keep carrying the terminal 0/closed after a command ends before
-# going silent. 5 @ 10 Hz = 0.5 s, comfortably above the egress throttle.
-FLUSH_TICKS = 5
-
-
-def _clamp_duration(duration_s: float, max_s: float = MAX_PUMP_S) -> float:
-    """Clamp the user-requested pump duration to [0, max_s]."""
-    if duration_s <= 0.0:
-        return 0.0
-    if duration_s > max_s:
-        return float(max_s)
-    return float(duration_s)
 
 
 class BcuDebugNode(Node):
@@ -120,9 +106,6 @@ class BcuDebugNode(Node):
         self._timer = self.create_timer(PUBLISH_PERIOD_S, self._on_tick)
 
     # --- helpers --------------------------------------------------------
-
-    def _now_s(self) -> float:
-        return self.get_clock().now().nanoseconds * 1e-9
 
     def _publish_rpm(self, rpm: int) -> None:
         out = Int16()
@@ -195,7 +178,7 @@ class BcuDebugNode(Node):
             self.get_logger().warn("pump command ignored -- emergency surface active")
             return
 
-        duration = _clamp_duration(float(msg.duration_s))
+        duration = clamp(float(msg.duration_s), 0.0, MAX_PUMP_S)
         if duration == 0.0:
             self._stop_pump()  # explicit stop
             return
@@ -203,7 +186,7 @@ class BcuDebugNode(Node):
         # New timed window supersedes any pressure-targeted session.
         self._clear_pump_state()
         self._held_rpm = int(msg.rpm)
-        self._pump_deadline_s = self._now_s() + duration
+        self._pump_deadline_s = now_s(self) + duration
         if self._held_rpm != 0 and not self._motor_valve_open():
             self._warn_valve_closed()
         self._publish_rpm(self._held_rpm)
@@ -230,7 +213,7 @@ class BcuDebugNode(Node):
         self._clear_pump_state()
         self._held_rpm = rpm
         self._target_pressure_pa = int(msg.target_pressure_pa)
-        self._pump_deadline_s = self._now_s() + MAX_PUMP_S
+        self._pump_deadline_s = now_s(self) + MAX_PUMP_S
         if not self._motor_valve_open():
             self._warn_valve_closed()
         self._publish_rpm(self._held_rpm)
@@ -287,7 +270,7 @@ class BcuDebugNode(Node):
                 )
                 self._clear_pump_state()
                 self._arm_flush()
-            elif self._now_s() >= self._pump_deadline_s:
+            elif now_s(self) >= self._pump_deadline_s:
                 if self._target_pressure_pa is not None:
                     self.get_logger().warn(
                         f"pump-until-pressure hit the {MAX_PUMP_S:.0f} s runaway "

@@ -48,9 +48,8 @@ from launch import LaunchDescription
 from launch.actions import IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.substitutions import FindPackageShare
-from nautilus_msgs.msg import MissionCommand
 from py_pkg.path.missions.factory import MissionId
-from py_pkg.path.missions.sawtooth import (
+from py_pkg.path.missions.profile import (
     DESCEND_TOLERANCE_PA,
     SHALLOW_TOLERANCE_PA,
     SURFACE_THRESHOLD_PA,
@@ -66,7 +65,14 @@ from rclpy.node import Node
 from sensor_msgs.msg import Imu
 from std_msgs.msg import Bool, Int32
 
-from ._sim_helpers import reap_lingering_gz, sim_gui_enabled
+from ._sim_helpers import (
+    SimClock,
+    mission_command,
+    reap_lingering_gz,
+    sim_gui_enabled,
+    spin_for,
+    spin_until,
+)
 
 # Two distinct sub-surface pressures bracketing the ~5 m spawn (~49 050 Pa
 # gauge). Deep is below the spawn so the first dive is genuine; shallow is well
@@ -125,6 +131,9 @@ class _TwoPressureTestDriver(Node):
         self.target_samples: list[tuple[float, Pose]] = []
         self.gauge_pressure_pa: list[tuple[float, float]] = []
         self.imu_msg_count: int = 0
+        self.mission_complete: bool = False
+        # The mission budget is sim time: host RTF scales wall-clock durations.
+        self.sim_clock = SimClock(self)
 
         self.path_pub = create_publisher_for_topic(self, UUVTopics.PATH)
         self.command_pub = create_publisher_for_topic(self, UUVTopics.COMMAND)
@@ -134,9 +143,18 @@ class _TwoPressureTestDriver(Node):
         create_subscription_for_topic(
             self, UUVTopics.EXTERNAL_PRESSURE, self._on_pressure
         )
+        # pathfinding's latched completion event -- the same signal bcu_node and
+        # acu_node stop off. Waiting on it turns the mission budget into an
+        # upper bound instead of a fixed cost.
+        create_subscription_for_topic(
+            self, UUVTopics.MISSION_COMPLETE, self._on_mission_complete
+        )
 
     def _on_imu(self, _msg: Imu) -> None:
         self.imu_msg_count += 1
+
+    def _on_mission_complete(self, msg: Bool) -> None:
+        self.mission_complete = self.mission_complete or bool(msg.data)
 
     def _on_target(self, msg: Pose) -> None:
         self.target_samples.append((time.monotonic(), msg))
@@ -148,13 +166,15 @@ class _TwoPressureTestDriver(Node):
         )
 
     def publish_mission(self) -> None:
-        cmd = MissionCommand()
-        cmd.mission_id = int(MissionId.SAWTOOTH)
-        cmd.target_pressure_pa = float(DEEP_PRESSURE_PA)
-        cmd.shallow_pressure_pa = float(SHALLOW_PRESSURE_PA)
-        cmd.angle_rad = float(PITCH_RAD)
-        cmd.n_oscillations = int(N_OSCILLATIONS)
-        self.path_pub.publish(cmd)
+        self.path_pub.publish(
+            mission_command(
+                MissionId.SAWTOOTH,
+                target_pressure_pa=DEEP_PRESSURE_PA,
+                shallow_pressure_pa=SHALLOW_PRESSURE_PA,
+                angle_rad=PITCH_RAD,
+                n_resurfaces=N_OSCILLATIONS,
+            )
+        )
 
     def publish_start(self) -> None:
         msg = Bool()
@@ -236,52 +256,66 @@ class SawtoothTwoPressureSimTest(unittest.TestCase):
         self.driver.destroy_node()
         self.executor.shutdown()
 
-    def _spin_for(self, duration_s: float, slice_s: float = 0.05) -> None:
-        deadline = time.monotonic() + duration_s
-        while time.monotonic() < deadline:
-            self.executor.spin_once(timeout_sec=slice_s)
-
-    def _spin_until(self, predicate, timeout_s: float, slice_s: float = 0.05):
-        deadline = time.monotonic() + timeout_s
-        while time.monotonic() < deadline:
-            if predicate():
-                return True
-            self.executor.spin_once(timeout_sec=slice_s)
-        return predicate()
-
     def test_two_oscillations_then_surface(self):
         startup_timeout_s = 60.0
         post_ready_settle_s = 2.0
-        # Two ~3 m-amplitude oscillations (~3.6 m <-> ~5.6 m turn points) plus a
-        # final ~5 m ascent to the surface: ~10 m of glide, comparable to the
-        # single-cycle baseline's 300 s budget. 600 s is deliberately generous;
-        # tighten once a real run shows the actual completion time.
-        mission_duration_s = 600.0
+        # Measured 2026-09-29 at RTF 1.0, in sim time: deep turn at 34 s,
+        # shallow turn at 293 s, deep turn at 367 s, surfaced and complete at
+        # 622 s. The budget leaves ~45% on top of that. It is only the UPPER
+        # BOUND -- the run ends on /mission/complete, so a healthy mission costs
+        # its real duration and only a broken one pays the full budget.
+        mission_budget_sim_s = 900.0
+        # Wall-clock hang guard only (world frozen, odometry gone). Sized for
+        # RTF 0.5, so on any host at or above that the sim budget decides.
+        mission_wall_cap_s = 2.0 * mission_budget_sim_s
         drain_s = 2.0
         # The setpoint stream must fall silent for at least this long before the
         # window ends -- that silence is how we detect pathfinding reset on
         # is_done (mission complete).
         quiet_tail_s = 8.0
 
-        sim_ready = self._spin_until(
-            lambda: self.driver.imu_msg_count >= 1,
+        sim_ready = spin_until(
+            self.executor,
+            lambda: self.driver.imu_msg_count >= 1
+            and self.driver.sim_clock.now is not None,
             timeout_s=startup_timeout_s,
         )
         self.assertTrue(
             sim_ready,
-            f"IMU never arrived within {startup_timeout_s}s -- "
-            "is Gazebo up and is the model spawned with its IMU plugin?",
+            f"IMU or ground-truth odometry never arrived within "
+            f"{startup_timeout_s}s -- is Gazebo up and is the model spawned "
+            "with its IMU plugin?",
         )
 
-        self._spin_for(post_ready_settle_s)
+        spin_for(self.executor, post_ready_settle_s)
 
         self.driver.publish_mission()
-        self._spin_for(0.5)
+        spin_for(self.executor, 0.5)
         self.driver.publish_start()
 
         mission_start_t = time.monotonic()
-        self._spin_for(mission_duration_s)
-        self._spin_for(drain_s)
+        sim_start_t = self.driver.sim_clock.now
+
+        def sim_elapsed_s() -> float:
+            return self.driver.sim_clock.now - sim_start_t
+
+        spin_until(
+            self.executor,
+            lambda: self.driver.mission_complete
+            or sim_elapsed_s() >= mission_budget_sim_s,
+            timeout_s=mission_wall_cap_s,
+        )
+        self.assertTrue(
+            self.driver.mission_complete,
+            f"mission never published /mission/complete within "
+            f"{mission_budget_sim_s}s of sim time ({sim_elapsed_s():.0f}s sim "
+            f"elapsed, {time.monotonic() - mission_start_t:.0f}s wall) -- it did "
+            "not self-terminate after surfacing.",
+        )
+        # Hold the window open past completion so assertion 4 has a genuine
+        # silent stretch of POSITION_TARGET to measure. drain_s on top collects
+        # in-flight samples that the mission_end_t cutoff then excludes.
+        spin_for(self.executor, quiet_tail_s + drain_s)
         mission_end_t = time.monotonic() - drain_s
 
         targets_during = [

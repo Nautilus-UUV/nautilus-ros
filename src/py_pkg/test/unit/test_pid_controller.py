@@ -18,7 +18,6 @@ class TestFirstCall:
         pid = PIDController(kp=2.0)
         pid.update(target=10.0, input=0.0, time=0.0)
         assert pid.prev_time == 0.0
-        assert pid.prev_error == 10.0
         assert pid.prev_input == 0.0
 
 
@@ -149,7 +148,6 @@ class TestReset:
         pid.reset()
         assert pid.integral == 0.0
         assert pid.prev_time is None
-        assert pid.prev_error == 0.0
         assert pid.prev_input == 0.0
 
     def test_first_call_after_reset_returns_zero(self):

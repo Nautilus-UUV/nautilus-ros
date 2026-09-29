@@ -7,7 +7,7 @@ The two message orderings bcu_node has to survive -- stop-then-manual and the
 reverse manual-then-stop -- are the cases this exists to make deterministic.
 """
 
-from py_pkg.pid.bcu_safe_stop_burst import BcuSafeStopBurst
+from py_pkg.control.bcu_safe_stop_burst import BcuSafeStopBurst
 
 _COUNT = 10
 _HOLD = 1.5

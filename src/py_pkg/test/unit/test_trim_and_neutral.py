@@ -1,9 +1,10 @@
 """Tier 1 unit tests for TrimAndNeutralBuoyancyMission.
 
-Pure logic — no rclpy, no executor, no sim. Pins the open-loop hold
-contract: x/y from the start-time pose, z = `target_pressure_pa`,
-identity orientation, never-done. The cascaded depth controller and the
-ACU drive the actual hold; the mission only emits the constant setpoint.
+Pure logic — no rclpy, no executor, no sim. Pins the setpoint contract
+(x/y from the start-time pose, z = `target_pressure_pa`, identity
+orientation) and the arrival-based completion. The BCU and the ACU drive
+the descent; the mission only emits the constant setpoint and watches
+for arrival.
 """
 
 import math
@@ -14,8 +15,6 @@ from geometry_msgs.msg import Pose
 from py_pkg.path.missions.profile import MissionState
 from py_pkg.path.missions.trim_and_neutral import (
     NEAR_GOAL_PA,
-    SETTLING_WINDOW_S,
-    STATIONARY_RANGE_PA,
     TrimAndNeutralBuoyancyMission,
 )
 
@@ -112,8 +111,8 @@ class TestOrientationIsIdentity:
 
 
 class TestUpdateDoesNotChangeSetpoint:
-    """`update` feeds the settling window but never moves the reference: the
-    hold setpoint stays put regardless of the pressure samples in between."""
+    """`update` feeds the arrival check but never moves the reference: the
+    setpoint stays put regardless of the pressure samples in between."""
 
     def test_pressure_samples_do_not_change_setpoint(self):
         m = TrimAndNeutralBuoyancyMission()
@@ -140,10 +139,14 @@ class TestReferenceIsTimeInvariant:
             assert ref.orientation.w == pytest.approx(1.0)
 
 
-class TestSettlingTermination:
-    """The mission self-terminates once it has settled at the goal: within
-    NEAR_GOAL of the target AND stationary (peak-to-peak <= STATIONARY_RANGE)
-    over a full SETTLING_WINDOW. Both must hold; either alone keeps running."""
+class TestArrivalTermination:
+    """The mission ends on arrival: within NEAR_GOAL_PA of the target.
+
+    There is no settling condition. The bang-bang BCU has no idle
+    equilibrium to converge to -- the bladder sits at a tank rail for the
+    whole descent and the vehicle coasts through the target -- so a
+    peak-to-peak "has it gone quiet" test could never latch.
+    """
 
     TARGET = 75_000.0
 
@@ -158,36 +161,33 @@ class TestSettlingTermination:
         m = self._mission()
         assert m.is_done(0.0) is False
 
-    def test_settles_when_near_goal_and_stationary(self):
+    def test_done_on_arrival(self):
         m = self._mission()
-        # Hold exactly at target past the settling window.
-        done_t = _drive(m, _series(lambda i: self.TARGET, SETTLING_WINDOW_S + 2.0))
-        assert done_t is not None
-        assert done_t >= SETTLING_WINDOW_S
+        done_t = _drive(m, _series(lambda i: self.TARGET, 2.0))
+        assert done_t == pytest.approx(0.0)  # the very first sample arrives
 
-    def test_not_done_while_moving_near_goal(self):
-        m = self._mission()
-        # Oscillate within the near-goal band but with a peak-to-peak that
-        # exceeds the stationary range -> never settles.
-        swing = STATIONARY_RANGE_PA + 1000.0  # < NEAR_GOAL_PA, so still "near"
-        assert swing < NEAR_GOAL_PA
-        done_t = _drive(
-            m, _series(lambda i: self.TARGET + (swing if i % 2 else 0.0), 20.0)
-        )
-        assert done_t is None
+    def test_done_anywhere_inside_the_band(self):
+        for offset in (-NEAR_GOAL_PA, -1.0, 0.0, 1.0, NEAR_GOAL_PA):
+            m = self._mission()
+            m.update(self.TARGET + offset)
+            assert m.is_done(0.0) is True
 
-    def test_not_done_when_stationary_but_off_target(self):
-        m = self._mission()
-        # Dead still, but parked well outside the near-goal band.
-        off = self.TARGET + 2.0 * NEAR_GOAL_PA
-        done_t = _drive(m, _series(lambda i: off, SETTLING_WINDOW_S + 2.0))
-        assert done_t is None
+    def test_still_running_outside_the_band(self):
+        for offset in (-2.0 * NEAR_GOAL_PA, 2.0 * NEAR_GOAL_PA):
+            m = self._mission()
+            m.update(self.TARGET + offset)
+            assert m.is_done(0.0) is False
 
-    def test_not_done_before_window_fills(self):
+    def test_descent_completes_on_the_tick_it_enters_the_band(self):
+        # A coasting descent from the surface: still running for every
+        # sample above the band, done on the first one inside it.
         m = self._mission()
-        # Perfectly settled, but only half a window of history.
-        done_t = _drive(m, _series(lambda i: self.TARGET, SETTLING_WINDOW_S / 2.0))
-        assert done_t is None
+        approach = [
+            (i * 0.1, self.TARGET - 5.0 * NEAR_GOAL_PA + i * NEAR_GOAL_PA)
+            for i in range(6)
+        ]
+        done_t = _drive(m, approach)
+        assert done_t == pytest.approx(0.4)  # offset -NEAR_GOAL_PA
 
 
 class TestRestartUpdatesSetpoint:

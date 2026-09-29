@@ -50,10 +50,16 @@ TOPIC_QOS_MAP = {
     # Commands
     UUVTopics.COMMAND: UUVQoS.COMMAND,
     UUVTopics.PATH: UUVQoS.COMMAND,
+    # Latched state from a long-lived node (RELIABLE + TRANSIENT_LOCAL): a
+    # run watchdog that discovers pathfinding late still sees completion.
+    UUVTopics.MISSION_COMPLETE: UUVQoS.COMMAND,
     # Pre-dive registration is state, not an event: TRANSIENT_LOCAL latches
     # the last Initialize so a controller that (re)starts mid-deployment
     # still sees the registered values.
     UUVTopics.DIVE_INIT: UUVQoS.COMMAND,
+    # Latched state from the long-lived sim_ready_gate: an auto_mission
+    # that finishes discovery after the gate opened still sees ready.
+    UUVTopics.SIM_READY: UUVQoS.COMMAND,
     UUVTopics.DEBUG_BCU_RPM: UUVQoS.COMMAND,
     UUVTopics.DEBUG_BCU_RPM_UNTIL_PRESSURE: UUVQoS.COMMAND,
     UUVTopics.DEBUG_BCU_VALVES: UUVQoS.COMMAND,
@@ -68,7 +74,6 @@ TOPIC_QOS_MAP = {
     UUVTopics.DEBUG_RESET: UUVQoS.CONTROL,
     # Everything else: control
     UUVTopics.INTERNAL_TEMPERATURE: UUVQoS.CONTROL,
-    UUVTopics.INTERNAL_HUMIDITY: UUVQoS.CONTROL,
     UUVTopics.EXTERNAL_TEMPERATURE: UUVQoS.CONTROL,
     UUVTopics.BCU_PRESSURE: UUVQoS.CONTROL,
     UUVTopics.BCU_VOLUME: UUVQoS.CONTROL,
@@ -84,6 +89,8 @@ TOPIC_QOS_MAP = {
     UUVTopics.IMU_FILTERED: UUVQoS.CONTROL,
     UUVTopics.POSITION_TARGET: UUVQoS.CONTROL,
     UUVTopics.POSITION_ESTIMATION: UUVQoS.CONTROL,
-    UUVTopics.CAN_OUT: UUVQoS.CONTROL,
     UUVTopics.STATUS_LIVENESS: UUVQoS.CONTROL,
+    # Ground-truth labels must not be lost: RELIABLE (CONTROL), not a
+    # best-effort sensor stream.
+    UUVTopics.ANOMALY_LABEL: UUVQoS.CONTROL,
 }

@@ -6,8 +6,10 @@ node-under-test expects — manual create_publisher / create_subscription calls
 with mismatched QoS will silently drop messages.
 
 Layout:
-* ``NodeHarness`` — generic: holds a node-under-test + tester node, drives
-  them with an executor, and exposes ``spin_for`` / ``spin_until`` helpers.
+* ``NodeHarness`` (re-exported from ``py_pkg.testing``, which is also what
+  the dave repo's ``nautilus_hal`` tests use) — generic: holds a
+  node-under-test + tester node, drives them with an executor, and exposes
+  ``spin_for`` / ``spin_until`` helpers.
 * ``_BCUTesterNode`` / ``_ACUTesterNode`` — per-node tester surfaces
   declaring the inbound publishers and outbound subscriptions specific to
   each node-under-test.
@@ -30,75 +32,36 @@ from nautilus_msgs.msg import (
 )
 from py_pkg.debug.acu_debug_node import AcuDebugNode
 from py_pkg.debug.bcu_debug_node import BcuDebugNode
+from py_pkg.math_utils import rpy_to_quaternion
 from py_pkg.path.pathfinding import PathfindingNode
-from py_pkg.pid.acu_node import ACUControlNode
-from py_pkg.pid.bcu_node import BCUNode
+from py_pkg.control.acu_node import ACUControlNode
+from py_pkg.control.bcu_node import BCUNode
+from py_pkg.testing import NodeHarness, isolated_ros_domain_id
 from py_pkg.uuv_ros_core import (
     UUVTopics,
     create_publisher_for_topic,
     create_subscription_for_topic,
 )
-from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from std_msgs.msg import Bool, Empty, Int16, Int32, UInt8
-
-
-def _isolated_ros_domain_id() -> int:
-    """Per-PID ROS_DOMAIN_ID. Tests use production topic names, so any
-    sibling rclpy participant on the default domain (stray `ros2` CLI,
-    leftover Gazebo, parallel pytest) would inject traffic into the
-    harness and corrupt assertions."""
-    return (os.getpid() % 101) + 1
 
 
 @pytest.fixture(scope="session", autouse=True)
 def rclpy_session():
     """Init/shutdown rclpy once per session, on an isolated ROS_DOMAIN_ID."""
-    os.environ["ROS_DOMAIN_ID"] = str(_isolated_ros_domain_id())
+    os.environ["ROS_DOMAIN_ID"] = str(isolated_ros_domain_id())
     rclpy.init()
     yield
     rclpy.shutdown()
 
 
-class NodeHarness:
-    """Generic Tier 2 harness: node-under-test + tester node + executor.
-
-    Owns lifecycle (executor add/remove, destroy_node, executor shutdown).
-    Subclasses or callers supply the node-under-test and a tester node;
-    the tester node owns the test-side publishers/subscribers.
-    """
-
-    def __init__(self, node_under_test_cls, tester_cls):
-        self.node = node_under_test_cls()
-        self.tester = tester_cls()
-        self.executor = SingleThreadedExecutor()
-        self.executor.add_node(self.node)
-        self.executor.add_node(self.tester)
-
-    def spin_for(self, duration_s: float, slice_s: float = 0.02) -> None:
-        """Spin the executor for at least ``duration_s`` of wall time."""
-        deadline = time.monotonic() + duration_s
-        while time.monotonic() < deadline:
-            self.executor.spin_once(timeout_sec=slice_s)
-
-    def spin_until(self, predicate, timeout: float = 2.0, slice_s: float = 0.02):
-        """Spin until ``predicate()`` is truthy or ``timeout`` elapses."""
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if predicate():
-                return
-            self.executor.spin_once(timeout_sec=slice_s)
-        if not predicate():
-            raise TimeoutError(f"predicate did not become true within {timeout}s")
-
-    def shutdown(self) -> None:
-        try:
-            self.executor.remove_node(self.node)
-            self.executor.remove_node(self.tester)
-        finally:
-            self.node.destroy_node()
-            self.tester.destroy_node()
-            self.executor.shutdown()
+def publish_bool(pub, value: bool) -> None:
+    """Publish a std_msgs/Bool. Every latched control surface the tester nodes
+    drive -- /command, /mission/complete, /debug/emergency_surface -- is this
+    shape, so the three-line build lives here once."""
+    msg = Bool()
+    msg.data = bool(value)
+    pub.publish(msg)
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +91,12 @@ class _BCUTesterNode(Node):
         )
         self.dive_init_pub = create_publisher_for_topic(self, UUVTopics.DIVE_INIT)
         self.command_pub = create_publisher_for_topic(self, UUVTopics.COMMAND)
+        # Stands in for pathfinding announcing the mission finished. Distinct
+        # from command_pub: bcu_node must safe-stop on either, and the tests
+        # exercise both paths separately.
+        self.mission_complete_pub = create_publisher_for_topic(
+            self, UUVTopics.MISSION_COMPLETE
+        )
         # Stands in for a manual valve command (bcu_debug's input). bcu_node
         # listens to this only to yield the wire -- it doesn't act on the mask.
         self.debug_valves_pub = create_publisher_for_topic(
@@ -182,9 +151,12 @@ class _BCUTesterNode(Node):
     def publish_command(self, start: bool) -> None:
         # bcu_node subscribes to /command and resets to a safe-silent state
         # on false (the old CONTROL_RESET path, now folded into /command).
-        msg = Bool()
-        msg.data = bool(start)
-        self.command_pub.publish(msg)
+        publish_bool(self.command_pub, start)
+
+    def publish_mission_complete(self, done: bool = True) -> None:
+        # The other way a run ends: pathfinding's latched completion event.
+        # bcu_node runs the same safe-stop off it, with no /command traffic.
+        publish_bool(self.mission_complete_pub, done)
 
     def publish_debug_valves(self, mask: int) -> None:
         msg = UInt8()
@@ -192,52 +164,10 @@ class _BCUTesterNode(Node):
         self.debug_valves_pub.publish(msg)
 
 
-class BCUNodeHarness(NodeHarness):
-    """NodeHarness specialised for BCUNode + _BCUTesterNode."""
-
-    def __init__(self):
-        super().__init__(BCUNode, _BCUTesterNode)
-
-    @property
-    def received_rpm(self) -> list[int]:
-        return self.tester.received_rpm
-
-    @property
-    def received_valves(self) -> list[int]:
-        return self.tester.received_valves
-
-    def publish_target_pressure(self, value_pa: float) -> None:
-        self.tester.publish_target_pressure(value_pa)
-
-    def publish_depth_gauge(self, gauge_pa: float) -> None:
-        self.tester.publish_depth_gauge(gauge_pa)
-
-    def publish_tank_pressure(self, value_pa: int) -> None:
-        self.tester.publish_tank_pressure(value_pa)
-
-    def publish_dive_init(
-        self,
-        surface_pressure_pa: float = 0.0,
-        tank_empty_pa: float = 0.0,
-        tank_full_pa: float = 0.0,
-    ) -> None:
-        self.tester.publish_dive_init(
-            surface_pressure_pa=surface_pressure_pa,
-            tank_empty_pa=tank_empty_pa,
-            tank_full_pa=tank_full_pa,
-        )
-
-    def publish_command(self, start: bool) -> None:
-        self.tester.publish_command(start)
-
-    def publish_debug_valves(self, mask: int) -> None:
-        self.tester.publish_debug_valves(mask)
-
-
 @pytest.fixture
 def bcu_node_harness():
     """Function-scoped harness. Tears both nodes down on exit."""
-    harness = BCUNodeHarness()
+    harness = NodeHarness(BCUNode, _BCUTesterNode)
     try:
         yield harness
     finally:
@@ -247,17 +177,6 @@ def bcu_node_harness():
 # ---------------------------------------------------------------------------
 # ACU node harness
 # ---------------------------------------------------------------------------
-
-
-def _quat_from_roll_deg(roll_deg: float):
-    """Roll-only quaternion (pitch=yaw=0). Inverse of
-    math_utils.quaternion_to_roll_pitch — pitch isn't part of the ACU
-    target/estimation surface anymore now that pitch is driven by
-    pressure error rather than a target attitude."""
-    r = math.radians(roll_deg) / 2.0
-    qw = math.cos(r)
-    qx = math.sin(r)
-    return qx, 0.0, 0.0, qw
 
 
 class _ACUTesterNode(Node):
@@ -284,6 +203,9 @@ class _ACUTesterNode(Node):
             self, UUVTopics.POSITION_ESTIMATION
         )
         self.command_pub = create_publisher_for_topic(self, UUVTopics.COMMAND)
+        self.mission_complete_pub = create_publisher_for_topic(
+            self, UUVTopics.MISSION_COMPLETE
+        )
         self.pitch_sub = create_subscription_for_topic(
             self, UUVTopics.ACU_PITCH, self._on_pitch
         )
@@ -301,7 +223,10 @@ class _ACUTesterNode(Node):
     def _pose(roll_deg: float, pressure_pa: float = 0.0) -> Pose:
         # position.z doubles as the pressure channel: a target gauge pressure
         # on POSITION_TARGET, a current gauge depth on POSITION_ESTIMATION.
-        qx, qy, qz, qw = _quat_from_roll_deg(roll_deg)
+        # Roll-only quaternion (pitch=yaw=0) — pitch isn't part of the ACU
+        # target/estimation surface anymore now that pitch is driven by
+        # pressure error rather than a target attitude.
+        qx, qy, qz, qw = rpy_to_quaternion(math.radians(roll_deg), 0.0, 0.0)
         msg = Pose()
         msg.position.z = float(pressure_pa)
         msg.orientation.x = float(qx)
@@ -325,45 +250,18 @@ class _ACUTesterNode(Node):
     def publish_command(self, start: bool) -> None:
         # acu_node subscribes to /command and resets to a safe-silent state
         # on false (the old CONTROL_RESET path, now folded into /command).
-        msg = Bool()
-        msg.data = bool(start)
-        self.command_pub.publish(msg)
+        publish_bool(self.command_pub, start)
 
-
-class ACUNodeHarness(NodeHarness):
-    """NodeHarness specialised for ACUControlNode + _ACUTesterNode."""
-
-    def __init__(self):
-        super().__init__(ACUControlNode, _ACUTesterNode)
-
-    @property
-    def received_pitch_mm(self) -> list[int]:
-        return self.tester.received_pitch_mm
-
-    @property
-    def received_roll_cdeg(self) -> list[int]:
-        return self.tester.received_roll_cdeg
-
-    def publish_target(
-        self, roll_deg: float = 0.0, target_pressure_pa: float = 0.0
-    ) -> None:
-        self.tester.publish_target(
-            roll_deg=roll_deg, target_pressure_pa=target_pressure_pa
-        )
-
-    def publish_current_attitude(
-        self, roll_deg: float = 0.0, gauge_pa: float = 0.0
-    ) -> None:
-        self.tester.publish_current_attitude(roll_deg=roll_deg, gauge_pa=gauge_pa)
-
-    def publish_command(self, start: bool) -> None:
-        self.tester.publish_command(start)
+    def publish_mission_complete(self, done: bool = True) -> None:
+        # The other way a run ends: pathfinding's latched completion event.
+        # acu_node neutralizes off it, with no /command traffic.
+        publish_bool(self.mission_complete_pub, done)
 
 
 @pytest.fixture
 def acu_node_harness():
     """Function-scoped harness. Tears both nodes down on exit."""
-    harness = ACUNodeHarness()
+    harness = NodeHarness(ACUControlNode, _ACUTesterNode)
     try:
         yield harness
     finally:
@@ -381,8 +279,9 @@ class _PathfindingTesterNode(Node):
     def __init__(self):
         super().__init__("pathfinding_node_tester")
         self.received_targets: list = []
-        # Every /command we see -- our own start/stop plus any the node emits
-        # itself (it drives /command=false on mission completion).
+        # Every /command on the wire. The node must never publish here -- it
+        # announces completion on MISSION_COMPLETE instead -- so anything in
+        # this list beyond what the test itself published is a regression.
         self.received_commands: list[bool] = []
 
         self.estimation_pub = create_publisher_for_topic(
@@ -420,9 +319,7 @@ class _PathfindingTesterNode(Node):
         self.publish_pose_estimation(0.0, 0.0, gauge_pa)
 
     def publish_command(self, start: bool) -> None:
-        msg = Bool()
-        msg.data = bool(start)
-        self.command_pub.publish(msg)
+        publish_bool(self.command_pub, start)
 
     def publish_mission_command(
         self,
@@ -431,60 +328,24 @@ class _PathfindingTesterNode(Node):
         shallow_pressure_pa: float = 0.0,
         angle_rad: float = 0.0,
         n_oscillations: int = 0,
+        n_steps: int = 1,
     ) -> None:
+        # `n_oscillations` is the operator/launch-arg name for the count; the
+        # msg field it lands on is `n_resurfaces`.
         msg = MissionCommand()
         msg.mission_id = int(mission_id)
         msg.target_pressure_pa = float(target_pressure_pa)
         msg.shallow_pressure_pa = float(shallow_pressure_pa)
         msg.angle_rad = float(angle_rad)
-        msg.n_oscillations = int(n_oscillations)
+        msg.n_resurfaces = int(n_oscillations)
+        msg.n_steps = int(n_steps)
         self.path_pub.publish(msg)
-
-
-class PathfindingNodeHarness(NodeHarness):
-    """NodeHarness specialised for PathfindingNode + _PathfindingTesterNode."""
-
-    def __init__(self):
-        super().__init__(PathfindingNode, _PathfindingTesterNode)
-
-    @property
-    def received_targets(self) -> list:
-        return self.tester.received_targets
-
-    @property
-    def received_commands(self) -> list:
-        return self.tester.received_commands
-
-    def publish_pose_estimation(self, x: float, y: float, z: float) -> None:
-        self.tester.publish_pose_estimation(x, y, z)
-
-    def publish_depth_gauge(self, gauge_pa: float) -> None:
-        self.tester.publish_depth_gauge(gauge_pa)
-
-    def publish_command(self, start: bool) -> None:
-        self.tester.publish_command(start)
-
-    def publish_mission_command(
-        self,
-        mission_id: int,
-        target_pressure_pa: float = 0.0,
-        shallow_pressure_pa: float = 0.0,
-        angle_rad: float = 0.0,
-        n_oscillations: int = 0,
-    ) -> None:
-        self.tester.publish_mission_command(
-            mission_id,
-            target_pressure_pa=target_pressure_pa,
-            shallow_pressure_pa=shallow_pressure_pa,
-            angle_rad=angle_rad,
-            n_oscillations=n_oscillations,
-        )
 
 
 @pytest.fixture
 def pathfinding_node_harness():
     """Function-scoped harness. Tears both nodes down on exit."""
-    harness = PathfindingNodeHarness()
+    harness = NodeHarness(PathfindingNode, _PathfindingTesterNode)
     try:
         yield harness
     finally:
@@ -562,49 +423,26 @@ class _BcuDebugTesterNode(Node):
         self.valves_cmd_pub.publish(msg)
 
     def publish_emergency(self, active: bool) -> None:
-        msg = Bool()
-        msg.data = bool(active)
-        self.emergency_pub.publish(msg)
+        publish_bool(self.emergency_pub, active)
 
     def publish_reset(self) -> None:
         self.reset_pub.publish(Empty())
 
 
 class BcuDebugNodeHarness(NodeHarness):
-    """NodeHarness specialised for BcuDebugNode + _BcuDebugTesterNode."""
+    """NodeHarness specialised for BcuDebugNode + _BcuDebugTesterNode.
+
+    ``received_rpm`` transforms rather than forwards -- it strips the
+    timestamps off the tester's ``received`` samples -- so it stays a
+    real member instead of riding the base ``__getattr__`` delegation.
+    """
 
     def __init__(self):
         super().__init__(BcuDebugNode, _BcuDebugTesterNode)
 
     @property
-    def received(self) -> list[tuple[float, int]]:
-        return self.tester.received
-
-    @property
     def received_rpm(self) -> list[int]:
         return [rpm for _, rpm in self.tester.received]
-
-    @property
-    def received_valves(self) -> list[int]:
-        return self.tester.received_valves
-
-    def publish_pump(self, rpm: int, duration_s: float) -> None:
-        self.tester.publish_pump(rpm, duration_s)
-
-    def publish_pump_until_pressure(self, rpm: int, target_pressure_pa: int) -> None:
-        self.tester.publish_pump_until_pressure(rpm, target_pressure_pa)
-
-    def publish_tank_pressure(self, value_pa: int) -> None:
-        self.tester.publish_tank_pressure(value_pa)
-
-    def publish_valves(self, mask: int) -> None:
-        self.tester.publish_valves(mask)
-
-    def publish_emergency(self, active: bool) -> None:
-        self.tester.publish_emergency(active)
-
-    def publish_reset(self) -> None:
-        self.tester.publish_reset()
 
 
 @pytest.fixture
@@ -664,34 +502,10 @@ class _AcuDebugTesterNode(Node):
         self.reset_pub.publish(Empty())
 
 
-class AcuDebugNodeHarness(NodeHarness):
-    """NodeHarness specialised for AcuDebugNode + _AcuDebugTesterNode."""
-
-    def __init__(self):
-        super().__init__(AcuDebugNode, _AcuDebugTesterNode)
-
-    @property
-    def received_pitch_mm(self) -> list[int]:
-        return self.tester.received_pitch_mm
-
-    @property
-    def received_roll_cdeg(self) -> list[int]:
-        return self.tester.received_roll_cdeg
-
-    def publish_pitch(self, mm: int) -> None:
-        self.tester.publish_pitch(mm)
-
-    def publish_roll(self, cdeg: int) -> None:
-        self.tester.publish_roll(cdeg)
-
-    def publish_reset(self) -> None:
-        self.tester.publish_reset()
-
-
 @pytest.fixture
 def acu_debug_node_harness():
     """Function-scoped harness. Tears both nodes down on exit."""
-    harness = AcuDebugNodeHarness()
+    harness = NodeHarness(AcuDebugNode, _AcuDebugTesterNode)
     try:
         yield harness
     finally:

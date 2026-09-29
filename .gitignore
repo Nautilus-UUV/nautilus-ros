@@ -42,6 +42,7 @@ pip-wheel-metadata/
 CLAUDE.md
 flake.lock
 flake.nix
+scripts/output/
 
 # === Coding Agents ===
 .claude/

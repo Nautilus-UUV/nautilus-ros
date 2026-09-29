@@ -1,6 +1,6 @@
 """Tier 1 unit tests for AxisController.
 
-The pitch axis is now bang-bang inside ``pid/acu_node.py`` (no separate
+The pitch axis is now bang-bang inside ``control/acu_node.py`` (no separate
 class), so this file exercises the surface that remains: AxisController
 as the roll-only PID + motor-frame clamp + redundant-publish guard.
 
@@ -11,7 +11,7 @@ assert behaviour at t>=0.1, the same cadence the 10 Hz node uses.
 
 import pytest
 
-from py_pkg.pid.acu_axis_controller import AxisController
+from py_pkg.control.acu_axis_controller import AxisController
 
 
 PRIME_TIME = 0.0
@@ -32,7 +32,6 @@ def _prime(axis: AxisController, current_pos: float = 0.0) -> None:
 
 def make_axis(kp=0.5, command_tolerance=0.0, output_limits=(-1000.0, 1000.0)):
     return AxisController(
-        name="test_axis",
         kp=kp,
         command_tolerance=command_tolerance,
         output_limits=output_limits,
@@ -95,7 +94,6 @@ class TestOutputClamp:
 
     def _make(self):
         return AxisController(
-            name="roll",
             kp=0.5,
             command_tolerance=0.0,
             output_limits=(-25.0, 25.0),
@@ -163,7 +161,6 @@ class TestRedundantPublishGuard:
         # producing the same clamped target, so the guard suppresses
         # everything after the first emission.
         axis = AxisController(
-            name="roll",
             kp=0.5,
             command_tolerance=0.0,
             output_limits=(-25.0, 25.0),
@@ -187,7 +184,6 @@ class TestPIDPathWired:
 
     def test_integral_accumulates_under_persistent_error(self):
         axis = AxisController(
-            name="roll",
             kp=0.0,
             ki=0.5,
             kd=0.0,

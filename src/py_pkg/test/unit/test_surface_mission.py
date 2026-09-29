@@ -12,8 +12,7 @@ tick; these tests interleave those calls in the same order.
 import math
 
 import pytest
-from py_pkg.path.missions.profile import MissionState
-from py_pkg.path.missions.sawtooth import SURFACE_THRESHOLD_PA
+from py_pkg.path.missions.profile import SURFACE_THRESHOLD_PA, MissionState
 from py_pkg.path.missions.surface import DWELL_AT_SURFACE_S, SurfaceMission
 
 DEEP_PA = 60_000.0  # ~6 m gauge -- well above any reasonable surface threshold
@@ -63,7 +62,7 @@ class TestReferenceIsConstant:
 
     def test_command_parameters_are_ignored(self):
         # `target_pressure_pa`, `shallow_pressure_pa`, `angle_rad`,
-        # `n_oscillations` are mission-specific — SurfaceMission has none, and
+        # `n_resurfaces` are mission-specific — SurfaceMission has none, and
         # any value passed must not bleed into the setpoint.
         m = SurfaceMission()
         m.start(
@@ -71,7 +70,7 @@ class TestReferenceIsConstant:
                 target_pressure_pa=80_000.0,
                 shallow_pressure_pa=20_000.0,
                 angle_rad=0.5,
-                n_oscillations=3,
+                n_resurfaces=3,
             )
         )
         assert m.reference(0.0).position.z == pytest.approx(0.0)
