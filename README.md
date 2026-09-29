@@ -97,7 +97,7 @@ In the UI: press Initialize, then send a mission.
 
 If Gazebo starts but the glider does not move, run `export GZ_IP=127.0.0.1` before launching (needed behind a VPN).
 
-## Automatic Testing
+## Testing
 
 We test the code at various levels. When modifying or developing code, only change tests that relate to the unit you work on.
 
@@ -112,7 +112,7 @@ We test the code at various levels. When modifying or developing code, only chan
 cd ~/nautilus_ws/src/nautilus-ros/src/py_pkg
 python -m pytest test/ -v
 ```
-2. Run Tier 3:
+2. Run Tier 3 (~40 minutes):
 ```bash
 cd ~/nautilus_ws/src/nautilus-ros/src/py_pkg
 python -m pytest -m sim test/sim/ -v
