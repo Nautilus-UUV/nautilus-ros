@@ -117,6 +117,8 @@ python -m pytest test/ -v
 cd ~/nautilus_ws/src/nautilus-ros/src/py_pkg
 python -m pytest -m sim test/sim/ -v
 ```
+If tests are failing make sure the transport layer does not fail due to a VPN. If you use a VPN set the enviroment variable `GZ_IP=127.0.0.1`.
+
 3. Run a single Tier 3 test with the Gazebo window:
 ```bash
 SIM_GUI=1 python -m pytest -m sim test/sim/test_trim_neutral_sim.py -v -s
