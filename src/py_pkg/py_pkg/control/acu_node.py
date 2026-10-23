@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
-"""Attitude Control Unit node: bang-bang pitch + PID roll.
-
-DEPRECATED / NOT IMPLEMENTED IN SIM: the simulated ACU actuator has been
-removed — the glider_nautilus model is now a static, symmetric, BCU-only
-vehicle (the pitch/roll mass-shifter joints are fixed and the sim ACU bridge
-is gone). This node is retained for the real-hardware path only; it still
-drives ``/acu/pitch`` / ``/acu/roll`` into can_com_node, but those outputs
-have no consumer in simulation.
-"""
+"""Attitude Control Unit node: bang-bang pitch + PID roll."""
 
 import math
 
