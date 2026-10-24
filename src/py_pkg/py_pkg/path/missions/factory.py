@@ -6,6 +6,7 @@ from .profile import MissionProfile
 from .sawtooth import SawtoothMission
 from .staircase import StaircaseMission
 from .surface import SurfaceMission
+from .idle_mission import IdleMission
 from .trim_and_neutral import TrimAndNeutralBuoyancyMission
 
 
@@ -14,6 +15,7 @@ class MissionId(IntEnum):
     SAWTOOTH = 1
     SURFACE = 2
     STAIRCASE = 3
+    IDLE = 4
 
 
 _REGISTRY: dict[int, type[MissionProfile]] = {
@@ -21,6 +23,7 @@ _REGISTRY: dict[int, type[MissionProfile]] = {
     MissionId.SAWTOOTH: SawtoothMission,
     MissionId.SURFACE: SurfaceMission,
     MissionId.STAIRCASE: StaircaseMission,
+    MissionId.IDLE: IdleMission,
 }
 
 
